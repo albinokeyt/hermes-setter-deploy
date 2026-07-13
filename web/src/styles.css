@@ -38,22 +38,22 @@
 }
 
 :root.dark {
-  --page-bg: #15130e;
-  --card-bg: #1e1b15;
-  --body-text: #e9e2d2;
+  --page-bg: #0e0f13;
+  --card-bg: #191b21;
+  --body-text: #e6e8ec;
 
-  /* Inversión de la escala "slate": en claro va de superficie (50) a texto (900);
-     en oscuro la invertimos para que superficies queden oscuras y textos claros. */
-  --color-slate-50: #211d16;
-  --color-slate-100: #2a251c;
-  --color-slate-200: #383228;
-  --color-slate-300: #4b4436;
-  --color-slate-400: #8c8574;
-  --color-slate-500: #a69f8c;
-  --color-slate-600: #c0b8a4;
-  --color-slate-700: #d6cebb;
-  --color-slate-800: #e9e2d2;
-  --color-slate-900: #f4eee0;
+  /* Inversión de la escala "slate" a un carbón NEUTRO elegante (no marrón):
+     superficies oscuras (50) a textos claros (900). */
+  --color-slate-50: #1c1e24;
+  --color-slate-100: #23262d;
+  --color-slate-200: #2e323a;
+  --color-slate-300: #3c414b;
+  --color-slate-400: #888e9a;
+  --color-slate-500: #a1a7b2;
+  --color-slate-600: #bbc0ca;
+  --color-slate-700: #d3d7de;
+  --color-slate-800: #e6e8ec;
+  --color-slate-900: #f2f3f6;
 }
 
 body {
@@ -72,7 +72,7 @@ body {
   @apply bg-violet-200;
 }
 :root.dark ::selection {
-  background: #4b3511;
+  background: #3a3117;
 }
 
 .scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
