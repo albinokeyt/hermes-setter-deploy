@@ -1,0 +1,23 @@
+{
+  "name": "hermes-setter",
+  "version": "1.0.0",
+  "description": "Setter IA para Instagram y WhatsApp sobre GoHighLevel — recibe por webhook, piensa con el LLM que elijas y responde como humano en 2-3 mensajes.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "check": "node scripts/check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^10.0.1",
+    "@fastify/static": "^8.0.3",
+    "bullmq": "^5.34.0",
+    "fastify": "^5.2.0",
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.1"
+  }
+}
