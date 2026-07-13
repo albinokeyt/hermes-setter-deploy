@@ -316,6 +316,11 @@ export default function AccountEdit() {
                 ) : (
                   <Button onClick={connectOauth}><Sparkles size={16} /> Conectar subcuenta de GHL</Button>
                 )}
+                <CopyField
+                  label="Plan B — webhook por workflow (recepción alternativa)"
+                  value={acc.webhook_url || ''}
+                  hint='Si el webhook de la app de marketplace no entrega mensajes, crea en la subcuenta un workflow: Trigger "Customer Replied" → Action "Custom Webhook" (POST) a esta URL con customData: contact_id = {{contact.id}}, message = {{message.body}}, channel = {{message.type}}. Desactívalo cuando el webhook de la app funcione (si no, los mensajes entrarían duplicados).'
+                />
               </div>
             ) : (
               <div className="space-y-4">
