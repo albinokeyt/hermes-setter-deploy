@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Zap } from 'lucide-react';
+import { Bot } from 'lucide-react';
 import { api } from '../api.js';
 import { Button, Input, Banner } from '../components/ui.jsx';
 
@@ -29,7 +29,7 @@ export default function PortalRegister() {
       <div className="w-full max-w-sm fade-up">
         <div className="mb-8 text-center">
           <span className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-600 text-white shadow-lg shadow-violet-600/25">
-            <Zap size={26} strokeWidth={2.5} />
+            <Bot size={28} strokeWidth={2.2} />
           </span>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">¡Bienvenido!</h1>
           <p className="mt-1 text-sm text-slate-500">Primera vez por aquí: dinos quién eres para entrar a tu panel del setter</p>

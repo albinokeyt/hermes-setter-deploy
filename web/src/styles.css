@@ -1,15 +1,66 @@
 @import "tailwindcss";
 
+/* El modo oscuro se activa con la clase .dark en <html> (no por preferencia del sistema) */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* Acento DORADO — remapea la escala "violet" que usa toda la app */
+  --color-violet-50: #FBF5E6;
+  --color-violet-100: #F5E7C1;
+  --color-violet-200: #ECD595;
+  --color-violet-300: #DFBB5C;
+  --color-violet-400: #CFA233;
+  --color-violet-500: #BC8A26;
+  --color-violet-600: #9C6E19;
+  --color-violet-700: #7C5715;
+  --color-violet-800: #614413;
+  --color-violet-900: #4B3511;
+}
+
+:root {
+  --page-bg: #f7f4ec;
+  --card-bg: #ffffff;
+  --body-text: #2b2a26;
+}
+
+:root.dark {
+  --page-bg: #15130e;
+  --card-bg: #1e1b15;
+  --body-text: #e9e2d2;
+
+  /* Inversión de la escala "slate": en claro va de superficie (50) a texto (900);
+     en oscuro la invertimos para que superficies queden oscuras y textos claros. */
+  --color-slate-50: #211d16;
+  --color-slate-100: #2a251c;
+  --color-slate-200: #383228;
+  --color-slate-300: #4b4436;
+  --color-slate-400: #8c8574;
+  --color-slate-500: #a69f8c;
+  --color-slate-600: #c0b8a4;
+  --color-slate-700: #d6cebb;
+  --color-slate-800: #e9e2d2;
+  --color-slate-900: #f4eee0;
 }
 
 body {
-  @apply bg-[#f6f6f4] text-slate-800 antialiased;
+  background: var(--page-bg);
+  color: var(--body-text);
+  @apply antialiased;
+}
+
+/* Las tarjetas/inputs usan bg-white: en oscuro pasan a superficie oscura.
+   (No tocamos --color-white para no romper el texto blanco de los botones.) */
+:root.dark .bg-white {
+  background-color: var(--card-bg) !important;
 }
 
 ::selection {
   @apply bg-violet-200;
+}
+:root.dark ::selection {
+  background: #4b3511;
 }
 
 .scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }

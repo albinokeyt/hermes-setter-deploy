@@ -1,6 +1,24 @@
-import { useState } from 'react';
-import { Copy, Check, Loader2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Copy, Check, Loader2, Sun, Moon } from 'lucide-react';
 import { stageByKey } from '../stages.js';
+
+export function ThemeToggle({ className = '' }) {
+  const [dark, setDark] = useState(() => typeof document !== 'undefined' && document.documentElement.classList.contains('dark'));
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', dark);
+    try { localStorage.setItem('hermes-theme', dark ? 'dark' : 'light'); } catch {}
+  }, [dark]);
+  return (
+    <button
+      type="button"
+      onClick={() => setDark((d) => !d)}
+      aria-label={dark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
+      className={`inline-flex items-center justify-center rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 ${className}`}
+    >
+      {dark ? <Sun size={18} /> : <Moon size={18} />}
+    </button>
+  );
+}
 
 export function Card({ children, className = '' }) {
   return <div className={`bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(16,24,40,.04)] ${className}`}>{children}</div>;
