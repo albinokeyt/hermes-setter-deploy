@@ -52,7 +52,7 @@ export default function AccountEdit() {
 
   const connectOauth = async () => {
     try {
-      const { url } = await api.get(`/api/ghl/oauth/url?account_id=${id}`);
+      const { url } = await api.get(`/api/oauth/url?account_id=${id}`);
       window.location.href = url;
     } catch (err) {
       setError(err.message);

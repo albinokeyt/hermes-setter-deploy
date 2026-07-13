@@ -43,8 +43,10 @@ function normalizeMarketplaceEvent(p) {
 }
 
 export default async function webhookRoutes(app) {
-  // Webhook de la app de Marketplace (todas las subcuentas, una sola URL)
-  app.post('/api/webhooks/ghl', async (req, reply) => {
+  // Webhook de la app de Marketplace (todas las subcuentas, una sola URL).
+  // La ruta pública no lleva "ghl" (el validador del marketplace rechaza URLs
+  // con referencias a HighLevel); /api/webhooks/ghl queda como alias legado.
+  const marketplaceHandler = async (req, reply) => {
     const p = req.body || {};
 
     if (!verifySignature(req)) {
@@ -84,7 +86,9 @@ export default async function webhookRoutes(app) {
       console.error('[webhook ghl]', err);
       await logEvent('error_webhook', { error: err.message }).catch(() => {});
     }
-  });
+  };
+  app.post('/api/webhooks/inbox', marketplaceHandler);
+  app.post('/api/webhooks/ghl', marketplaceHandler);
 
   // Webhook alternativo por cuenta (workflow "Customer Replied" → Custom Webhook), modo sin app de marketplace
   app.post('/api/webhooks/workflow/:token', async (req, reply) => {

@@ -58,8 +58,8 @@ La app privada se crea **una sola vez** y sirve para todas tus subcuentas. No pa
    ```
    conversations/message.readonly conversations/message.write conversations.readonly contacts.readonly contacts.write locations.readonly
    ```
-4. **Redirect URL**: `https://TU-APP/api/ghl/oauth/callback`
-5. **Webhooks**: URL `https://TU-APP/api/webhooks/ghl` y activa los eventos **InboundMessage** y **OutboundMessage**.
+4. **Redirect URL**: `https://TU-APP/api/oauth/callback`
+5. **Webhooks**: URL `https://TU-APP/api/webhooks/inbox` y activa los eventos **InboundMessage** y **OutboundMessage**.
 6. Genera **Client ID** y **Client Secret** y pégalos en Hermes → **Configuración**.
 7. En Hermes → **Cuentas** → tu cuenta → pestaña **Conexión GHL** → **Conectar subcuenta**: eliges la subcuenta del cliente y listo.
 

@@ -5,9 +5,11 @@ import { config, OAUTH_SCOPES } from '../config.js';
 import { exchangeCode, saveTokens, getLocationName } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
 
+// OJO: las rutas públicas no pueden contener "ghl" — el validador del marketplace
+// de GHL rechaza redirect URLs con referencias a HighLevel.
 export default async function ghlOauthRoutes(app) {
   // devuelve la URL de instalación (con state anti-CSRF vinculado a la cuenta que conecta)
-  app.get('/api/ghl/oauth/url', async (req, reply) => {
+  app.get('/api/oauth/url', async (req, reply) => {
     const creds = (await getSetting('ghl_app', {})) || {};
     if (!creds.client_id) return reply.code(400).send({ error: 'Configura primero el Client ID en Configuración' });
 
@@ -19,7 +21,7 @@ export default async function ghlOauthRoutes(app) {
     const nonce = crypto.randomBytes(16).toString('hex');
     await redis.setex(`oauthstate:${nonce}`, 600, String(accountId || ''));
 
-    const redirect = `${config.appBaseUrl}/api/ghl/oauth/callback`;
+    const redirect = `${config.appBaseUrl}/api/oauth/callback`;
     const url =
       'https://marketplace.gohighlevel.com/oauth/chooselocation' +
       `?response_type=code&redirect_uri=${encodeURIComponent(redirect)}` +
@@ -29,7 +31,7 @@ export default async function ghlOauthRoutes(app) {
     return { url };
   });
 
-  app.get('/api/ghl/oauth/callback', async (req, reply) => {
+  app.get('/api/oauth/callback', async (req, reply) => {
     const { code, state } = req.query || {};
     if (!code) return reply.code(400).send({ error: 'Falta el parámetro code' });
 

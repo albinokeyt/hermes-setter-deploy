@@ -8,8 +8,8 @@ export default async function settingsRoutes(app) {
       client_id: app_.client_id || '',
       client_secret_set: Boolean(app_.client_secret),
       app_base_url: config.appBaseUrl,
-      redirect_url: `${config.appBaseUrl}/api/ghl/oauth/callback`,
-      marketplace_webhook_url: `${config.appBaseUrl}/api/webhooks/ghl`,
+      redirect_url: `${config.appBaseUrl}/api/oauth/callback`,
+      marketplace_webhook_url: `${config.appBaseUrl}/api/webhooks/inbox`,
       scopes: OAUTH_SCOPES,
       signature_check: !config.allowUnsignedWebhooks,
     };
