@@ -35,10 +35,17 @@ export default async function ghlOauthRoutes(app) {
     const { code, state } = req.query || {};
     if (!code) return reply.code(400).send({ error: 'Falta el parámetro code' });
 
-    const stateKey = `oauthstate:${state || ''}`;
-    const boundAccountId = await redis.get(stateKey);
-    if (boundAccountId === null) return reply.code(403).send({ error: 'Instalación no iniciada desde el panel (state inválido o caducado). Vuelve a intentarlo desde Cuentas → Conexión GHL.' });
-    await redis.del(stateKey);
+    // Con state válido → instalación iniciada desde el panel, vinculada a una cuenta.
+    // Sin state → instalación directa desde el portal/marketplace de GHL (GHL no
+    // envía state en ese flujo): se acepta y se crea/reutiliza la cuenta por locationId.
+    let boundAccountId = '';
+    if (state) {
+      const stateKey = `oauthstate:${state}`;
+      boundAccountId = (await redis.get(stateKey)) || '';
+      await redis.del(stateKey);
+    } else {
+      await logEvent('oauth_instalacion_directa', { nota: 'instalación sin state (lanzada desde GHL, no desde el panel)' });
+    }
 
     try {
       const tok = await exchangeCode(code);
