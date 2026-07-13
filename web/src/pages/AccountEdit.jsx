@@ -81,6 +81,13 @@ export default function AccountEdit() {
       {error && <div className="mb-4"><Banner tone="error">{error}</Banner></div>}
       {searchParams.get('error') && <div className="mb-4"><Banner tone="error">{searchParams.get('error')}</Banner></div>}
       {searchParams.get('conectada') && <div className="mb-4"><Banner tone="ok">Subcuenta conectada por OAuth correctamente 🎉</Banner></div>}
+      {acc.test_mode && (
+        <div className="mb-4">
+          <Banner tone="warn">
+            🧪 <b>Modo test activo</b>: el bot solo responde a contactos de GHL con la etiqueta <b>{acc.test_tag || 'hermes-test'}</b>. Los demás leads no reciben respuesta.
+          </Banner>
+        </div>
+      )}
 
       <div className="mb-5 flex gap-1 rounded-2xl border border-slate-200 bg-white p-1.5 w-fit">
         {TABS.map((t) => (
@@ -214,6 +221,23 @@ export default function AccountEdit() {
                 <Input label="Hasta" type="time" value={activeHours.end || '21:00'} onChange={(e) => set({ active_hours: { ...activeHours, end: e.target.value } })} />
                 <Input label="Zona horaria" value={acc.timezone} onChange={(e) => set({ timezone: e.target.value })} hint="Ej.: Europe/Madrid" />
               </div>
+            )}
+          </div>
+          <div className="space-y-4 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+            <Toggle
+              checked={acc.test_mode}
+              onChange={(v) => set({ test_mode: v })}
+              label="🧪 Modo test"
+              description="El bot SOLO responde a contactos de GHL que tengan la etiqueta de prueba"
+            />
+            {acc.test_mode && (
+              <Input
+                label="Etiqueta de prueba (tag de GHL)"
+                value={acc.test_tag || ''}
+                onChange={(e) => set({ test_tag: e.target.value })}
+                placeholder="hermes-test"
+                hint="Añade este tag a tu contacto en la subcuenta de GHL y chatéale por Instagram/WhatsApp: solo los contactos con el tag reciben respuesta. Quita el modo test cuando quieras encender el bot para todos."
+              />
             )}
           </div>
           <div className="space-y-4 border-t border-slate-100 pt-5">

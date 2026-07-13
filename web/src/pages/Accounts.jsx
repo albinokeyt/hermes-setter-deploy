@@ -64,11 +64,16 @@ export default function Accounts() {
                     <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-600">
                       <Building2 size={19} />
                     </div>
-                    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                      a.bot_enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'
-                    }`}>
-                      <span className={`h-1.5 w-1.5 rounded-full ${a.bot_enabled ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                      {a.bot_enabled ? 'Bot activo' : 'Apagado'}
+                    <span className="flex items-center gap-1.5">
+                      {a.test_mode && (
+                        <span className="inline-flex items-center rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-600">🧪 TEST</span>
+                      )}
+                      <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                        a.bot_enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'
+                      }`}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${a.bot_enabled ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                        {a.bot_enabled ? 'Bot activo' : 'Apagado'}
+                      </span>
                     </span>
                   </div>
                   <h3 className="mt-3 text-base font-bold text-slate-900">{a.name}</h3>

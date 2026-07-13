@@ -174,6 +174,27 @@ async function loadContext(conversationId) {
   return { conv, account, provider, history };
 }
 
+// Modo test: el bot solo responde a contactos de GHL que tengan la etiqueta de prueba.
+// Se consulta el contacto en GHL (con caché de 60 s) y ante cualquier duda NO se responde.
+async function allowedByTestMode(account, conv) {
+  if (!account.test_mode) return true;
+  const tag = String(account.test_tag || 'hermes-test').trim().toLowerCase();
+  if (!tag) return true;
+  const cacheKey = `testtag:${conv.account_id}:${conv.ghl_contact_id}`;
+  const cached = await redis.get(cacheKey);
+  if (cached !== null) return cached === '1';
+  let ok = false;
+  try {
+    const contact = await ghl.getContact(account, conv.ghl_contact_id);
+    const tags = Array.isArray(contact?.tags) ? contact.tags.map((t) => String(t).trim().toLowerCase()) : [];
+    ok = tags.includes(tag);
+  } catch (err) {
+    await logEvent('error_test_tag', { conv: conv.id, error: err.message });
+  }
+  await redis.setex(cacheKey, 60, ok ? '1' : '0');
+  return ok;
+}
+
 async function lastInboundId(conversationId) {
   const row = await one(
     `SELECT id FROM messages WHERE conversation_id = $1 AND direction = 'inbound' ORDER BY id DESC LIMIT 1`,
@@ -203,6 +224,11 @@ export async function processDebounce(job) {
   // nada nuevo que responder (el último mensaje ya es nuestro)
   const lastMsg = history[history.length - 1];
   if (!lastMsg || lastMsg.direction === 'outbound') return;
+
+  if (!(await allowedByTestMode(account, conv))) {
+    await logEvent('test_mode_omitido', { conv: conv.id, contacto: conv.ghl_contact_id, tag: account.test_tag });
+    return;
+  }
 
   const windowDelay = delayToActiveWindow(account);
   if (windowDelay > 0) {
@@ -319,6 +345,8 @@ export async function processFollowup(job) {
 
   // si el lead respondió después del último envío, el ciclo normal ya se encarga
   if (conv.last_inbound_at && conv.last_outbound_at && new Date(conv.last_inbound_at) > new Date(conv.last_outbound_at)) return;
+
+  if (!(await allowedByTestMode(account, conv))) return;
 
   if (windowBlocked(conv)) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
