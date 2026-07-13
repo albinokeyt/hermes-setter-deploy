@@ -179,6 +179,42 @@ export default function AccountEdit() {
               <option value={4}>4 mensajes</option>
             </Select>
           </div>
+
+          <div className="space-y-4 rounded-xl border border-slate-100 pt-1">
+            <Toggle
+              checked={acc.vision_enabled}
+              onChange={(v) => set({ vision_enabled: v })}
+              label="👁️ Leer imágenes"
+              description="Cuando el lead envía una foto o captura, el agente la lee y la usa en la conversación"
+            />
+            {acc.vision_enabled && (
+              <div className="grid grid-cols-2 gap-4 pl-1">
+                <Select label="Proveedor de visión" value={acc.vision_provider_id || ''} onChange={(e) => set({ vision_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— Elige —</option>
+                  {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <Input label="Modelo de visión" value={acc.vision_model} onChange={(e) => set({ vision_model: e.target.value })} placeholder="google/gemini-2.5-flash" hint="Debe aceptar imágenes" />
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-4 rounded-xl border-t border-slate-100 pt-4">
+            <Toggle
+              checked={acc.audio_enabled}
+              onChange={(v) => set({ audio_enabled: v })}
+              label="🎤 Transcribir audios"
+              description="Convierte las notas de voz del lead en texto para que el agente las entienda"
+            />
+            {acc.audio_enabled && (
+              <div className="grid grid-cols-2 gap-4 pl-1">
+                <Select label="Proveedor de audio" value={acc.audio_provider_id || ''} onChange={(e) => set({ audio_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— Elige —</option>
+                  {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <Input label="Modelo de audio (Whisper)" value={acc.audio_model} onChange={(e) => set({ audio_model: e.target.value })} placeholder="whisper-large-v3" hint="Endpoint /audio/transcriptions (Groq u OpenAI)" />
+              </div>
+            )}
+          </div>
         </Card>
       )}
 

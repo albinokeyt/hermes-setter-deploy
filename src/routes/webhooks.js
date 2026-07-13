@@ -39,7 +39,7 @@ function normalizeMarketplaceEvent(p) {
     body: p.body || '',
     messageId: p.messageId,
     userId: p.userId || null,
-    hasAttachments: Array.isArray(p.attachments) && p.attachments.length > 0,
+    attachments: Array.isArray(p.attachments) ? p.attachments : [],
     contactName: p.contactName || '',
   };
 }

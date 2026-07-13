@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot } from 'lucide-react';
+import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Swords } from 'lucide-react';
 import { api } from '../api.js';
 import { ThemeToggle } from './ui.jsx';
 
@@ -46,6 +46,7 @@ export default function Layout() {
     ...(isAdmin
       ? [
           { to: '/cuentas', label: 'Cuentas', icon: Building2 },
+          { to: '/competencias', label: 'Competencias', icon: Swords },
           { to: '/apis', label: 'APIs de IA', icon: Plug },
         ]
       : me.account_id

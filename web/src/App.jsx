@@ -8,6 +8,8 @@ import Kanban from './pages/Kanban.jsx';
 import Accounts from './pages/Accounts.jsx';
 import AccountEdit from './pages/AccountEdit.jsx';
 import Providers from './pages/Providers.jsx';
+import Campaigns from './pages/Campaigns.jsx';
+import CampaignDetail from './pages/CampaignDetail.jsx';
 import Playground from './pages/Playground.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import UsersPage from './pages/Users.jsx';
@@ -26,6 +28,8 @@ export default function App() {
         <Route path="/cuentas" element={<Accounts />} />
         <Route path="/cuentas/:id" element={<AccountEdit />} />
         <Route path="/apis" element={<Providers />} />
+        <Route path="/competencias" element={<Campaigns />} />
+        <Route path="/competencias/:id" element={<CampaignDetail />} />
         <Route path="/prueba" element={<Playground />} />
         <Route path="/configuracion" element={<SettingsPage />} />
         <Route path="/usuarios" element={<UsersPage />} />

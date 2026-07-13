@@ -19,6 +19,7 @@ import ghlOauthRoutes from './routes/ghlOauth.js';
 import webhookRoutes from './routes/webhooks.js';
 import userRoutes from './routes/users.js';
 import portalRoutes from './routes/portal.js';
+import campaignRoutes from './routes/campaigns.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -54,6 +55,7 @@ async function main() {
   await app.register(webhookRoutes);
   await app.register(userRoutes);
   await app.register(portalRoutes);
+  await app.register(campaignRoutes);
 
   // frontend compilado (SPA)
   const webDist = path.join(__dirname, '..', 'web', 'dist');

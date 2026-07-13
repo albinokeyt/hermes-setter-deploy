@@ -3,6 +3,7 @@ import { q, one } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { debounceQueue, sendQueue, followupQueue } from '../queues.js';
 import { generateReply } from './agent.js';
+import { describeImage, transcribeAudio } from './llm.js';
 import * as ghl from './ghl.js';
 import { typingDelayMs, delayToActiveWindow, metaWindowOpen } from './humanize.js';
 import { STAGE_KEYS, WINDOWED_CHANNELS } from '../config.js';
@@ -44,6 +45,64 @@ export async function accountByLocation(locationId) {
   return one(`SELECT * FROM accounts WHERE location_id = $1`, [locationId]);
 }
 
+// ─── Adjuntos: imágenes (visión) y audios (transcripción) ───────────────────
+
+function classifyMedia(url) {
+  const clean = String(url).split('?')[0].toLowerCase();
+  if (/\.(jpg|jpeg|png|webp|gif|bmp|heic)$/.test(clean)) return 'image';
+  if (/\.(mp3|ogg|oga|opus|m4a|wav|amr|aac|mpeg|mp4|weba)$/.test(clean)) return 'audio';
+  return 'other';
+}
+
+async function processAttachments(account, attachments, context) {
+  const parts = [];
+  for (const a of attachments.slice(0, 4)) {
+    const url = typeof a === 'string' ? a : a?.url || a?.href || a?.link || '';
+    if (!url) continue;
+    const kind = classifyMedia(url);
+    try {
+      if (kind === 'image' && account.vision_enabled && account.vision_provider_id) {
+        const provider = await one(`SELECT * FROM providers WHERE id = $1`, [account.vision_provider_id]);
+        if (provider) {
+          const r = await describeImage({ provider, model: account.vision_model || provider.default_model, imageUrl: url, context });
+          parts.push(`[imagen recibida — ${r.text}]`);
+          await recordUsage(account.id, null, provider, account.vision_model || provider.default_model, r.usage, 'vision');
+          continue;
+        }
+      }
+      if (kind === 'audio' && account.audio_enabled && account.audio_provider_id) {
+        const provider = await one(`SELECT * FROM providers WHERE id = $1`, [account.audio_provider_id]);
+        if (provider) {
+          const r = await transcribeAudio({ provider, model: account.audio_model || provider.default_model, audioUrl: url });
+          parts.push(`[nota de voz del lead, transcrita: "${r.text}"]`);
+          continue;
+        }
+      }
+      parts.push(kind === 'image' ? '[el lead envió una imagen]' : kind === 'audio' ? '[el lead envió una nota de voz]' : '[el lead envió un adjunto]');
+    } catch (err) {
+      await logEvent('error_media', { account: account.id, kind, error: err.message });
+      parts.push(kind === 'image' ? '[el lead envió una imagen (no se pudo leer)]' : '[el lead envió un audio (no se pudo transcribir)]');
+    }
+  }
+  return parts.join('\n');
+}
+
+// ─── Campañas de competencia: reparto de leads por peso ─────────────────────
+
+async function pickVariant(account) {
+  const campaign = await one(`SELECT * FROM campaigns WHERE account_id = $1 AND status = 'active' ORDER BY id DESC LIMIT 1`, [account.id]);
+  if (!campaign) return null;
+  const variants = await q(`SELECT * FROM campaign_variants WHERE campaign_id = $1`, [campaign.id]);
+  const total = variants.reduce((s, v) => s + Math.max(0, v.weight || 0), 0);
+  if (!variants.length || total <= 0) return null;
+  let r = Math.random() * total;
+  for (const v of variants) {
+    r -= Math.max(0, v.weight || 0);
+    if (r <= 0) return { campaignId: campaign.id, variant: v };
+  }
+  return { campaignId: campaign.id, variant: variants[variants.length - 1] };
+}
+
 export async function cancelBotJobs(conversationId) {
   await redis.del(debKey(conversationId));
   await redis.del(fuKey(conversationId));
@@ -52,7 +111,7 @@ export async function cancelBotJobs(conversationId) {
 // Registra tokens y coste de cada llamada al LLM. OpenRouter devuelve el coste
 // real (usage.cost, USD); para el resto se estima con los precios opcionales
 // del proveedor ($ por 1M de tokens).
-export async function recordUsage(accountId, conversationId, provider, model, usage, source) {
+export async function recordUsage(accountId, conversationId, provider, model, usage, source, variantId = null) {
   if (!usage) return;
   try {
     const pt = Number(usage.prompt_tokens) || 0;
@@ -62,9 +121,9 @@ export async function recordUsage(accountId, conversationId, provider, model, us
       cost = (pt * Number(provider.price_in || 0) + ct * Number(provider.price_out || 0)) / 1_000_000;
     }
     await q(
-      `INSERT INTO llm_usage (account_id, conversation_id, model, prompt_tokens, completion_tokens, cost_usd, source)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [accountId, conversationId, model || '', pt, ct, cost, source]
+      `INSERT INTO llm_usage (account_id, conversation_id, variant_id, model, prompt_tokens, completion_tokens, cost_usd, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [accountId, conversationId, variantId, model || '', pt, ct, cost, source]
     );
   } catch (err) {
     console.error('[usage]', err.message);
@@ -82,7 +141,13 @@ export async function handleInbound(account, evt) {
   const channels = Array.isArray(account.channels) ? account.channels : [];
   if (!channels.includes(channel)) return null;
 
-  const body = String(evt.body || '').trim() || (evt.hasAttachments ? '[el lead envió un adjunto]' : '');
+  const textBody = String(evt.body || '').trim();
+  const attachments = Array.isArray(evt.attachments) ? evt.attachments : [];
+  let body = textBody;
+  if (attachments.length) {
+    const mediaText = await processAttachments(account, attachments, textBody);
+    body = [textBody, mediaText].filter(Boolean).join('\n');
+  }
   if (!body) return null;
 
   const conv = await one(
@@ -95,9 +160,21 @@ export async function handleInbound(account, evt) {
        followup_step = 0,
        followup_state = 'ninguno',
        updated_at = now()
-     RETURNING *`,
+     RETURNING *, (xmax = 0) AS is_new`,
     [account.id, evt.contactId, evt.conversationId || null, channel, evt.contactName || '']
   );
+
+  // lead nuevo + campaña activa → se delega a un agente de la competencia por peso
+  if (conv.is_new && !conv.variant_id) {
+    const pick = await pickVariant(account);
+    if (pick) {
+      await q(`UPDATE conversations SET campaign_id = $1, variant_id = $2 WHERE id = $3`, [pick.campaignId, pick.variant.id, conv.id]);
+      conv.variant_id = pick.variant.id;
+      conv.campaign_id = pick.campaignId;
+      if (pick.variant.debounce_seconds) account = { ...account, debounce_seconds: pick.variant.debounce_seconds };
+      await logEvent('lead_asignado_campana', { conv: conv.id, campana: pick.campaignId, agente: pick.variant.name });
+    }
+  }
 
   if (evt.messageId) {
     const inserted = await one(
@@ -235,12 +312,31 @@ export async function applyStage(conv, account, newStage, reason, syncGhl = true
 async function loadContext(conversationId) {
   const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [conversationId]);
   if (!conv) return {};
-  const account = await one(`SELECT * FROM accounts WHERE id = $1`, [conv.account_id]);
+  let account = await one(`SELECT * FROM accounts WHERE id = $1`, [conv.account_id]);
+  let variantId = null;
+  // si el lead está en una campaña, el "cerebro" (prompt, modelo, seguimientos) es el del agente asignado
+  if (conv.variant_id && account) {
+    const v = await one(`SELECT * FROM campaign_variants WHERE id = $1`, [conv.variant_id]);
+    if (v) {
+      variantId = v.id;
+      // el agente aporta su cerebro; lo que no defina (proveedor, modelo, seguimientos)
+      // hereda de la cuenta para nunca dejar al lead sin respuesta.
+      account = {
+        ...account,
+        prompt_identity: v.prompt_identity, prompt_business: v.prompt_business, prompt_flow: v.prompt_flow,
+        provider_id: v.provider_id || account.provider_id,
+        model: v.model || account.model,
+        temperature: v.temperature,
+        max_msgs: v.max_msgs, debounce_seconds: v.debounce_seconds,
+        followups: Array.isArray(v.followups) && v.followups.length ? v.followups : account.followups,
+      };
+    }
+  }
   const provider = account?.provider_id ? await one(`SELECT * FROM providers WHERE id = $1`, [account.provider_id]) : null;
   const history = (
     await q(`SELECT * FROM messages WHERE conversation_id = $1 ORDER BY id DESC LIMIT 30`, [conversationId])
   ).reverse();
-  return { conv, account, provider, history };
+  return { conv, account, provider, history, variantId };
 }
 
 // Modo test: el bot solo responde a contactos de GHL que tengan la etiqueta de prueba.
@@ -283,11 +379,11 @@ export async function processDebounce(job) {
   const { conversationId, token } = job.data;
   if (token && token !== (await redis.get(debKey(conversationId)))) return; // job viejo
 
-  const { conv, account, provider, history } = await loadContext(conversationId);
+  const { conv, account, provider, history, variantId } = await loadContext(conversationId);
   if (!conv || !account) return;
   if (!account.bot_enabled || conv.bot_paused) return;
   if (!provider) {
-    await logEvent('error_config', { conv: conv.id, msg: 'la cuenta no tiene proveedor de IA configurado' });
+    await logEvent('error_config', { conv: conv.id, msg: 'la cuenta o el agente no tiene proveedor de IA configurado' });
     return;
   }
   // nada nuevo que responder (el último mensaje ya es nuestro)
@@ -324,7 +420,7 @@ export async function processDebounce(job) {
     }
     return;
   }
-  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'reply');
+  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'reply', variantId);
 
   // ¿escribió algo nuevo mientras pensábamos? → re-debounce, no enviamos nada
   if ((await lastInboundId(conversationId)) !== snapshotId) {
@@ -418,7 +514,7 @@ export async function processFollowup(job) {
   const { conversationId, token } = job.data;
   if (token && token !== (await redis.get(fuKey(conversationId)))) return; // cancelado o reprogramado
 
-  const { conv, account, provider, history } = await loadContext(conversationId);
+  const { conv, account, provider, history, variantId } = await loadContext(conversationId);
   if (!conv || !account || !provider) return;
   if (!account.bot_enabled || conv.bot_paused) return;
 
@@ -467,7 +563,7 @@ export async function processFollowup(job) {
     return;
   }
   await redis.del(`furetry:${conversationId}`);
-  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'seguimiento');
+  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'seguimiento', variantId);
 
   // ¿el lead respondió mientras generábamos? → el ciclo normal (debounce) responde; este seguimiento sobra
   if ((await lastInboundId(conversationId)) !== snapshotId) return;
