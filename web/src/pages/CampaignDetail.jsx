@@ -6,8 +6,8 @@ import { api } from '../api.js';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Banner } from '../components/ui.jsx';
 
 const fmtUsd = (v) => `$${Number(v || 0).toFixed(2)}`;
-const GOLD = '#b0801d';
-const GOLD_SOFT = '#d9b45a';
+const GOLD = '#b58a2e';
+const GOLD_SOFT = '#dcbf6f';
 
 function VariantEditor({ campaignId, variant, providers, onDone }) {
   const [v, setV] = useState(variant);

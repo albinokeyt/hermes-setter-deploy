@@ -73,8 +73,8 @@ export default function Dashboard() {
               <ComposedChart data={data.daily || []} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="gIn" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#c79a2e" stopOpacity={0.28} />
-                    <stop offset="100%" stopColor="#c79a2e" stopOpacity={0} />
+                    <stop offset="0%" stopColor="#c99b34" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="#c99b34" stopOpacity={0} />
                   </linearGradient>
                   <linearGradient id="gOut" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#10b981" stopOpacity={0.22} />
@@ -86,7 +86,7 @@ export default function Dashboard() {
                 <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} allowDecimals={false} />
                 <Tooltip contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }} />
                 <Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
-                <Area type="monotone" dataKey="recibidos" name="Recibidos" stroke="#b0801d" strokeWidth={2} fill="url(#gIn)" />
+                <Area type="monotone" dataKey="recibidos" name="Recibidos" stroke="#b58a2e" strokeWidth={2} fill="url(#gIn)" />
                 <Area type="monotone" dataKey="enviados" name="Enviados" stroke="#10b981" strokeWidth={2} fill="url(#gOut)" />
                 <Line type="monotone" dataKey="agendas" name="Agendas" stroke="#0d9488" strokeWidth={2.5} dot={{ r: 2.5 }} />
                 <Line type="monotone" dataKey="leads_nuevos" name="Leads nuevos" stroke="#3b82f6" strokeWidth={2} strokeDasharray="5 3" dot={false} />
