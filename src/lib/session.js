@@ -22,36 +22,90 @@ export function verifyPassword(password, stored) {
 export async function seedAdmin() {
   const existing = await one(`SELECT id FROM users LIMIT 1`);
   if (existing) return;
-  await q(`INSERT INTO users (username, password_hash) VALUES ($1, $2)`, [
+  await q(`INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'admin')`, [
     config.adminUser,
     hashPassword(config.adminPassword),
   ]);
   console.log(`[auth] usuario inicial creado: ${config.adminUser}`);
 }
 
-export async function createSession(userId) {
+// La sesión guarda un JSON: { userId?, portalUserId?, role, accountId, portal }
+export async function createSession(payload) {
   const token = crypto.randomBytes(32).toString('hex');
-  await redis.setex(`sess:${token}`, SESSION_TTL, String(userId));
+  await redis.setex(`sess:${token}`, SESSION_TTL, JSON.stringify(payload));
   return token;
+}
+
+export function setSessionCookie(reply, token, opts = {}) {
+  // El portal se abre embebido en un iframe de GHL → necesita SameSite=None; Secure.
+  const portal = opts.portal === true;
+  reply.setCookie('hermes_session', token, {
+    path: '/',
+    httpOnly: true,
+    sameSite: portal ? 'none' : 'lax',
+    secure: portal ? true : config.isProd,
+    maxAge: SESSION_TTL,
+  });
 }
 
 export async function destroySession(token) {
   if (token) await redis.del(`sess:${token}`);
 }
 
-const PUBLIC_PREFIXES = ['/api/auth/login', '/api/webhooks/', '/api/oauth/callback', '/api/health'];
+const PUBLIC_PREFIXES = ['/api/auth/login', '/api/webhooks/', '/api/oauth/callback', '/api/health', '/api/portal/register'];
 
 export function authHook() {
   return async (req, reply) => {
     if (!req.url.startsWith('/api/')) return;
     if (PUBLIC_PREFIXES.some((p) => req.url.startsWith(p))) return;
     const token = req.cookies?.hermes_session;
-    const userId = token ? await redis.get(`sess:${token}`) : null;
-    if (!userId) {
+    const raw = token ? await redis.get(`sess:${token}`) : null;
+    if (!raw) {
       reply.code(401).send({ error: 'no_autenticado' });
       return reply;
     }
-    req.userId = Number(userId);
+    let auth = null;
+    try { auth = JSON.parse(raw); } catch { auth = null; }
+    if (!auth || typeof auth !== 'object') {
+      // compatibilidad con sesiones antiguas (guardaban solo el id numérico)
+      const user = await one(`SELECT * FROM users WHERE id = $1`, [Number(raw) || 0]);
+      if (!user) {
+        reply.code(401).send({ error: 'no_autenticado' });
+        return reply;
+      }
+      auth = { userId: user.id, role: user.role || 'admin', accountId: user.account_id || null, portal: false };
+    }
+    req.auth = auth;
+    req.userId = auth.userId || null;
     await redis.expire(`sess:${token}`, SESSION_TTL);
   };
+}
+
+// Devuelve false (y responde 403) si el usuario no es admin.
+export function requireAdmin(req, reply) {
+  if (req.auth?.role !== 'admin') {
+    reply.code(403).send({ error: 'Solo para administradores' });
+    return false;
+  }
+  return true;
+}
+
+// Alcance de datos de una petición. FAIL-CLOSED: un no-admin sin cuenta asignada
+// no ve NADA (denied), en lugar de verlo todo.
+//   admin           → { all: true }
+//   user con cuenta → { all: false, accountId }
+//   user sin cuenta → { all: false, denied: true }
+export function accountScope(req) {
+  if (req.auth?.role === 'admin') return { all: true, accountId: null, denied: false };
+  const accountId = req.auth?.accountId || null;
+  if (!accountId) return { all: false, accountId: null, denied: true };
+  return { all: false, accountId, denied: false };
+}
+
+// Compat: id de cuenta al que está limitado un no-admin (para filtros WHERE).
+// admin → null (sin filtro). user sin cuenta → -1 (no existe → resultado vacío).
+export function scopedAccountId(req) {
+  const s = accountScope(req);
+  if (s.all) return null;
+  return s.accountId || -1;
 }

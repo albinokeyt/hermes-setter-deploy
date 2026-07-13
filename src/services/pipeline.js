@@ -49,6 +49,28 @@ export async function cancelBotJobs(conversationId) {
   await redis.del(fuKey(conversationId));
 }
 
+// Registra tokens y coste de cada llamada al LLM. OpenRouter devuelve el coste
+// real (usage.cost, USD); para el resto se estima con los precios opcionales
+// del proveedor ($ por 1M de tokens).
+export async function recordUsage(accountId, conversationId, provider, model, usage, source) {
+  if (!usage) return;
+  try {
+    const pt = Number(usage.prompt_tokens) || 0;
+    const ct = Number(usage.completion_tokens) || 0;
+    let cost = typeof usage.cost === 'number' ? usage.cost : null;
+    if (cost === null && provider && (provider.price_in || provider.price_out)) {
+      cost = (pt * Number(provider.price_in || 0) + ct * Number(provider.price_out || 0)) / 1_000_000;
+    }
+    await q(
+      `INSERT INTO llm_usage (account_id, conversation_id, model, prompt_tokens, completion_tokens, cost_usd, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [accountId, conversationId, model || '', pt, ct, cost, source]
+    );
+  } catch (err) {
+    console.error('[usage]', err.message);
+  }
+}
+
 // ─── Entrada de mensajes del lead ────────────────────────────────────────────
 
 export async function handleInbound(account, evt) {
@@ -142,6 +164,53 @@ export async function handleOutboundEvent(account, evt) {
     await cancelBotJobs(conv.id);
     await logEvent('handoff_humano', { conversation: conv.id, userId: evt.userId });
   }
+}
+
+// ─── Citas del calendario (AppointmentCreate / Update / Delete) ─────────────
+
+export async function handleAppointmentEvent(account, type, p) {
+  const appt = p.appointment || p;
+  const ghlId = appt.id || p.appointmentId || null;
+  const contactId = String(appt.contactId || p.contactId || '');
+  const statusRaw = String(appt.appointmentStatus || appt.status || '').toLowerCase();
+  const cancelled = type === 'AppointmentDelete' || ['cancelled', 'canceled', 'noshow', 'no_show', 'invalid'].includes(statusRaw);
+  const status = cancelled ? 'cancelado' : 'agendado';
+  const startTime = appt.startTime || appt.start_time || null;
+
+  const conv = contactId
+    ? await one(
+        `SELECT * FROM conversations WHERE account_id = $1 AND ghl_contact_id = $2 ORDER BY updated_at DESC LIMIT 1`,
+        [account.id, contactId]
+      )
+    : null;
+
+  if (ghlId) {
+    await q(
+      `INSERT INTO appointments (account_id, conversation_id, ghl_appointment_id, ghl_contact_id, calendar_id, title, status, start_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (ghl_appointment_id) WHERE ghl_appointment_id IS NOT NULL DO UPDATE SET
+         status = EXCLUDED.status,
+         start_time = COALESCE(EXCLUDED.start_time, appointments.start_time),
+         conversation_id = COALESCE(appointments.conversation_id, EXCLUDED.conversation_id),
+         updated_at = now()`,
+      [account.id, conv?.id || null, String(ghlId), contactId, appt.calendarId || null, appt.title || '', status, startTime]
+    );
+  } else {
+    await q(
+      `INSERT INTO appointments (account_id, conversation_id, ghl_contact_id, calendar_id, title, status, start_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [account.id, conv?.id || null, contactId, appt.calendarId || null, appt.title || '', status, startTime]
+    );
+  }
+
+  if (conv) {
+    await applyStage(conv, account, cancelled ? 'agenda_cancelada' : 'agendado',
+      cancelled ? 'cita cancelada en el calendario de GHL' : 'cita agendada en el calendario de GHL');
+    if (!cancelled) await redis.del(fuKey(conv.id)); // ya agendó: fuera seguimientos pendientes
+  }
+  await logEvent(cancelled ? 'cita_cancelada' : 'cita_agendada', {
+    account: account.id, contactId, appointmentId: ghlId, startTime, statusRaw, tipo: type,
+  });
 }
 
 // ─── Etiquetas ───────────────────────────────────────────────────────────────
@@ -240,10 +309,22 @@ export async function processDebounce(job) {
   let result;
   try {
     result = await generateReply({ account, provider, conversation: conv, history });
+    await redis.del(`llmretry:${conversationId}`);
   } catch (err) {
-    await logEvent('error_llm', { conv: conv.id, error: err.message });
+    // el LLM ya reintentó 3 veces por dentro; si aun así falla, reprogramamos
+    // el ciclo completo hasta 2 veces más — el lead no se queda sin respuesta
+    const retries = await redis.incr(`llmretry:${conversationId}`);
+    await redis.expire(`llmretry:${conversationId}`, 900);
+    if (retries <= 2) {
+      await logEvent('error_llm_reintentando', { conv: conv.id, intento: retries, error: err.message });
+      await scheduleDebounce(account, conversationId, 45_000);
+    } else {
+      await redis.del(`llmretry:${conversationId}`);
+      await logEvent('error_llm', { conv: conv.id, error: err.message, nota: 'agotados los reintentos' });
+    }
     return;
   }
+  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'reply');
 
   // ¿escribió algo nuevo mientras pensábamos? → re-debounce, no enviamos nada
   if ((await lastInboundId(conversationId)) !== snapshotId) {
@@ -274,6 +355,9 @@ export async function processDebounce(job) {
     await q(`UPDATE conversations SET bot_paused = true, updated_at = now() WHERE id = $1`, [conv.id]);
     await redis.del(fuKey(conv.id));
     await logEvent('handoff_ia', { conv: conv.id, motivo: result.motivo });
+  } else if (result.etiqueta === 'descartado') {
+    // lead descartado: no programamos seguimientos ni lo perseguimos
+    await redis.del(fuKey(conv.id));
   } else {
     await scheduleNextFollowup(account, { ...conv, followup_step: 0 }, cursor);
   }
@@ -338,6 +422,7 @@ export async function processFollowup(job) {
   if (!conv || !account || !provider) return;
   if (!account.bot_enabled || conv.bot_paused) return;
 
+  if (conv.stage === 'descartado') return; // lead descartado: cortar la cadena
   const steps = Array.isArray(account.followups) ? account.followups : [];
   const step = conv.followup_step || 0;
   const stepConf = steps[step];
@@ -370,9 +455,19 @@ export async function processFollowup(job) {
       followupNumber: step + 1,
     });
   } catch (err) {
-    await logEvent('error_llm_followup', { conv: conv.id, error: err.message });
+    const retries = await redis.incr(`furetry:${conversationId}`);
+    await redis.expire(`furetry:${conversationId}`, 900);
+    if (retries <= 2) {
+      await logEvent('error_llm_followup_reintentando', { conv: conv.id, intento: retries, error: err.message });
+      await rearmFollowup(conversationId, 60_000);
+    } else {
+      await redis.del(`furetry:${conversationId}`);
+      await logEvent('error_llm_followup', { conv: conv.id, error: err.message, nota: 'agotados los reintentos' });
+    }
     return;
   }
+  await redis.del(`furetry:${conversationId}`);
+  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'seguimiento');
 
   // ¿el lead respondió mientras generábamos? → el ciclo normal (debounce) responde; este seguimiento sobra
   if ((await lastInboundId(conversationId)) !== snapshotId) return;

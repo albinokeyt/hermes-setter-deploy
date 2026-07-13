@@ -4,6 +4,8 @@ export const STAGES = [
   { key: 'en_seguimiento', label: 'En seguimiento', dot: 'bg-amber-500', pill: 'bg-amber-50 text-amber-700 ring-amber-200', hex: '#f59e0b' },
   { key: 'calificado', label: 'Calificado', dot: 'bg-violet-500', pill: 'bg-violet-50 text-violet-700 ring-violet-200', hex: '#8b5cf6' },
   { key: 'en_conversion', label: 'En conversión', dot: 'bg-emerald-500', pill: 'bg-emerald-50 text-emerald-700 ring-emerald-200', hex: '#10b981' },
+  { key: 'agendado', label: 'Agendado', dot: 'bg-teal-500', pill: 'bg-teal-50 text-teal-700 ring-teal-200', hex: '#14b8a6' },
+  { key: 'agenda_cancelada', label: 'Agenda cancelada', dot: 'bg-rose-400', pill: 'bg-rose-50 text-rose-600 ring-rose-200', hex: '#fb7185' },
   { key: 'descartado', label: 'Descartado', dot: 'bg-red-400', pill: 'bg-red-50 text-red-600 ring-red-200', hex: '#f87171' },
 ];
 

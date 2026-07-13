@@ -4,12 +4,15 @@ import { redis } from '../lib/redis.js';
 import { config, OAUTH_SCOPES } from '../config.js';
 import { exchangeCode, saveTokens, getLocationName } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
+import { requireAdmin } from '../lib/session.js';
 
 // OJO: las rutas públicas no pueden contener "ghl" — el validador del marketplace
 // de GHL rechaza redirect URLs con referencias a HighLevel.
 export default async function ghlOauthRoutes(app) {
-  // devuelve la URL de instalación (con state anti-CSRF vinculado a la cuenta que conecta)
+  // devuelve la URL de instalación (con state anti-CSRF vinculado a la cuenta que conecta).
+  // Solo admin: conectar/rebindear subcuentas es operación de administración.
   app.get('/api/oauth/url', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
     const creds = (await getSetting('ghl_app', {})) || {};
     if (!creds.client_id) return reply.code(400).send({ error: 'Configura primero el Client ID en Configuración' });
 

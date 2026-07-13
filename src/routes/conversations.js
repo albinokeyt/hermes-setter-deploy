@@ -2,12 +2,28 @@ import { q, one } from '../db.js';
 import { STAGES, STAGE_KEYS } from '../config.js';
 import { applyStage, cancelBotJobs } from '../services/pipeline.js';
 import * as ghl from '../services/ghl.js';
+import { scopedAccountId } from '../lib/session.js';
+
+async function loadScopedConv(req, reply) {
+  const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [req.params.id]);
+  if (!conv) {
+    reply.code(404).send({ error: 'No existe' });
+    return null;
+  }
+  const scope = scopedAccountId(req);
+  if (scope && conv.account_id !== scope) {
+    reply.code(403).send({ error: 'Sin acceso a esta conversación' });
+    return null;
+  }
+  return conv;
+}
 
 export default async function conversationRoutes(app) {
   app.get('/api/stages', async () => STAGES);
 
   app.get('/api/conversations', async (req) => {
-    const { account_id, stage, search, limit = 50, offset = 0 } = req.query || {};
+    const { stage, search, limit = 50, offset = 0 } = req.query || {};
+    const account_id = scopedAccountId(req) || req.query?.account_id;
     const where = [];
     const vals = [];
     if (account_id) { vals.push(account_id); where.push(`c.account_id = $${vals.length}`); }
@@ -29,20 +45,21 @@ export default async function conversationRoutes(app) {
   });
 
   app.get('/api/conversations/:id', async (req, reply) => {
+    const base = await loadScopedConv(req, reply);
+    if (!base) return;
     const conv = await one(
       `SELECT c.*, a.name AS account_name, a.channels AS account_channels
        FROM conversations c JOIN accounts a ON a.id = c.account_id WHERE c.id = $1`,
-      [req.params.id]
+      [base.id]
     );
-    if (!conv) return reply.code(404).send({ error: 'No existe' });
     const messages = await q(`SELECT * FROM messages WHERE conversation_id = $1 ORDER BY id ASC LIMIT 500`, [conv.id]);
     const history = await q(`SELECT * FROM stage_history WHERE conversation_id = $1 ORDER BY id DESC LIMIT 20`, [conv.id]);
     return { ...conv, messages, stage_history: history };
   });
 
   app.put('/api/conversations/:id', async (req, reply) => {
-    const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [req.params.id]);
-    if (!conv) return reply.code(404).send({ error: 'No existe' });
+    const conv = await loadScopedConv(req, reply);
+    if (!conv) return;
     const account = await one(`SELECT * FROM accounts WHERE id = $1`, [conv.account_id]);
     const b = req.body || {};
 
@@ -61,8 +78,8 @@ export default async function conversationRoutes(app) {
 
   // envío manual desde el panel (toma el control: pausa el bot)
   app.post('/api/conversations/:id/send', async (req, reply) => {
-    const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [req.params.id]);
-    if (!conv) return reply.code(404).send({ error: 'No existe' });
+    const conv = await loadScopedConv(req, reply);
+    if (!conv) return;
     const account = await one(`SELECT * FROM accounts WHERE id = $1`, [conv.account_id]);
     const message = String(req.body?.message || '').trim();
     if (!message) return reply.code(400).send({ error: 'Mensaje vacío' });
@@ -80,13 +97,16 @@ export default async function conversationRoutes(app) {
     }
   });
 
-  app.get('/api/kanban', async () => {
+  app.get('/api/kanban', async (req) => {
+    const scope = scopedAccountId(req);
     const rows = await q(
       `SELECT c.id, c.lead_name, c.ghl_contact_id, c.channel, c.stage, c.updated_at, c.bot_paused,
               a.name AS account_name,
               (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message
        FROM conversations c JOIN accounts a ON a.id = c.account_id
-       ORDER BY c.updated_at DESC LIMIT 400`
+       ${scope ? 'WHERE c.account_id = $1' : ''}
+       ORDER BY c.updated_at DESC LIMIT 400`,
+      scope ? [scope] : []
     );
     const board = {};
     for (const s of STAGE_KEYS) board[s] = [];

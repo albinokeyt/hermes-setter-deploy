@@ -1,5 +1,5 @@
 import { chatCompletion } from './llm.js';
-import { STAGE_KEYS } from '../config.js';
+import { STAGE_KEYS, SYSTEM_STAGES } from '../config.js';
 
 function stageGuide() {
   return `ETIQUETAS DISPONIBLES (elige la que mejor describa al lead DESPUÉS de tu respuesta):
@@ -8,7 +8,8 @@ function stageGuide() {
 - "en_seguimiento": el lead dejó de responder y estás retomando (normalmente la pone el sistema).
 - "calificado": cumple el filtro definido en el FLUJO y mostró interés real.
 - "en_conversion": dio el paso clave (agendó, pidió el enlace, aceptó la propuesta).
-- "descartado": no cumple el filtro, no le interesa, o es spam.`;
+- "descartado": no cumple el filtro, no le interesa, o es spam.
+(Las etiquetas "agendado" y "agenda_cancelada" las pone el sistema automáticamente con el calendario: NO las uses tú; si el lead dice que ya reservó, usa "en_conversion".)`;
 }
 
 function styleRules(account) {
@@ -87,7 +88,7 @@ export function parseAgentJson(content, account) {
     keep.push(mensajes.slice(max - 1).join(' '));
     mensajes = keep;
   }
-  const etiqueta = STAGE_KEYS.includes(parsed.etiqueta) ? parsed.etiqueta : null;
+  const etiqueta = STAGE_KEYS.includes(parsed.etiqueta) && !SYSTEM_STAGES.includes(parsed.etiqueta) ? parsed.etiqueta : null;
   const memoria = parsed.memoria && typeof parsed.memoria === 'object' && !Array.isArray(parsed.memoria) ? parsed.memoria : {};
   return {
     mensajes,
@@ -109,9 +110,10 @@ export async function generateReply({ account, provider, conversation, history, 
         : '(continúa la conversación de forma natural)',
     });
   }
-  const content = await chatCompletion({
+  const modelUsed = account.model || provider.default_model;
+  const { content, usage } = await chatCompletion({
     provider,
-    model: account.model || provider.default_model,
+    model: modelUsed,
     temperature: account.temperature ?? 0.8,
     messages,
     maxTokens: 900,
@@ -119,5 +121,5 @@ export async function generateReply({ account, provider, conversation, history, 
   });
   const parsed = parseAgentJson(content, account);
   if (!parsed.mensajes.length) throw new Error('el agente no generó mensajes');
-  return parsed;
+  return { ...parsed, usage, model: modelUsed };
 }

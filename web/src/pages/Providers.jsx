@@ -3,7 +3,7 @@ import { Plus, Plug, Trash2, FlaskConical } from 'lucide-react';
 import { api } from '../api.js';
 import { Card, SectionTitle, Button, Input, Select, Banner, EmptyState } from '../components/ui.jsx';
 
-const EMPTY = { name: '', base_url: '', api_key: '', default_model: '', notes: '' };
+const EMPTY = { name: '', base_url: '', api_key: '', default_model: '', notes: '', price_in: '', price_out: '' };
 
 export default function Providers() {
   const [providers, setProviders] = useState([]);
@@ -73,6 +73,10 @@ export default function Providers() {
               <Input label="API key" type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editingId ? '(dejar vacío para no cambiarla)' : 'sk-…'} required={!editingId} />
               <Input label="Modelo por defecto" value={form.default_model} onChange={(e) => setForm({ ...form, default_model: e.target.value })} placeholder="google/gemini-2.5-flash-lite" />
             </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Input label="Precio entrada ($ por 1M tokens)" type="number" step="0.001" min="0" value={form.price_in} onChange={(e) => setForm({ ...form, price_in: e.target.value })} hint="Opcional: para estimar el gasto. OpenRouter reporta el coste real solo." />
+              <Input label="Precio salida ($ por 1M tokens)" type="number" step="0.001" min="0" value={form.price_out} onChange={(e) => setForm({ ...form, price_out: e.target.value })} />
+            </div>
             <div className="flex gap-2">
               <Button type="submit" loading={saving}>{editingId ? 'Guardar cambios' : 'Añadir'}</Button>
               <Button variant="ghost" type="button" onClick={() => { setForm(null); setEditingId(null); }}>Cancelar</Button>
@@ -95,7 +99,7 @@ export default function Providers() {
               <div className="flex items-start justify-between">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600"><Plug size={18} /></div>
                 <div className="flex items-center gap-1">
-                  <Button variant="ghost" className="!px-2.5 !py-1.5 text-xs" onClick={() => { setEditingId(p.id); setForm({ name: p.name, base_url: p.base_url, api_key: '', default_model: p.default_model, notes: p.notes }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+                  <Button variant="ghost" className="!px-2.5 !py-1.5 text-xs" onClick={() => { setEditingId(p.id); setForm({ name: p.name, base_url: p.base_url, api_key: '', default_model: p.default_model, notes: p.notes, price_in: p.price_in || '', price_out: p.price_out || '' }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
                     Editar
                   </Button>
                   <button

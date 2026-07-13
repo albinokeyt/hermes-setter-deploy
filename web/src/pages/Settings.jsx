@@ -63,6 +63,13 @@ export default function SettingsPage() {
           </Card>
 
           <Card className="space-y-4 p-6">
+            <h3 className="text-sm font-bold text-slate-800">Portal para clientes (menú de GHL)</h3>
+            <p className="text-xs text-slate-500">
+              Cada cuenta tiene su <b>propio</b> enlace de portal (por seguridad, uno por subcuenta). Lo encuentras en <b>Cuentas → [la cuenta] → Conexión GHL</b>. Se pega en GHL como <b>Custom Menu Link</b> de esa subcuenta; el cliente entra directo a SU panel sin contraseña.
+            </p>
+          </Card>
+
+          <Card className="space-y-4 p-6">
             <h3 className="text-sm font-bold text-slate-800">URLs para pegar en la app de GHL</h3>
             <CopyField label="Redirect URL (OAuth)" value={cfg.redirect_url} />
             <CopyField label="Webhook URL (eventos de mensajes)" value={cfg.marketplace_webhook_url} />

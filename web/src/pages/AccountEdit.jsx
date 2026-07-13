@@ -3,19 +3,23 @@ import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Plus, Trash2, ExternalLink, Sparkles } from 'lucide-react';
 import { api } from '../api.js';
 import { CHANNELS, CHANNEL_LABEL } from '../stages.js';
+import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 
 const TABS = [
   { key: 'prompt', label: 'Prompt' },
-  { key: 'ia', label: 'IA' },
+  { key: 'ia', label: 'IA', adminOnly: true },
   { key: 'comportamiento', label: 'Comportamiento' },
   { key: 'seguimientos', label: 'Seguimientos' },
-  { key: 'conexion', label: 'Conexión GHL' },
+  { key: 'conexion', label: 'Conexión GHL', adminOnly: true },
 ];
 
 export default function AccountEdit() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const me = useMe();
+  const isAdmin = me?.role === 'admin';
+  const tabs = TABS.filter((t) => isAdmin || !t.adminOnly);
   const [searchParams] = useSearchParams();
   const [tab, setTab] = useState(searchParams.get('conectada') ? 'conexion' : 'prompt');
   const [acc, setAcc] = useState(null);
@@ -64,12 +68,14 @@ export default function AccountEdit() {
 
   return (
     <div>
-      <Link to="/cuentas" className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-800">
-        <ArrowLeft size={15} /> Cuentas
-      </Link>
+      {isAdmin && (
+        <Link to="/cuentas" className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-800">
+          <ArrowLeft size={15} /> Cuentas
+        </Link>
+      )}
       <SectionTitle
-        title={acc.name}
-        subtitle={acc.location_id ? `Subcuenta GHL: ${acc.location_id}` : 'Todavía sin subcuenta de GHL conectada'}
+        title={isAdmin ? acc.name : `Mi agente · ${acc.name}`}
+        subtitle={isAdmin ? (acc.location_id ? `Subcuenta GHL: ${acc.location_id}` : 'Todavía sin subcuenta de GHL conectada') : 'El prompt, comportamiento y seguimientos de tu setter'}
         actions={
           <div className="flex items-center gap-3">
             <Toggle checked={acc.bot_enabled} onChange={(v) => set({ bot_enabled: v })} label={acc.bot_enabled ? 'Bot activo' : 'Bot apagado'} />
@@ -90,7 +96,7 @@ export default function AccountEdit() {
       )}
 
       <div className="mb-5 flex gap-1 rounded-2xl border border-slate-200 bg-white p-1.5 w-fit">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
@@ -188,7 +194,7 @@ export default function AccountEdit() {
               hint='Si el lead escribe "hola" y luego "cómo estás", el bot espera este tiempo de silencio y responde a TODO junto, como una persona.'
             />
           </div>
-          <div>
+          {isAdmin && <div>
             <span className="mb-2 block text-sm font-medium text-slate-700">Canales activos</span>
             <div className="flex flex-wrap gap-2">
               {CHANNELS.map((ch) => {
@@ -207,7 +213,7 @@ export default function AccountEdit() {
                 );
               })}
             </div>
-          </div>
+          </div>}
           <div className="space-y-4 border-t border-slate-100 pt-5">
             <Toggle
               checked={!(activeHours.always !== false)}
@@ -240,7 +246,7 @@ export default function AccountEdit() {
               />
             )}
           </div>
-          <div className="space-y-4 border-t border-slate-100 pt-5">
+          {isAdmin && <div className="space-y-4 border-t border-slate-100 pt-5">
             <Toggle
               checked={acc.auto_handoff}
               onChange={(v) => set({ auto_handoff: v })}
@@ -253,7 +259,7 @@ export default function AccountEdit() {
               label="Sincronizar etiquetas con GHL"
               description='Añade tags "setter-calificado", "setter-descartado", etc. al contacto en GHL'
             />
-          </div>
+          </div>}
         </Card>
       )}
 
@@ -320,6 +326,11 @@ export default function AccountEdit() {
                   label="Plan B — webhook por workflow (recepción alternativa)"
                   value={acc.webhook_url || ''}
                   hint='Si el webhook de la app de marketplace no entrega mensajes, crea en la subcuenta un workflow: Trigger "Customer Replied" → Action "Custom Webhook" (POST) a esta URL con customData: contact_id = {{contact.id}}, message = {{message.body}}, channel = {{message.type}}. Desactívalo cuando el webhook de la app funcione (si no, los mensajes entrarían duplicados).'
+                />
+                <CopyField
+                  label="Enlace del portal para el cliente (Custom Menu Link de GHL)"
+                  value={acc.portal_url || ''}
+                  hint="Pégalo en GHL como Custom Menu Link de ESTA subcuenta. El cliente entra directo a su panel (Mi agente, conversaciones, dashboard) sin contraseña. Es único por cuenta: no sirve para otra."
                 />
               </div>
             ) : (

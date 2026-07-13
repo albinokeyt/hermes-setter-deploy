@@ -17,6 +17,8 @@ import playgroundRoutes from './routes/playground.js';
 import settingsRoutes from './routes/settings.js';
 import ghlOauthRoutes from './routes/ghlOauth.js';
 import webhookRoutes from './routes/webhooks.js';
+import userRoutes from './routes/users.js';
+import portalRoutes from './routes/portal.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -50,6 +52,8 @@ async function main() {
   await app.register(settingsRoutes);
   await app.register(ghlOauthRoutes);
   await app.register(webhookRoutes);
+  await app.register(userRoutes);
+  await app.register(portalRoutes);
 
   // frontend compilado (SPA)
   const webDist = path.join(__dirname, '..', 'web', 'dist');

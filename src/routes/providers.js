@@ -1,5 +1,6 @@
 import { q, one } from '../db.js';
 import { testProvider } from '../services/llm.js';
+import { requireAdmin } from '../lib/session.js';
 
 const PRESETS = [
   { name: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1', default_model: 'google/gemini-2.5-flash-lite', notes: 'Un solo API key para cientos de modelos' },
@@ -15,6 +16,11 @@ function mask(row) {
 }
 
 export default async function providerRoutes(app) {
+  // las APIs de IA son solo de administración
+  app.addHook('preHandler', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return reply;
+  });
+
   app.get('/api/providers/presets', async () => PRESETS);
 
   app.get('/api/providers', async () => {
@@ -25,11 +31,11 @@ export default async function providerRoutes(app) {
   });
 
   app.post('/api/providers', async (req, reply) => {
-    const { name, base_url, api_key, default_model, notes } = req.body || {};
+    const { name, base_url, api_key, default_model, notes, price_in, price_out } = req.body || {};
     if (!name || !base_url || !api_key) return reply.code(400).send({ error: 'Faltan nombre, URL base o API key' });
     const row = await one(
-      `INSERT INTO providers (name, base_url, api_key, default_model, notes) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [name, String(base_url).replace(/\/+$/, ''), api_key, default_model || '', notes || '']
+      `INSERT INTO providers (name, base_url, api_key, default_model, notes, price_in, price_out) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [name, String(base_url).replace(/\/+$/, ''), api_key, default_model || '', notes || '', price_in || null, price_out || null]
     );
     return mask(row);
   });
@@ -39,13 +45,15 @@ export default async function providerRoutes(app) {
     if (!existing) return reply.code(404).send({ error: 'No existe' });
     const b = req.body || {};
     const row = await one(
-      `UPDATE providers SET name=$1, base_url=$2, api_key=$3, default_model=$4, notes=$5 WHERE id=$6 RETURNING *`,
+      `UPDATE providers SET name=$1, base_url=$2, api_key=$3, default_model=$4, notes=$5, price_in=$6, price_out=$7 WHERE id=$8 RETURNING *`,
       [
         b.name || existing.name,
         String(b.base_url || existing.base_url).replace(/\/+$/, ''),
         b.api_key ? b.api_key : existing.api_key,
         b.default_model ?? existing.default_model,
         b.notes ?? existing.notes,
+        b.price_in !== undefined ? b.price_in || null : existing.price_in,
+        b.price_out !== undefined ? b.price_out || null : existing.price_out,
         existing.id,
       ]
     );

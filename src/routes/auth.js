@@ -1,6 +1,5 @@
 import { one, q } from '../db.js';
-import { verifyPassword, hashPassword, createSession, destroySession } from '../lib/session.js';
-import { config } from '../config.js';
+import { verifyPassword, hashPassword, createSession, destroySession, setSessionCookie } from '../lib/session.js';
 
 export default async function authRoutes(app) {
   app.post('/api/auth/login', async (req, reply) => {
@@ -9,15 +8,14 @@ export default async function authRoutes(app) {
     if (!user || !verifyPassword(String(password || ''), user.password_hash)) {
       return reply.code(401).send({ error: 'Usuario o contraseña incorrectos' });
     }
-    const token = await createSession(user.id);
-    reply.setCookie('hermes_session', token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: config.isProd,
-      maxAge: 60 * 60 * 24 * 7,
+    const token = await createSession({
+      userId: user.id,
+      role: user.role || 'admin',
+      accountId: user.account_id || null,
+      portal: false,
     });
-    return { ok: true, username: user.username };
+    setSessionCookie(reply, token);
+    return { ok: true, username: user.username, role: user.role || 'admin' };
   });
 
   app.post('/api/auth/logout', async (req, reply) => {
@@ -27,11 +25,26 @@ export default async function authRoutes(app) {
   });
 
   app.get('/api/auth/me', async (req) => {
-    const user = await one(`SELECT id, username, created_at FROM users WHERE id = $1`, [req.userId]);
-    return user || {};
+    const base = {
+      role: req.auth?.role || 'user',
+      portal: Boolean(req.auth?.portal),
+      account_id: req.auth?.accountId || null,
+      account_name: null,
+    };
+    if (base.account_id) {
+      const acc = await one(`SELECT name FROM accounts WHERE id = $1`, [base.account_id]);
+      base.account_name = acc?.name || null;
+    }
+    if (req.auth?.portal) {
+      const pu = req.auth.portalUserId ? await one(`SELECT name, email FROM portal_users WHERE id = $1`, [req.auth.portalUserId]) : null;
+      return { ...base, username: pu?.name || pu?.email || 'Usuario GHL' };
+    }
+    const user = await one(`SELECT id, username, role, account_id, created_at FROM users WHERE id = $1`, [req.userId]);
+    return { ...base, ...(user || {}), account_id: base.account_id, role: base.role };
   });
 
   app.put('/api/auth/me', async (req, reply) => {
+    if (req.auth?.portal) return reply.code(403).send({ error: 'El acceso por enlace de GHL no gestiona contraseñas' });
     const { current_password, username, password } = req.body || {};
     const user = await one(`SELECT * FROM users WHERE id = $1`, [req.userId]);
     if (!user || !verifyPassword(String(current_password || ''), user.password_hash)) {

@@ -2,7 +2,9 @@ import crypto from 'node:crypto';
 import { one } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
-import { handleInbound, handleOutboundEvent, accountByLocation, logEvent } from '../services/pipeline.js';
+import { handleInbound, handleOutboundEvent, handleAppointmentEvent, accountByLocation, logEvent } from '../services/pipeline.js';
+
+const APPOINTMENT_TYPES = ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'];
 
 function tryVerify(algo, pem, raw, sigB64) {
   try {
@@ -67,13 +69,17 @@ export default async function webhookRoutes(app) {
       }
 
       const type = p.type;
-      if (type !== 'InboundMessage' && type !== 'OutboundMessage') {
+      if (type !== 'InboundMessage' && type !== 'OutboundMessage' && !APPOINTMENT_TYPES.includes(type)) {
         await logEvent('evento_otro', { type, locationId: p.locationId });
         return;
       }
       const account = await accountByLocation(p.locationId);
       if (!account) {
         await logEvent('subcuenta_desconocida', { type, locationId: p.locationId, messageType: p.messageType });
+        return;
+      }
+      if (APPOINTMENT_TYPES.includes(type)) {
+        await handleAppointmentEvent(account, type, p);
         return;
       }
       await logEvent(type === 'InboundMessage' ? 'mensaje_recibido' : 'mensaje_saliente', {

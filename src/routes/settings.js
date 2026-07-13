@@ -1,7 +1,12 @@
 import { q, getSetting, setSetting } from '../db.js';
 import { config, OAUTH_SCOPES } from '../config.js';
+import { requireAdmin } from '../lib/session.js';
 
 export default async function settingsRoutes(app) {
+  app.addHook('preHandler', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return reply;
+  });
+
   app.get('/api/settings/ghl', async () => {
     const app_ = (await getSetting('ghl_app', {})) || {};
     return {

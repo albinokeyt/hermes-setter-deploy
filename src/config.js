@@ -40,8 +40,13 @@ export const STAGES = [
   { key: 'en_seguimiento', label: 'En seguimiento', color: '#f59e0b' },
   { key: 'calificado', label: 'Calificado', color: '#8b5cf6' },
   { key: 'en_conversion', label: 'En conversión', color: '#10b981' },
+  { key: 'agendado', label: 'Agendado', color: '#14b8a6' },
+  { key: 'agenda_cancelada', label: 'Agenda cancelada', color: '#fb7185' },
   { key: 'descartado', label: 'Descartado', color: '#ef4444' },
 ];
+
+// Etiquetas que pone el sistema con los webhooks del calendario, nunca la IA.
+export const SYSTEM_STAGES = ['agendado', 'agenda_cancelada'];
 
 export const STAGE_KEYS = STAGES.map((s) => s.key);
 
@@ -56,4 +61,5 @@ export const OAUTH_SCOPES = [
   'contacts.readonly',
   'contacts.write',
   'locations.readonly',
+  'calendars/events.readonly',
 ];

@@ -56,10 +56,10 @@ La app privada se crea **una sola vez** y sirve para todas tus subcuentas. No pa
    - Distribution: **Sub-Account**
 3. **Scopes** (exactamente estos):
    ```
-   conversations/message.readonly conversations/message.write conversations.readonly contacts.readonly contacts.write locations.readonly
+   conversations/message.readonly conversations/message.write conversations.readonly contacts.readonly contacts.write locations.readonly calendars/events.readonly
    ```
 4. **Redirect URL**: `https://TU-APP/api/oauth/callback`
-5. **Webhooks**: URL `https://TU-APP/api/webhooks/inbox` y activa los eventos **InboundMessage** y **OutboundMessage**.
+5. **Webhooks**: URL `https://TU-APP/api/webhooks/inbox` y activa los eventos **InboundMessage**, **OutboundMessage**, **AppointmentCreate**, **AppointmentUpdate** y **AppointmentDelete** (los tres últimos alimentan las etiquetas Agendado / Agenda cancelada y la gráfica de agendas).
 6. Genera **Client ID** y **Client Secret** y pégalos en Hermes → **Configuración**.
 7. En Hermes → **Cuentas** → tu cuenta → pestaña **Conexión GHL** → **Conectar subcuenta**: eliges la subcuenta del cliente y listo.
 
