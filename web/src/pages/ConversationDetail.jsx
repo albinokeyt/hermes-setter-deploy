@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Send, Bot, User, Clock, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Send, Bot, User, Clock, ExternalLink, Ban, X } from 'lucide-react';
 import { api, timeAgo, ghlContactUrl } from '../api.js';
 import { STAGES, CHANNEL_LABEL, stageByKey } from '../stages.js';
 import { Card, Button, StagePill, Toggle, Select, Banner } from '../components/ui.jsx';
@@ -34,6 +34,8 @@ export default function ConversationDetail() {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [excludeOpen, setExcludeOpen] = useState(false);
+  const [excluding, setExcluding] = useState(false);
   const bottomRef = useRef(null);
 
   const load = () => api.get(`/api/conversations/${id}`).then(setConv).catch((e) => setError(e.message));
@@ -43,6 +45,20 @@ export default function ConversationDetail() {
   if (!conv) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 
   const update = async (patch) => { await api.put(`/api/conversations/${id}`, patch); load(); };
+
+  const toggleExclude = async (exclude) => {
+    setExcluding(true);
+    setError('');
+    try {
+      await api.post(`/api/conversations/${id}/${exclude ? 'exclude' : 'include'}`);
+      setExcludeOpen(false);
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setExcluding(false);
+    }
+  };
 
   const sendManual = async (e) => {
     e.preventDefault();
@@ -94,6 +110,17 @@ export default function ConversationDetail() {
                   Ir a GHL <ExternalLink size={12} />
                 </a>
               )}
+              <button
+                onClick={() => setExcludeOpen(true)}
+                title={conv.paused_by === 'excluido' ? 'Este contacto está fuera de las IAs' : 'Sacar a este contacto de las IAs'}
+                className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-semibold transition ${
+                  conv.paused_by === 'excluido'
+                    ? 'border-red-200 bg-red-50 text-red-600'
+                    : 'border-slate-200 text-slate-400 hover:border-red-300 hover:text-red-500'
+                }`}
+              >
+                <Ban size={13} /> {conv.paused_by === 'excluido' ? 'Sin IA' : 'IA'}
+              </button>
               <StagePill stage={conv.stage} />
             </div>
           </div>
@@ -170,6 +197,32 @@ export default function ConversationDetail() {
           </Card>
         </div>
       </div>
+
+      {excludeOpen && (() => {
+        const excluded = conv.paused_by === 'excluido';
+        return (
+          <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setExcludeOpen(false)}>
+            <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Ban size={16} className="text-red-500" /> {excluded ? 'Volver a las IAs' : 'Sacar de las IAs'}</h3>
+                <button onClick={() => setExcludeOpen(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
+              </div>
+              {excluded ? (
+                <p className="text-sm text-slate-600">Se quitará la etiqueta de exclusión de <b>{conv.lead_name || 'este contacto'}</b> en GHL y los setters podrán volver a responderle.</p>
+              ) : (
+                <p className="text-sm text-slate-600">Le pondremos una etiqueta en GHL a <b>{conv.lead_name || 'este contacto'}</b> para que <b>ningún setter</b> le responda — así el contacto queda fuera de la sección de IAs. El bot se pausa al instante.</p>
+              )}
+              {error && <div className="mt-3"><Banner tone="error">{error}</Banner></div>}
+              <div className="mt-4 flex justify-end gap-2">
+                <Button variant="ghost" onClick={() => setExcludeOpen(false)}>Cancelar</Button>
+                {excluded
+                  ? <Button onClick={() => toggleExclude(false)} loading={excluding}>Volver a incluir</Button>
+                  : <Button variant="danger" onClick={() => toggleExclude(true)} loading={excluding}><Ban size={15} /> Sacar de las IAs</Button>}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

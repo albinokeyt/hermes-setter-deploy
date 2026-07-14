@@ -145,6 +145,7 @@ export function mergeSetter(account, s) {
     followups: Array.isArray(s.followups) && s.followups.length ? s.followups : account.followups,
     required_tags: s.required_tags,
     required_tags_mode: s.required_tags_mode,
+    excluded_tags: s.excluded_tags, // filtro negativo del setter (exclude_tag sigue siendo de la conexión)
   };
 }
 
@@ -179,13 +180,20 @@ async function selectSetter(account, conv) {
   if (!setters.length) return { setter: null, hasSetters: true };
   if (setters.length === 1) return { setter: setters[0], hasSetters: true };
   const tags = await getContactTags(account, conv);
-  const hasReq = (s) => Array.isArray(s.required_tags) && s.required_tags.length > 0;
-  // si no pudimos leer las etiquetas y HAY setters que dependen de ellas, aplazamos:
-  // no fijamos una asignación permanente equivocada; se reintenta en el próximo mensaje.
-  if (tags === null && setters.some(hasReq)) return { setter: null, hasSetters: true, defer: true };
-  let pool = setters.filter((s) => hasReq(s) && setterMatches(s, tags));
-  if (!pool.length) pool = setters.filter((s) => !hasReq(s));
-  if (!pool.length) pool = setters.filter((s) => s.is_default);
+  const norm = (a) => (Array.isArray(a) ? a.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : []);
+  const hasReq = (s) => norm(s.required_tags).length > 0;
+  const hasExcl = (s) => norm(s.excluded_tags).length > 0;
+  const generalExclude = String(account.exclude_tag || '').trim().toLowerCase();
+  // si dependemos de etiquetas y no se pudieron leer, aplazamos (no fijar asignación equivocada).
+  if (tags === null && (generalExclude || setters.some((s) => hasReq(s) || hasExcl(s)))) return { setter: null, hasSetters: true, defer: true };
+  // exclusión general de la conexión → ningún setter responde
+  if (generalExclude && tags && tags.includes(generalExclude)) return { setter: null, hasSetters: true };
+  // fuera los setters que excluyen a este lead por sus propias etiquetas
+  const cands = setters.filter((s) => !(hasExcl(s) && tags && norm(s.excluded_tags).some((t) => tags.includes(t))));
+  if (!cands.length) return { setter: null, hasSetters: true };
+  let pool = cands.filter((s) => hasReq(s) && setterMatches(s, tags));
+  if (!pool.length) pool = cands.filter((s) => !hasReq(s));
+  if (!pool.length) pool = cands.filter((s) => s.is_default);
   return { setter: pool.length ? pickByWeight(pool) : null, hasSetters: true };
 }
 
@@ -211,6 +219,11 @@ export async function cancelBotJobs(conversationId) {
   await redis.del(debKey(conversationId));
   await redis.del(fuKey(conversationId));
   await redis.del(reactKey(conversationId));
+}
+
+// Invalida la caché de etiquetas del contacto (p. ej. tras excluir/incluir manualmente).
+export async function invalidateContactTags(accountId, contactId) {
+  await redis.del(`ctags:${accountId}:${contactId}`);
 }
 
 // Registra tokens y coste de cada llamada al LLM. OpenRouter devuelve el coste
@@ -564,14 +577,19 @@ async function getContactTags(account, conv) {
 // El bot solo responde si pasa el modo test Y el filtro de etiquetas requeridas.
 async function allowedByTags(account, conv) {
   const needTest = Boolean(account.test_mode);
-  const required = Array.isArray(account.required_tags)
-    ? account.required_tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean)
-    : [];
-  if (!needTest && !required.length) return true; // sin filtros de etiqueta
+  const norm = (arr) => (Array.isArray(arr) ? arr.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : []);
+  const required = norm(account.required_tags);
+  const excluded = norm(account.excluded_tags); // del setter (via merge)
+  const generalExclude = String(account.exclude_tag || '').trim().toLowerCase(); // de la conexión
+  if (!needTest && !required.length && !excluded.length && !generalExclude) return true; // sin filtros
   if (!(account.location_id || account.pit_token)) return true; // sin GHL no podemos consultar etiquetas
 
   const tags = await getContactTags(account, conv);
   if (tags === null) return false; // error consultando → no respondemos (seguro)
+
+  // Exclusión: si el contacto tiene la etiqueta de exclusión general, o una del setter, no se responde.
+  if (generalExclude && tags.includes(generalExclude)) return false;
+  if (excluded.length && excluded.some((t) => tags.includes(t))) return false;
 
   if (needTest) {
     const tt = String(account.test_tag || 'hermes-test').trim().toLowerCase();

@@ -29,7 +29,7 @@ export default function SetterEdit() {
   const [saving, setSaving] = useState(false);
   const [showTags, setShowTags] = useState(false);
 
-  const load = () => api.get(`/api/setters/${id}`).then((r) => { setS(r); setShowTags((r.required_tags || []).length > 0); }).catch((e) => setError(e.message));
+  const load = () => api.get(`/api/setters/${id}`).then((r) => { setS(r); setShowTags((r.required_tags || []).length > 0 || (r.excluded_tags || []).length > 0); }).catch((e) => setError(e.message));
   useEffect(() => { load(); api.get('/api/providers').then(setProviders).catch(() => {}); }, [id]);
 
   if (!s) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
@@ -138,7 +138,7 @@ export default function SetterEdit() {
 
           <div className="border-t border-slate-100 pt-5">
             <button type="button" onClick={() => setShowTags((v) => !v)} className="mb-2 text-sm font-semibold text-violet-700 hover:underline">
-              {showTags ? '▾' : '▸'} 🏷️ Función avanzada: responder solo a leads con ciertas etiquetas
+              {showTags ? '▾' : '▸'} 🏷️ Función avanzada: filtrar por etiquetas (responder solo / no responder)
             </button>
             {showTags && (
               <div className="space-y-3">
@@ -170,6 +170,29 @@ export default function SetterEdit() {
                       }
                     }}
                     className="min-w-[180px] flex-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-violet-400" />
+                </div>
+
+                <div className="border-t border-slate-100 pt-3">
+                  <p className="mb-2 text-xs text-slate-400">🚫 <b>NO</b> responder a leads con estas etiquetas (este setter los ignora aunque casen por lo de arriba):</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(s.excluded_tags || []).map((tg) => (
+                      <span key={tg} className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-600">
+                        {tg}
+                        <button type="button" onClick={() => set({ excluded_tags: s.excluded_tags.filter((x) => x !== tg) })} className="text-red-400 hover:text-red-700">×</button>
+                      </span>
+                    ))}
+                    <input placeholder="etiqueta a excluir y Enter"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const v = e.target.value.trim();
+                          const cur = s.excluded_tags || [];
+                          if (v && !cur.includes(v)) set({ excluded_tags: [...cur, v] });
+                          e.target.value = '';
+                        }
+                      }}
+                      className="min-w-[180px] flex-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-red-400" />
+                  </div>
                 </div>
               </div>
             )}

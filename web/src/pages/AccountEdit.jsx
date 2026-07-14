@@ -179,6 +179,15 @@ export default function AccountEdit() {
               <Input label="Etiqueta de prueba (tag de GHL)" value={acc.test_tag || ''} onChange={(e) => set({ test_tag: e.target.value })} placeholder="hermes-test" hint="Añade este tag a tu contacto en GHL y chatéale: solo los contactos con el tag reciben respuesta." />
             )}
           </div>
+          <div className="border-t border-slate-100 pt-5">
+            <Input
+              label="🚫 Etiqueta para excluir de las IAs"
+              value={acc.exclude_tag || ''}
+              onChange={(e) => set({ exclude_tag: e.target.value.trim() })}
+              placeholder="sin-ia"
+              hint="Lo contrario de «responder solo a»: si un contacto de GHL tiene esta etiqueta, NINGÚN setter de esta conexión le responde. Vacío = sin exclusión (al sacar a alguien desde un chat se usa «sin-ia» por defecto)."
+            />
+          </div>
           <div className="space-y-4 border-t border-slate-100 pt-5">
             <Toggle checked={acc.auto_handoff} onChange={(v) => set({ auto_handoff: v })} label="Pausar bot si un humano interviene" description="Si alguien responde manual desde GHL, el bot se aparta en ese chat" />
             {acc.auto_handoff && (

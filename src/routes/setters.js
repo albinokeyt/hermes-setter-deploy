@@ -4,16 +4,16 @@ import { requireAdmin, scopedAccountId } from '../lib/session.js';
 // El admin edita todo; un usuario del portal solo el cerebro de su setter (no el proveedor/modelo de IA).
 // Visión/audio y calendarios son de la CONEXIÓN (se usan antes de saber el setter), no del setter.
 const ADMIN_EDITABLE = [
-  'name', 'bot_enabled', 'accepts_leads', 'weight', 'required_tags', 'required_tags_mode',
+  'name', 'bot_enabled', 'accepts_leads', 'weight', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups',
 ];
 const USER_EDITABLE = [
-  'name', 'bot_enabled', 'required_tags', 'required_tags_mode',
+  'name', 'bot_enabled', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups',
 ];
-const JSON_FIELDS = new Set(['required_tags', 'followups']);
+const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags']);
 
 async function loadSetterScoped(req, setterId) {
   const setter = await one(`SELECT * FROM setters WHERE id = $1`, [setterId]);

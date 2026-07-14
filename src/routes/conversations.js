@@ -1,6 +1,6 @@
 import { q, one } from '../db.js';
 import { STAGES, STAGE_KEYS } from '../config.js';
-import { applyStage, cancelBotJobs } from '../services/pipeline.js';
+import { applyStage, cancelBotJobs, invalidateContactTags } from '../services/pipeline.js';
 import * as ghl from '../services/ghl.js';
 import { scopedAccountId } from '../lib/session.js';
 
@@ -111,6 +111,40 @@ export default async function conversationRoutes(app) {
   });
 
   // conteos por etiqueta (rápido, para las cabeceras del tablero con muchos leads)
+  // Sacar/volver a meter un contacto en las IAs (etiqueta de exclusión general en GHL).
+  app.post('/api/conversations/:id/exclude', async (req, reply) => {
+    const conv = await loadScopedConv(req, reply);
+    if (!conv) return;
+    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [conv.account_id]);
+    // usa la etiqueta configurada; si no hay, define 'sin-ia' y la deja fijada en la conexión
+    let tag = String(account.exclude_tag || '').trim();
+    if (!tag) { tag = 'sin-ia'; await q(`UPDATE accounts SET exclude_tag = $1 WHERE id = $2`, [tag, account.id]); }
+    try {
+      await ghl.addTags(account, conv.ghl_contact_id, [tag]);
+    } catch (err) {
+      return reply.code(502).send({ error: `No se pudo poner la etiqueta en GHL: ${err.message}` });
+    }
+    await q(`UPDATE conversations SET bot_paused = true, paused_by = 'excluido', updated_at = now() WHERE id = $1`, [conv.id]);
+    await cancelBotJobs(conv.id);
+    await invalidateContactTags(account.id, conv.ghl_contact_id);
+    return { ok: true, tag };
+  });
+
+  app.post('/api/conversations/:id/include', async (req, reply) => {
+    const conv = await loadScopedConv(req, reply);
+    if (!conv) return;
+    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [conv.account_id]);
+    const tag = String(account.exclude_tag || 'sin-ia').trim();
+    try {
+      await ghl.removeTags(account, conv.ghl_contact_id, [tag]);
+    } catch (err) {
+      return reply.code(502).send({ error: `No se pudo quitar la etiqueta en GHL: ${err.message}` });
+    }
+    await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
+    await invalidateContactTags(account.id, conv.ghl_contact_id);
+    return { ok: true };
+  });
+
   app.get('/api/kanban/counts', async (req) => {
     const scope = scopedAccountId(req) || req.query?.account_id;
     const rows = await q(
