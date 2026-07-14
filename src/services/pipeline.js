@@ -179,9 +179,51 @@ function pickByWeight(pool) {
 //   setter=<fila>          → ese setter atiende
 //   setter=null,hasSetters → la conexión SÍ tiene setters pero ninguno aplica → no responder
 //   setter=null,!hasSetters→ conexión sin setters (legacy) → usar config de la cuenta / campañas
+// ¿Un versus activo gobierna esta conexión para este lead? Devuelve el setter elegido
+// (repartido por peso entre los setters del versus que pertenecen a esta conexión),
+// { defer:true } si depende de etiquetas que no se pudieron leer, o null si no aplica.
+async function activeVersusFor(account, conv) {
+  const vlist = await q(
+    `SELECT v.id, v.audience, v.audience_tag
+     FROM versus v
+     WHERE v.status = 'active'
+       AND EXISTS (SELECT 1 FROM versus_setters vs JOIN setters s ON s.id = vs.setter_id
+                   WHERE vs.versus_id = v.id AND s.account_id = $1 AND s.bot_enabled)
+     ORDER BY v.id DESC`,
+    [account.id]
+  );
+  if (!vlist.length) return null;
+  let tags = null, fetched = false, unresolvedTag = false;
+  for (const v of vlist) {
+    let matches = false;
+    if (v.audience === 'all') {
+      matches = true;
+    } else {
+      if (!fetched) { tags = await getContactTags(account, conv); fetched = true; }
+      if (tags === null) { unresolvedTag = true; continue; } // no se pudo leer: probar los demás (un 'all' sí aplica)
+      matches = tags.includes(String(v.audience_tag || '').trim().toLowerCase());
+    }
+    if (!matches) continue;
+    const cands = await q(
+      `SELECT s.*, vs.weight AS vweight FROM versus_setters vs JOIN setters s ON s.id = vs.setter_id
+       WHERE vs.versus_id = $1 AND s.account_id = $2 AND s.bot_enabled ORDER BY s.id`,
+      [v.id, account.id]
+    );
+    if (!cands.length) continue;
+    return { versusId: v.id, setter: pickByWeight(cands.map((c) => ({ ...c, weight: c.vweight }))) };
+  }
+  // ninguno casó, pero había un versus por etiqueta que no pudimos evaluar → aplazar
+  if (unresolvedTag) return { defer: true };
+  return null;
+}
+
 async function selectSetter(account, conv) {
   const all = await q(`SELECT * FROM setters WHERE account_id = $1 ORDER BY id`, [account.id]);
   if (!all.length) return { setter: null, hasSetters: false };
+  // Un versus activo manda sobre el enrutado normal (ignora las etiquetas del setter).
+  const vr = await activeVersusFor(account, conv);
+  if (vr?.defer) return { setter: null, hasSetters: true, defer: true };
+  if (vr?.setter) return { setter: vr.setter, hasSetters: true, versusId: vr.versusId };
   // candidatos a leads NUEVOS: encendidos y que aceptan leads (accepts_leads)
   const setters = all.filter((s) => s.bot_enabled && s.accepts_leads !== false);
   if (!setters.length) return { setter: null, hasSetters: true };
@@ -293,12 +335,13 @@ export async function handleInbound(account, evt) {
   // aplica a este lead, NO se responde (respetar el filtro de etiquetas del setter).
   let respond = true;
   if (!conv.setter_id) {
-    const { setter, hasSetters, defer } = await selectSetter(account, conv);
+    const { setter, hasSetters, defer, versusId } = await selectSetter(account, conv);
     if (setter) {
-      await q(`UPDATE conversations SET setter_id = $1 WHERE id = $2`, [setter.id, conv.id]);
+      await q(`UPDATE conversations SET setter_id = $1, versus_id = $2 WHERE id = $3`, [setter.id, versusId || null, conv.id]);
       conv.setter_id = setter.id;
+      conv.versus_id = versusId || null;
       account = mergeSetter(account, setter);
-      await logEvent('lead_asignado_setter', { conv: conv.id, setter: setter.id, nombre: setter.name });
+      await logEvent('lead_asignado_setter', { conv: conv.id, setter: setter.id, nombre: setter.name, versus: versusId || null });
     } else if (defer) {
       respond = false; // no se pudieron leer etiquetas: no fijamos setter, se reintenta luego
     } else if (hasSetters) {
@@ -600,8 +643,10 @@ async function getContactTags(account, conv) {
 async function allowedByTags(account, conv) {
   const needTest = Boolean(account.test_mode);
   const norm = (arr) => (Array.isArray(arr) ? arr.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : []);
-  const required = norm(account.required_tags);
-  const excluded = norm(account.excluded_tags); // del setter (via merge)
+  // En un versus, las etiquetas propias del setter NO aplican (el versus gobierna el reparto).
+  const inVersus = Boolean(conv.versus_id);
+  const required = inVersus ? [] : norm(account.required_tags);
+  const excluded = inVersus ? [] : norm(account.excluded_tags); // del setter (via merge)
   const generalExclude = String(account.exclude_tag || '').trim().toLowerCase(); // de la conexión
   if (!needTest && !required.length && !excluded.length && !generalExclude) return true; // sin filtros
   if (!(account.location_id || account.pit_token)) return true; // sin GHL no podemos consultar etiquetas

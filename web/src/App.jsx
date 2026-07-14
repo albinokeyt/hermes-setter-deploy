@@ -9,6 +9,8 @@ import Accounts from './pages/Accounts.jsx';
 import AccountEdit from './pages/AccountEdit.jsx';
 import SetterEdit from './pages/SetterEdit.jsx';
 import Providers from './pages/Providers.jsx';
+import Versus from './pages/Versus.jsx';
+import VersusDetail from './pages/VersusDetail.jsx';
 import Playground from './pages/Playground.jsx';
 import Archive from './pages/Archive.jsx';
 import SettingsPage from './pages/Settings.jsx';
@@ -29,7 +31,9 @@ export default function App() {
         <Route path="/cuentas/:id" element={<AccountEdit />} />
         <Route path="/setters/:id" element={<SetterEdit />} />
         <Route path="/apis" element={<Providers />} />
-        <Route path="/competencias" element={<Navigate to="/cuentas" replace />} />
+        <Route path="/versus" element={<Versus />} />
+        <Route path="/versus/:id" element={<VersusDetail />} />
+        <Route path="/competencias" element={<Navigate to="/versus" replace />} />
         <Route path="/prueba" element={<Playground />} />
         <Route path="/archivo" element={<Archive />} />
         <Route path="/configuracion" element={<SettingsPage />} />

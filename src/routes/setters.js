@@ -32,7 +32,7 @@ export default async function setterRoutes(app) {
     const rows = await q(
       `SELECT s.*, p.name AS provider_name,
         COUNT(c.id)::int AS leads,
-        COUNT(c.id) FILTER (WHERE c.stage = 'calificado')::int AS calificados,
+        COUNT(c.id) FILTER (WHERE c.stage IN ('calificado', 'seguimiento_calificado'))::int AS calificados,
         COUNT(c.id) FILTER (WHERE c.stage = 'en_conversion')::int AS en_conversion,
         COUNT(c.id) FILTER (WHERE c.stage = 'agendado')::int AS agendados,
         COUNT(c.id) FILTER (WHERE c.stage = 'descartado')::int AS descartados,
