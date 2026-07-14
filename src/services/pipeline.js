@@ -90,8 +90,10 @@ async function processAttachments(account, attachments, context) {
       if (kind === 'audio' && account.audio_enabled && account.audio_provider_id) {
         const provider = await one(`SELECT * FROM providers WHERE id = $1`, [account.audio_provider_id]);
         if (provider) {
-          const r = await transcribeAudio({ provider, model: account.audio_model || provider.default_model, audioUrl: url });
+          const audioModel = account.audio_model || provider.default_model;
+          const r = await transcribeAudio({ provider, model: audioModel, audioUrl: url });
           parts.push(`[nota de voz del lead, transcrita: "${r.text}"]`);
+          await recordUsage(account.id, null, provider, audioModel, r.usage, 'audio');
           continue;
         }
       }
@@ -131,8 +133,9 @@ export async function cancelBotJobs(conversationId) {
 export async function recordUsage(accountId, conversationId, provider, model, usage, source, variantId = null) {
   if (!usage) return;
   try {
-    const pt = Number(usage.prompt_tokens) || 0;
-    const ct = Number(usage.completion_tokens) || 0;
+    // el audio reporta input_tokens/output_tokens; el chat prompt_tokens/completion_tokens
+    const pt = Number(usage.prompt_tokens ?? usage.input_tokens) || 0;
+    const ct = Number(usage.completion_tokens ?? usage.output_tokens) || 0;
     let cost = typeof usage.cost === 'number' ? usage.cost : null;
     if (cost === null && provider && (provider.price_in || provider.price_out)) {
       cost = (pt * Number(provider.price_in || 0) + ct * Number(provider.price_out || 0)) / 1_000_000;

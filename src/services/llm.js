@@ -174,5 +174,6 @@ export async function transcribeAudio({ provider, model, audioUrl }) {
   if (!res.ok) throw new LlmError(`audio ${provider.name} → ${res.status}: ${text.slice(0, 300)}`, res.status, data);
   const out = data?.text;
   if (!out || !String(out).trim()) throw new LlmError('el modelo de audio no devolvió transcripción', 502, data);
-  return { text: String(out).trim() };
+  // usage.cost = coste real en USD; usage.seconds = duración del audio
+  return { text: String(out).trim(), usage: data?.usage || null };
 }

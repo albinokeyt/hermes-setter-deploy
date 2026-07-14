@@ -63,6 +63,15 @@ export default async function dashboardRoutes(app) {
       ORDER BY c.updated_at DESC LIMIT 8
     `);
 
-    return { totals, byStage, daily, perAccount, recientes };
+    // Gasto por tipo (últimos 30 días): chat, seguimiento, imagen, audio, pruebas
+    const gastoPorTipo = await q(`
+      SELECT source, COALESCE(SUM(cost_usd), 0) AS total
+      FROM llm_usage
+      WHERE source <> 'archivo' AND created_at > now() - interval '30 days'
+        ${accountFilter ? `AND account_id = ${accountFilter}` : ''}
+      GROUP BY source ORDER BY total DESC
+    `);
+
+    return { totals, byStage, daily, perAccount, recientes, gastoPorTipo };
   });
 }

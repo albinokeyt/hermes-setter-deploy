@@ -65,7 +65,24 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-5">
+      {(data.gastoPorTipo || []).length > 0 && (
+        <Card className="mt-4 p-5">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700">Gasto de IA por tipo (últimos 30 días)</h3>
+          <div className="flex flex-wrap gap-2">
+            {(data.gastoPorTipo || []).map((g) => {
+              const label = { reply: 'Chat', seguimiento: 'Seguimientos', vision: 'Imagen (visión)', audio: 'Audio (transcripción)', playground: 'Pruebas' }[g.source] || g.source;
+              return (
+                <span key={g.source} className="inline-flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-1.5 text-xs">
+                  <span className="font-medium text-slate-600">{label}</span>
+                  <span className="font-bold text-slate-900">{fmtUsd(g.total)}</span>
+                </span>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-5">
         <Card className="p-5 lg:col-span-3">
           <h3 className="mb-4 text-sm font-semibold text-slate-700">Actividad — últimos 14 días</h3>
           <div className="h-60">
