@@ -20,8 +20,8 @@ export function ThemeToggle({ className = '' }) {
   );
 }
 
-export function Card({ children, className = '' }) {
-  return <div className={`bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(16,24,40,.04)] ${className}`}>{children}</div>;
+export function Card({ children, className = '', onClick }) {
+  return <div onClick={onClick} className={`bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(16,24,40,.04)] ${className}`}>{children}</div>;
 }
 
 export function SectionTitle({ title, subtitle, actions }) {
@@ -120,7 +120,7 @@ export function StagePill({ stage, className = '' }) {
   );
 }
 
-export function StatCard({ label, value, sub, icon: Icon, tone = 'violet' }) {
+export function StatCard({ label, value, sub, icon: Icon, tone = 'violet', onClick }) {
   const tones = {
     violet: 'bg-violet-50 text-violet-600',
     blue: 'bg-blue-50 text-blue-600',
@@ -128,7 +128,7 @@ export function StatCard({ label, value, sub, icon: Icon, tone = 'violet' }) {
     amber: 'bg-amber-50 text-amber-600',
   };
   return (
-    <Card className="p-5 fade-up">
+    <Card onClick={onClick} className={`p-5 fade-up ${onClick ? 'cursor-pointer transition hover:border-violet-300' : ''}`}>
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-slate-500">{label}</span>
         {Icon && <span className={`rounded-xl p-2 ${tones[tone]}`}><Icon size={17} /></span>}
