@@ -104,23 +104,38 @@ export default async function webhookRoutes(app) {
     if (!account) return reply.code(404).send({ error: 'token desconocido' });
     reply.send({ ok: true });
     try {
-      const p = req.body || {};
+      const h = req.headers || {};
+      const p = (req.body && typeof req.body === 'object') ? req.body : {};
       const c = p.customData || p.custom_data || p;
-      const text = c.comment || c.text || c.message || p.body || '';
-      const author = c.author || c.username || c.from || c.contact_name || c.full_name || '';
-      const authorId = c.author_id || c.user_id || p.contact_id || p.contactId || '';
-      const post = c.post || c.post_id || c.media_id || c.permalink || c.post_url || '';
-      const channel = c.channel || 'IG';
+      const qy = req.query || {};
+      const dec = (v) => { try { return decodeURIComponent(String(v)); } catch { return String(v); } };
+      // toma el valor del HEADER (x-…), del body (customData) o de la query, lo primero que exista
+      const pick = (...keys) => {
+        for (const k of keys) {
+          if (h[k] != null && String(h[k]).trim()) return dec(h[k]);
+          if (c && c[k] != null && String(c[k]).trim()) return String(c[k]);
+          if (qy[k] != null && String(qy[k]).trim()) return dec(qy[k]);
+        }
+        return '';
+      };
+      const text = pick('x-comment', 'comment', 'text', 'message') || String(p.body || '');
+      const author = pick('x-author', 'author', 'username', 'from', 'contact_name', 'full_name');
+      const authorId = pick('x-author-id', 'author_id', 'user_id', 'contact_id', 'contactid');
+      const post = pick('x-post', 'post', 'post_id', 'media_id', 'permalink', 'post_url');
+      const channel = pick('x-channel', 'channel') || 'IG';
+      // registro para depurar cómo llega (headers x-* + body); útil en la primera prueba
+      const xh = Object.fromEntries(Object.entries(h).filter(([k]) => k.startsWith('x-') && k !== 'x-forwarded-for' && k !== 'x-real-ip'));
+      const meta = { headers: xh, body: p };
       if (!String(text).trim()) {
-        await logEvent('comentario_incompleto', { account: account.id, keys: Object.keys(p) });
+        await logEvent('comentario_incompleto', { account: account.id, ...meta });
         return;
       }
       await q(
         `INSERT INTO comments (account_id, author, author_id, text, post_ref, channel, raw)
          VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
-        [account.id, String(author), String(authorId), String(text), String(post), String(channel), JSON.stringify(p)]
+        [account.id, String(author), String(authorId), String(text), String(post), String(channel), JSON.stringify(meta)]
       );
-      await logEvent('comentario_recibido', { account: account.id, author: String(author), texto: String(text).slice(0, 200) });
+      await logEvent('comentario_recibido', { account: account.id, autor: String(author), texto: String(text).slice(0, 200), ...meta });
     } catch (err) {
       console.error('[webhook comment]', err);
       await logEvent('error_webhook', { error: err.message }).catch(() => {});

@@ -37,6 +37,8 @@ export default function AccountEdit() {
   const [saving, setSaving] = useState(false);
   const [calendars, setCalendars] = useState(null);
   const [newSetter, setNewSetter] = useState('');
+  const [commentLog, setCommentLog] = useState(null);
+  const loadCommentLog = () => api.get(`/api/accounts/${id}/comment-log`).then(setCommentLog).catch(() => setCommentLog([]));
 
   const loadSetters = () => api.get(`/api/accounts/${id}/setters`).then(setSetters).catch(() => setSetters([]));
   useEffect(() => {
@@ -199,6 +201,30 @@ export default function AccountEdit() {
               Para recibir los comentarios de tus publicaciones: en esta subcuenta de GHL crea una automatización que, cuando alguien comente, mande un <b>Custom Webhook (POST)</b> a esta URL con <code>customData</code>: <code>comment</code>, <code>author</code> y <code>post</code>. Aparecerán en <b>Archivo → 💬 Comentarios entrantes</b>.
             </p>
             <CopyField label="Tu webhook de comentarios (cópialo en la automatización de GHL)" value={acc.comment_webhook_url || ''} />
+            <p className="text-xs text-slate-400">Con el nodo <b>Webhook</b> de GHL (no el «Custom Webhook» de pago): pon los datos del comentario en los <b>headers</b> — <code>x-comment</code> (el texto), <code>x-author</code> (quién comentó), <code>x-post</code> (opcional). También valen en el body/JSON.</p>
+            <div className="rounded-xl border border-slate-200 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-600">🧪 Probar: últimos webhooks recibidos</span>
+                <Button variant="secondary" className="!py-1 text-xs" onClick={loadCommentLog}>Actualizar</Button>
+              </div>
+              {commentLog === null ? (
+                <p className="text-xs text-slate-400">Pulsa «Actualizar» tras enviar un comentario de prueba desde GHL.</p>
+              ) : commentLog.length === 0 ? (
+                <p className="text-xs text-slate-400">Aún no ha llegado ningún comentario a este webhook.</p>
+              ) : (
+                <div className="scroll-thin max-h-52 space-y-1.5 overflow-y-auto">
+                  {commentLog.map((l) => (
+                    <details key={l.id} className="rounded-lg bg-slate-50 px-2.5 py-1.5">
+                      <summary className="cursor-pointer text-[11px]">
+                        <span className={`font-bold ${l.kind === 'comentario_recibido' ? 'text-emerald-600' : 'text-amber-600'}`}>{l.kind === 'comentario_recibido' ? '✓ recibido' : '⚠ incompleto'}</span>
+                        {l.payload?.texto && <span className="ml-2 text-slate-500">{l.payload.texto}</span>}
+                      </summary>
+                      <pre className="scroll-thin mt-1 max-h-40 overflow-auto rounded bg-white p-2 text-[10px] leading-relaxed text-slate-600">{JSON.stringify(l.payload, null, 2)}</pre>
+                    </details>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </Card>
       )}

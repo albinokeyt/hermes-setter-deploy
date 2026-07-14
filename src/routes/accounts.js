@@ -98,6 +98,17 @@ export default async function accountRoutes(app) {
     return { ok: true };
   });
 
+  // Registro reciente del webhook de comentarios de ESTA conexión (para probar que llega).
+  app.get('/api/accounts/:id/comment-log', async (req, reply) => {
+    if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso' });
+    return q(
+      `SELECT id, kind, payload, created_at FROM webhook_log
+       WHERE kind IN ('comentario_recibido', 'comentario_incompleto') AND payload->>'account' = $1
+       ORDER BY id DESC LIMIT 20`,
+      [String(req.params.id)]
+    );
+  });
+
   // Lista de calendarios de la subcuenta (desde GHL; si falta el scope, usa los vistos en citas).
   app.get('/api/accounts/:id/calendars', async (req, reply) => {
     if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso' });
