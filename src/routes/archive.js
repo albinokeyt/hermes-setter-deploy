@@ -14,10 +14,18 @@ function quien(m) {
 function buildFilter(query) {
   const where = [];
   const vals = [];
-  if (query.account_id) { vals.push(Number(query.account_id)); where.push(`c.account_id = $${vals.length}`); }
+  const aid = Number(query.account_id);
+  if (Number.isInteger(aid) && aid > 0) { vals.push(aid); where.push(`c.account_id = $${vals.length}`); }
   if (query.direction === 'inbound' || query.direction === 'outbound') { vals.push(query.direction); where.push(`m.direction = $${vals.length}`); }
   if (query.search) { vals.push(`%${query.search}%`); where.push(`m.body ILIKE $${vals.length}`); }
   return { clause: where.length ? 'WHERE ' + where.join(' AND ') : '', vals };
+}
+
+// Escapa un valor para CSV y neutraliza inyección de fórmulas (=, +, -, @, tab, CR).
+function csvCell(v) {
+  let s = String(v ?? '');
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return `"${s.replace(/"/g, '""')}"`;
 }
 
 const BASE_SELECT = `
@@ -64,9 +72,8 @@ export default async function archiveRoutes(app) {
   app.get('/api/archive/export', async (req, reply) => {
     const { clause, vals } = buildFilter(req.query || {});
     const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.id DESC LIMIT 50000`, vals);
-    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const header = ['Fecha', 'Hora', 'Cuenta', 'Canal', 'Lead', 'Direccion', 'Quien', 'Mensaje'];
-    const lines = [header.map(esc).join(',')];
+    const lines = [header.map(csvCell).join(',')];
     for (const m of rows) {
       const d = new Date(m.created_at);
       lines.push([
@@ -78,7 +85,7 @@ export default async function archiveRoutes(app) {
         m.direction === 'inbound' ? 'Entrante' : 'Saliente',
         quien(m),
         m.body,
-      ].map(esc).join(','));
+      ].map(csvCell).join(','));
     }
     reply.header('content-type', 'text/csv; charset=utf-8');
     reply.header('content-disposition', `attachment; filename="mensajes-hermes.csv"`);
@@ -105,15 +112,23 @@ export default async function archiveRoutes(app) {
     if (!provider) return reply.code(400).send({ error: 'Elige un modelo de texto para la IA de esta sección' });
 
     const { clause, vals } = buildFilter(b);
+    // newest-first; recortamos por presupuesto quedándonos con los MÁS RECIENTES,
+    // luego los ordenamos cronológicamente para el prompt.
     const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.id DESC LIMIT 500`, vals);
-    const chrono = rows.reverse();
-    let context = '';
-    for (const m of chrono) {
+    const fmt = (m) => {
       const d = new Date(m.created_at);
-      const line = `[${d.toISOString().slice(0, 16).replace('T', ' ')}] ${m.account_name} · ${m.lead_name || m.ghl_contact_id} (${m.channel}) ${quien(m)}: ${String(m.body).replace(/\s+/g, ' ')}\n`;
-      if (context.length + line.length > 14000) break;
-      context += line;
+      return `[${d.toISOString().slice(0, 16).replace('T', ' ')}] ${m.account_name} · ${m.lead_name || m.ghl_contact_id} (${m.channel}) ${quien(m)}: ${String(m.body).replace(/\s+/g, ' ')}\n`;
+    };
+    const kept = [];
+    let used = 0;
+    for (const m of rows) { // recorre del más nuevo al más viejo
+      const line = fmt(m);
+      if (used + line.length > 14000) break;
+      kept.push(m);
+      used += line.length;
     }
+    kept.reverse(); // cronológico para el prompt
+    const context = kept.map(fmt).join('');
 
     const system =
       'Eres un analista de conversaciones de ventas. Responde en español, con datos concretos, SOLO en base a los mensajes reales de abajo (fecha, cuenta, lead, quién habla y texto). ' +
@@ -135,6 +150,6 @@ export default async function archiveRoutes(app) {
     }
     // gasto atribuido a 'archivo' (account_id null) → excluido del panel principal
     await recordUsage(null, null, provider, b.model || provider.default_model, result.usage, 'archivo');
-    return { answer: result.content, muestra: chrono.length };
+    return { answer: result.content, muestra: kept.length };
   });
 }
