@@ -48,11 +48,18 @@ export default async function settingsRoutes(app) {
   app.get('/api/settings/ghl', async () => {
     const app_ = (await getSetting('ghl_app', {})) || {};
     const ak = await agencyKey();
+    const installUrl = app_.client_id
+      ? 'https://marketplace.gohighlevel.com/oauth/chooselocation' +
+        `?response_type=code&redirect_uri=${encodeURIComponent(`${config.appBaseUrl}/api/oauth/callback`)}` +
+        `&client_id=${encodeURIComponent(app_.client_id)}` +
+        `&scope=${OAUTH_SCOPES.map(encodeURIComponent).join('%20')}`
+      : '';
     return {
       client_id: app_.client_id || '',
       client_secret_set: Boolean(app_.client_secret),
       sso_secret_set: Boolean(app_.sso_secret),
       app_base_url: config.appBaseUrl,
+      install_url: installUrl,
       redirect_url: `${config.appBaseUrl}/api/oauth/callback`,
       marketplace_webhook_url: `${config.appBaseUrl}/api/webhooks/inbox`,
       agency_menu_url: `${config.appBaseUrl}/ghl-app?key=${ak}&location_id={{location.id}}&email={{user.email}}&name={{user.name}}`,

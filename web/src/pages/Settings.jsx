@@ -141,6 +141,16 @@ export default function SettingsPage() {
             <Button onClick={save}>{saved ? '✓ Guardado' : 'Guardar credenciales'}</Button>
           </Card>
 
+          <Card className="space-y-3 p-6">
+            <h3 className="text-sm font-bold text-slate-800">🔌 Enlace de instalación</h3>
+            <p className="text-xs text-slate-500">
+              Este es el <b>"clic para instalar"</b>: quien lo abre llega a la pantalla de GoHighLevel para <b>elegir la subcuenta</b> y autorizar; al aceptar, la app queda <b>instalada y conectada</b> en esa subcuenta. Sirve para instalarla tú en un cliente, o para compartírselo a un cliente para que la instale él.
+            </p>
+            {cfg.install_url
+              ? <CopyField label="Enlace de instalación (clic para instalar en una subcuenta)" value={cfg.install_url} />
+              : <Banner tone="warn">Primero guarda el <b>Client ID</b> arriba para generar el enlace de instalación.</Banner>}
+          </Card>
+
           <Card className="space-y-4 p-6">
             <h3 className="text-sm font-bold text-slate-800">🔗 Enlace de agencia (autoservicio)</h3>
             <p className="text-xs text-slate-500">
