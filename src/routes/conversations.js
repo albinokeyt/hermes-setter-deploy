@@ -110,6 +110,18 @@ export default async function conversationRoutes(app) {
     }
   });
 
+  // conteos por etiqueta (rápido, para las cabeceras del tablero con muchos leads)
+  app.get('/api/kanban/counts', async (req) => {
+    const scope = scopedAccountId(req) || req.query?.account_id;
+    const rows = await q(
+      `SELECT stage, COUNT(*)::int AS n FROM conversations ${scope ? 'WHERE account_id = $1' : ''} GROUP BY stage`,
+      scope ? [scope] : []
+    );
+    const counts = {};
+    for (const r of rows) counts[r.stage] = r.n;
+    return counts;
+  });
+
   app.get('/api/kanban', async (req) => {
     const scope = scopedAccountId(req);
     const rows = await q(
