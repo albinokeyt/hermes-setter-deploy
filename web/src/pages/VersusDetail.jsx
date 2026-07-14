@@ -13,8 +13,15 @@ export default function VersusDetail() {
   const [saved, setSaved] = useState(false);
 
   const load = () => api.get(`/api/versus/${id}`).then(setV).catch(() => {});
-  useEffect(() => { load(); api.get('/api/versus/available-setters').then(setAvail).catch(() => {}); }, [id]);
+  useEffect(() => {
+    load();
+    api.get('/api/versus/available-setters').then(setAvail).catch(() => {});
+    const t = setInterval(load, 8000); // en vivo: ver el reparto según entran leads
+    return () => clearInterval(t);
+  }, [id]);
   if (!v) return <div className="py-24 text-center text-sm text-slate-400">Cargando…</div>;
+
+  const PALETTE = ['#AE7C22', '#2563eb', '#059669', '#db2777', '#7c3aed', '#ea580c', '#0891b2', '#65a30d'];
 
   const save = async (patch) => {
     const body = { name: v.name, status: v.status, win_metric: v.win_metric, audience: v.audience, audience_tag: v.audience_tag, ...patch };
@@ -73,6 +80,45 @@ export default function VersusDetail() {
         {/* Competidores + resultados */}
         <div className="space-y-4 lg:col-span-2">
           <Banner tone="info">Un setter puede estar en varios versus. En cada conexión, el versus <b>activo más reciente</b> gobierna el reparto de su audiencia. Fuera de la audiencia, cada setter sigue su enrutado normal por etiquetas.</Banner>
+
+          {(() => {
+            const total = v.results.reduce((s, r) => s + (r.leads || 0), 0);
+            const totalW = v.results.reduce((s, r) => s + Math.max(0, r.weight || 0), 0) || 1;
+            return (
+              <Card className="p-6">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-slate-800">Reparto de leads entrantes</h3>
+                  <span className="text-xs text-slate-400"><b className="text-slate-700">{total}</b> repartidos · en vivo</span>
+                </div>
+                {total === 0 ? (
+                  <p className="text-xs text-slate-400">Aún no han entrado leads. Cuando entren, verás aquí a qué setter va cada uno (se actualiza solo).</p>
+                ) : (
+                  <>
+                    <div className="flex h-6 w-full overflow-hidden rounded-full bg-slate-100">
+                      {v.results.map((r, i) => (r.leads > 0 ? (
+                        <div key={r.id} style={{ width: `${(r.leads / total) * 100}%`, background: PALETTE[i % PALETTE.length] }} title={`${r.setter_name}: ${r.leads}`} />
+                      ) : null))}
+                    </div>
+                    <div className="mt-3 space-y-1.5">
+                      {v.results.map((r, i) => {
+                        const pct = total ? Math.round((r.leads / total) * 100) : 0;
+                        const exp = Math.round((Math.max(0, r.weight || 0) / totalW) * 100);
+                        return (
+                          <div key={r.id} className="flex items-center gap-2 text-xs">
+                            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: PALETTE[i % PALETTE.length] }} />
+                            <span className="flex-1 truncate text-slate-600">{r.setter_name} <span className="text-slate-400">· {r.account_name}</span></span>
+                            <span className="font-semibold text-slate-800">{r.leads}</span>
+                            <span className="w-9 text-right text-slate-400">{pct}%</span>
+                            <span className="w-24 text-right text-[10px] text-slate-300">esperado {exp}%</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </Card>
+            );
+          })()}
 
           <Card className="p-6">
             <h3 className="mb-3 text-sm font-bold text-slate-800">Setters que compiten</h3>
