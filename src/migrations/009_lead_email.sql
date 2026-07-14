@@ -1,0 +1,1 @@
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS lead_email TEXT NOT NULL DEFAULT '';

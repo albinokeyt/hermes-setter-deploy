@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Send, Bot, User, Clock } from 'lucide-react';
-import { api, timeAgo } from '../api.js';
+import { ArrowLeft, Send, Bot, User, Clock, ExternalLink } from 'lucide-react';
+import { api, timeAgo, ghlContactUrl } from '../api.js';
 import { STAGES, CHANNEL_LABEL, stageByKey } from '../stages.js';
 import { Card, Button, StagePill, Toggle, Select, Banner } from '../components/ui.jsx';
 
@@ -64,11 +64,27 @@ export default function ConversationDetail() {
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="flex h-[70vh] flex-col lg:col-span-2">
           <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
-            <div>
-              <div className="text-sm font-bold text-slate-900">{conv.lead_name || 'Lead sin nombre'}</div>
-              <div className="text-xs text-slate-400">{conv.account_name} · {CHANNEL_LABEL[conv.channel] || conv.channel}</div>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-bold text-slate-900">{conv.lead_name || 'Lead sin nombre'}</div>
+              <div className="truncate text-xs text-slate-400">
+                {conv.account_name} · {CHANNEL_LABEL[conv.channel] || conv.channel}
+                {conv.lead_email && ` · ${conv.lead_email}`}
+              </div>
             </div>
-            <StagePill stage={conv.stage} />
+            <div className="flex shrink-0 items-center gap-2">
+              {ghlContactUrl(conv.location_id, conv.ghl_contact_id) && (
+                <a
+                  href={ghlContactUrl(conv.location_id, conv.ghl_contact_id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Ir al perfil del contacto en GHL"
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-500 transition hover:border-violet-300 hover:text-violet-600"
+                >
+                  Ir a GHL <ExternalLink size={12} />
+                </a>
+              )}
+              <StagePill stage={conv.stage} />
+            </div>
           </div>
           <div className="scroll-thin flex-1 space-y-3 overflow-y-auto bg-slate-50/50 px-5 py-4">
             {conv.messages.map((m) => <Bubble key={m.id} m={m} />)}

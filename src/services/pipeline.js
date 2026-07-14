@@ -213,11 +213,20 @@ export async function handleInbound(account, evt) {
 
   await redis.del(fuKey(conv.id)); // el lead respondió → se cancela la cadena de seguimientos
 
-  if (!conv.lead_name && (account.location_id || account.pit_token)) {
+  if ((!conv.lead_name || !conv.lead_email) && (account.location_id || account.pit_token)) {
     ghl.getContact(account, evt.contactId)
       .then((c) => {
         const name = [c?.firstName, c?.lastName].filter(Boolean).join(' ') || c?.name || c?.contactName || '';
-        if (name) return q(`UPDATE conversations SET lead_name = $1 WHERE id = $2`, [name, conv.id]);
+        const email = c?.email || '';
+        if (name || email) {
+          return q(
+            `UPDATE conversations SET
+               lead_name = CASE WHEN lead_name = '' THEN $1 ELSE lead_name END,
+               lead_email = CASE WHEN lead_email = '' THEN $2 ELSE lead_email END
+             WHERE id = $3`,
+            [name, email, conv.id]
+          );
+        }
       })
       .catch(() => {});
   }

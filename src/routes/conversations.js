@@ -28,12 +28,12 @@ export default async function conversationRoutes(app) {
     const vals = [];
     if (account_id) { vals.push(account_id); where.push(`c.account_id = $${vals.length}`); }
     if (stage) { vals.push(stage); where.push(`c.stage = $${vals.length}`); }
-    if (search) { vals.push(`%${search}%`); where.push(`(c.lead_name ILIKE $${vals.length} OR c.ghl_contact_id ILIKE $${vals.length})`); }
+    if (search) { vals.push(`%${search}%`); where.push(`(c.lead_name ILIKE $${vals.length} OR c.lead_email ILIKE $${vals.length} OR c.ghl_contact_id ILIKE $${vals.length})`); }
     vals.push(Math.min(Number(limit) || 50, 200));
     vals.push(Number(offset) || 0);
     return q(
-      `SELECT c.id, c.account_id, c.channel, c.lead_name, c.ghl_contact_id, c.stage, c.bot_paused,
-              c.followup_state, c.last_inbound_at, c.last_outbound_at, c.updated_at, a.name AS account_name,
+      `SELECT c.id, c.account_id, c.channel, c.lead_name, c.lead_email, c.ghl_contact_id, c.stage, c.bot_paused,
+              c.followup_state, c.last_inbound_at, c.last_outbound_at, c.updated_at, a.name AS account_name, a.location_id,
               (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
               (SELECT m.direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_direction
        FROM conversations c JOIN accounts a ON a.id = c.account_id
@@ -48,7 +48,7 @@ export default async function conversationRoutes(app) {
     const base = await loadScopedConv(req, reply);
     if (!base) return;
     const conv = await one(
-      `SELECT c.*, a.name AS account_name, a.channels AS account_channels
+      `SELECT c.*, a.name AS account_name, a.channels AS account_channels, a.location_id
        FROM conversations c JOIN accounts a ON a.id = c.account_id WHERE c.id = $1`,
       [base.id]
     );

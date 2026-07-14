@@ -21,6 +21,12 @@ export const api = {
   del: (url) => request('DELETE', url),
 };
 
+// Enlace al perfil del contacto en GoHighLevel
+export function ghlContactUrl(locationId, contactId) {
+  if (!locationId || !contactId) return null;
+  return `https://app.gohighlevel.com/v2/location/${locationId}/contacts/detail/${contactId}`;
+}
+
 export function timeAgo(dateStr) {
   if (!dateStr) return '—';
   const diff = Date.now() - new Date(dateStr).getTime();
