@@ -65,63 +65,65 @@ function toUserContent(text, images) {
   return [{ type: 'text', text }, ...imgs.map((url) => ({ type: 'image_url', image_url: { url } }))];
 }
 
+// Ejecuta el chat del arquitecto/corrector sobre un "target" con prompt_identity/business/flow.
+// accountId = la conexión (para atribuir gasto); setterId = el setter si aplica.
+async function runPromptEditor(target, accountId, setterId, req, reply) {
+  const b = req.body || {};
+  const mode = b.mode === 'edit' ? 'edit' : 'architect';
+
+  const cfg = (await getSetting(mode === 'edit' ? 'corrector_model' : 'architect_model', {})) || {};
+  const provId = cfg.provider_id || target.provider_id;
+  const provider = provId ? await one(`SELECT * FROM providers WHERE id = $1`, [provId]) : null;
+  if (!provider) return reply.code(400).send({ error: 'No hay modelo de IA para el arquitecto/corrector. Configúralo en Configuración o en la pestaña IA del setter.' });
+  const modelUsed = cfg.model || target.model || provider.default_model;
+
+  const base = mode === 'edit'
+    ? ((await getSetting('corrector_prompt', null))?.text || DEFAULT_CORRECTOR)
+    : ((await getSetting('architect_prompt', null))?.text || DEFAULT_ARCHITECT);
+
+  const current = `=== PROMPT ACTUAL DEL SETTER "${target.name}" ===
+[1 · IDENTIDAD]\n${target.prompt_identity || '(vacío)'}\n
+[2 · NEGOCIO]\n${target.prompt_business || '(vacío)'}\n
+[3 · FLUJO]\n${target.prompt_flow || '(vacío)'}`;
+
+  const system = `${base}\n\n${current}`;
+  const history = (Array.isArray(b.history) ? b.history : [])
+    .slice(-20)
+    .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.text || '') }))
+    .filter((m) => m.content);
+
+  const messages = [{ role: 'system', content: system }, ...history];
+  const lastText = String(b.message || (history.length ? '' : (mode === 'edit' ? 'Aplica los cambios indicados.' : 'Ayúdame a crear el prompt de mi setter.')));
+  if (lastText || (b.images && b.images.length)) {
+    messages.push({ role: 'user', content: toUserContent(lastText || 'Aplica estos cambios según las imágenes.', b.images) });
+  }
+
+  let result;
+  try {
+    result = await chatCompletion({ provider, model: modelUsed, temperature: 0.5, maxTokens: 2000, json: false, messages });
+  } catch (err) {
+    return reply.code(502).send({ error: err.message });
+  }
+  await recordUsage(accountId, null, provider, modelUsed, result.usage, mode === 'edit' ? 'corrector' : 'arquitecto', null, setterId);
+  return extractProposal(result.content);
+}
+
 export default async function promptEditorRoutes(app) {
   app.addHook('preHandler', async (req, reply) => {
     if (!requireAdmin(req, reply)) return reply;
   });
 
-  // Chat del arquitecto / editor de prompts para un setter concreto.
-  // body: { history:[{role:'user'|'assistant', text}], images?:[dataUrl], mode:'architect'|'edit', message? }
+  // body: { history, images?, mode:'architect'|'edit', message? }
   app.post('/api/accounts/:id/prompt-editor', async (req, reply) => {
     const account = await one(`SELECT * FROM accounts WHERE id = $1`, [req.params.id]);
-    if (!account) return reply.code(404).send({ error: 'Setter no encontrado' });
+    if (!account) return reply.code(404).send({ error: 'Conexión no encontrada' });
+    return runPromptEditor(account, account.id, null, req, reply);
+  });
 
-    const b = req.body || {};
-    const mode = b.mode === 'edit' ? 'edit' : 'architect';
-
-    // Modelo configurado en Configuración para el arquitecto / corrector; si no, el del setter.
-    const cfg = (await getSetting(mode === 'edit' ? 'corrector_model' : 'architect_model', {})) || {};
-    const provId = cfg.provider_id || account.provider_id;
-    const provider = provId ? await one(`SELECT * FROM providers WHERE id = $1`, [provId]) : null;
-    if (!provider) return reply.code(400).send({ error: 'No hay modelo de IA para el arquitecto/corrector. Configúralo en Configuración o en la pestaña IA del setter.' });
-    const modelUsed = cfg.model || account.model || provider.default_model;
-
-    // El arquitecto y el ingeniero/corrector tienen cada uno su propio prompt editable.
-    const base = mode === 'edit'
-      ? ((await getSetting('corrector_prompt', null))?.text || DEFAULT_CORRECTOR)
-      : ((await getSetting('architect_prompt', null))?.text || DEFAULT_ARCHITECT);
-
-    const current = `=== PROMPT ACTUAL DEL SETTER "${account.name}" ===
-[1 · IDENTIDAD]\n${account.prompt_identity || '(vacío)'}\n
-[2 · NEGOCIO]\n${account.prompt_business || '(vacío)'}\n
-[3 · FLUJO]\n${account.prompt_flow || '(vacío)'}`;
-
-    const system = `${base}\n\n${current}`;
-    const history = (Array.isArray(b.history) ? b.history : [])
-      .slice(-20)
-      .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.text || '') }))
-      .filter((m) => m.content);
-
-    const messages = [{ role: 'system', content: system }, ...history];
-    const lastText = String(b.message || (history.length ? '' : (mode === 'edit' ? 'Aplica los cambios indicados.' : 'Ayúdame a crear el prompt de mi setter.')));
-    if (lastText || (b.images && b.images.length)) {
-      messages.push({ role: 'user', content: toUserContent(lastText || 'Aplica estos cambios según las imágenes.', b.images) });
-    }
-
-    let result;
-    try {
-      result = await chatCompletion({
-        provider,
-        model: modelUsed,
-        temperature: 0.5,
-        maxTokens: 2000,
-        json: false,
-        messages,
-      });
-    } catch (err) {
-      return reply.code(502).send({ error: err.message });
-    }
-    await recordUsage(account.id, null, provider, modelUsed, result.usage, mode === 'edit' ? 'corrector' : 'arquitecto');
-    return extractProposal(result.content);
+  // Arquitecto/corrector de un SETTER concreto.
+  app.post('/api/setters/:id/prompt-editor', async (req, reply) => {
+    const setter = await one(`SELECT * FROM setters WHERE id = $1`, [req.params.id]);
+    if (!setter) return reply.code(404).send({ error: 'Setter no encontrado' });
+    return runPromptEditor(setter, setter.account_id, setter.id, req, reply);
   });
 }

@@ -66,6 +66,8 @@ export default async function accountRoutes(app) {
       `INSERT INTO accounts (name, webhook_token, portal_key) VALUES ($1, $2, $3) RETURNING *`,
       [String(name).trim(), token, portalKey]
     );
+    // Toda conexión arranca con su setter principal (para tener siempre a quién enrutar).
+    await q(`INSERT INTO setters (account_id, name, is_default) VALUES ($1, 'Setter principal', true)`, [row.id]);
     return row;
   });
 

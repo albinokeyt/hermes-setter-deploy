@@ -7,6 +7,7 @@ import ConversationDetail from './pages/ConversationDetail.jsx';
 import Kanban from './pages/Kanban.jsx';
 import Accounts from './pages/Accounts.jsx';
 import AccountEdit from './pages/AccountEdit.jsx';
+import SetterEdit from './pages/SetterEdit.jsx';
 import Providers from './pages/Providers.jsx';
 import Campaigns from './pages/Campaigns.jsx';
 import CampaignDetail from './pages/CampaignDetail.jsx';
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="/etiquetas" element={<Kanban />} />
         <Route path="/cuentas" element={<Accounts />} />
         <Route path="/cuentas/:id" element={<AccountEdit />} />
+        <Route path="/setters/:id" element={<SetterEdit />} />
         <Route path="/apis" element={<Providers />} />
         <Route path="/competencias" element={<Campaigns />} />
         <Route path="/competencias/:id" element={<CampaignDetail />} />

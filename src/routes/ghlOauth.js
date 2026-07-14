@@ -86,6 +86,7 @@ export default async function ghlOauthRoutes(app) {
           `INSERT INTO accounts (name, location_id, mode, webhook_token) VALUES ($1, $2, 'oauth', $3) RETURNING *`,
           [name, locationId, crypto.randomBytes(16).toString('hex')]
         );
+        await q(`INSERT INTO setters (account_id, name, is_default) VALUES ($1, 'Setter principal', true)`, [account.id]);
       }
       await logEvent('oauth_conectado', { locationId, account: account.id });
       return reply.redirect(`/cuentas/${account.id}?conectada=1`);

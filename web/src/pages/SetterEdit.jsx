@@ -1,0 +1,233 @@
+import { useEffect, useState } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
+import { api } from '../api.js';
+import { useMe } from '../components/Layout.jsx';
+import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner } from '../components/ui.jsx';
+import { ModelPicker } from '../components/ModelPicker.jsx';
+import { PromptArchitect } from '../components/PromptArchitect.jsx';
+
+const TABS = [
+  { key: 'prompt', label: 'Prompt' },
+  { key: 'ia', label: 'IA', adminOnly: true },
+  { key: 'comportamiento', label: 'Comportamiento' },
+  { key: 'seguimientos', label: 'Seguimientos' },
+  { key: 'arquitecto', label: '✨ Arquitecto', adminOnly: true },
+];
+
+export default function SetterEdit() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const me = useMe();
+  const isAdmin = me?.role === 'admin';
+  const tabs = TABS.filter((t) => isAdmin || !t.adminOnly);
+  const [tab, setTab] = useState('prompt');
+  const [s, setS] = useState(null);
+  const [providers, setProviders] = useState([]);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [showTags, setShowTags] = useState(false);
+
+  const load = () => api.get(`/api/setters/${id}`).then((r) => { setS(r); setShowTags((r.required_tags || []).length > 0); }).catch((e) => setError(e.message));
+  useEffect(() => { load(); api.get('/api/providers').then(setProviders).catch(() => {}); }, [id]);
+
+  if (!s) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
+
+  const set = (patch) => setS({ ...s, ...patch });
+  const providersFor = (kind) => providers.filter((p) => !Array.isArray(p.kinds) || p.kinds.includes(kind));
+  const isOpenRouter = (providerId) => {
+    const p = providers.find((x) => x.id === providerId);
+    return Boolean(p && /openrouter\.ai/.test(p.base_url || ''));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      const body = { ...s };
+      delete body.provider_name; delete body.conversations_count; delete body.account_id; delete body.is_default; delete body.created_at;
+      const updated = await api.put(`/api/setters/${id}`, body);
+      setS({ ...s, ...updated });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const followups = Array.isArray(s.followups) ? s.followups : [];
+
+  return (
+    <div>
+      <Link to={`/cuentas/${s.account_id}`} className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-800">
+        <ArrowLeft size={15} /> Volver a la conexión
+      </Link>
+      <SectionTitle
+        title={<input value={s.name} onChange={(e) => set({ name: e.target.value })} className="rounded-lg border border-transparent bg-transparent text-2xl font-bold tracking-tight text-slate-900 hover:border-slate-200 focus:border-violet-300 focus:outline-none" />}
+        subtitle="Prompt, IA, comportamiento y seguimientos de este setter"
+        actions={
+          <div className="flex items-center gap-3">
+            <Toggle checked={s.bot_enabled} onChange={(v) => set({ bot_enabled: v })} label={s.bot_enabled ? 'Setter activo' : 'Setter apagado'} />
+            <Button onClick={save} loading={saving}>{saved ? '✓ Guardado' : 'Guardar cambios'}</Button>
+          </div>
+        }
+      />
+
+      {error && <div className="mb-4"><Banner tone="error">{error}</Banner></div>}
+
+      <div className="mb-5 flex gap-1 rounded-2xl border border-slate-200 bg-white p-1.5 w-fit">
+        {tabs.map((t) => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${tab === t.key ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'prompt' && (
+        <div className="space-y-4">
+          <Banner tone="info">El prompt se divide en 3 partes. El agente las combina con la memoria del lead y las reglas de humanización automáticamente.</Banner>
+          <Card className="p-5">
+            <Textarea label="1 · Identidad y personalidad" rows={8} value={s.prompt_identity} onChange={(e) => set({ prompt_identity: e.target.value })} placeholder="Eres Sofía, setter del centro..." hint="Quién es el setter: nombre, tono, forma de escribir, qué haría y qué jamás diría." />
+          </Card>
+          <Card className="p-5">
+            <Textarea label="2 · Negocio y oferta" rows={8} value={s.prompt_business} onChange={(e) => set({ prompt_business: e.target.value })} placeholder="El negocio es..." hint="Qué se vende, a quién, precios, beneficios, preguntas frecuentes, enlaces permitidos." />
+          </Card>
+          <Card className="p-5">
+            <Textarea label="3 · Flujo y objetivo" rows={8} value={s.prompt_flow} onChange={(e) => set({ prompt_flow: e.target.value })} placeholder="1. Saluda... 2. Cualifica... 3. Si cumple el filtro, propone..." hint="El paso a paso y el OBJETIVO (agendar una cita, o enviar un enlace de venta / recurso gratis / agenda — la agenda no es obligatoria)." />
+          </Card>
+        </div>
+      )}
+
+      {tab === 'ia' && (
+        <div className="max-w-2xl space-y-4">
+          {providers.length === 0 && <Banner tone="warn">Aún no tienes APIs. Créalas en <b>APIs de IA</b>.</Banner>}
+          <Card className="space-y-5 p-6">
+            <div className="flex items-center gap-2 text-sm font-bold text-slate-800">💬 API de texto (el chat del agente)</div>
+            <Select label="Proveedor de texto" value={s.provider_id || ''} onChange={(e) => set({ provider_id: e.target.value ? Number(e.target.value) : null })}>
+              <option value="">— Elige una API de texto —</option>
+              {providersFor('text').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </Select>
+            <ModelPicker label="Modelo" value={s.model} onChange={(v) => set({ model: v })} isOpenRouter={isOpenRouter(s.provider_id)} placeholder="vacío = modelo por defecto del proveedor" hint={isOpenRouter(s.provider_id) ? 'Busca y elige el modelo de OpenRouter' : 'Ej.: gemini-2.5-flash-lite'} />
+            <div className="grid grid-cols-2 gap-4">
+              <Input label={`Temperatura: ${s.temperature}`} type="range" min="0" max="1.5" step="0.1" value={s.temperature} onChange={(e) => set({ temperature: Number(e.target.value) })} className="!p-0 accent-violet-600" hint="Más alta = más creativo" />
+              <Select label="Máximo de mensajes por respuesta" value={s.max_msgs} onChange={(e) => set({ max_msgs: Number(e.target.value) })}>
+                <option value={2}>2 mensajes</option>
+                <option value={3}>3 mensajes</option>
+                <option value={4}>4 mensajes</option>
+              </Select>
+            </div>
+          </Card>
+          <Card className="space-y-4 p-6">
+            <Toggle checked={s.vision_enabled} onChange={(v) => set({ vision_enabled: v })} label="👁️ API de imagen (leer fotos)" description="El agente lee las imágenes que envía el lead" />
+            {s.vision_enabled && (
+              <div className="grid grid-cols-2 gap-4 pl-1">
+                <Select label="Proveedor de imagen" value={s.vision_provider_id || ''} onChange={(e) => set({ vision_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— Elige una API de imagen —</option>
+                  {providersFor('image').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <ModelPicker label="Modelo de imagen" value={s.vision_model} onChange={(v) => set({ vision_model: v })} isOpenRouter={isOpenRouter(s.vision_provider_id)} kind="image" placeholder="google/gemini-2.5-flash" />
+              </div>
+            )}
+          </Card>
+          <Card className="space-y-4 p-6">
+            <Toggle checked={s.audio_enabled} onChange={(v) => set({ audio_enabled: v })} label="🎤 API de audio (transcribir notas de voz)" description="Convierte las notas de voz del lead en texto" />
+            {s.audio_enabled && (
+              <div className="grid grid-cols-2 gap-4 pl-1">
+                <Select label="Proveedor de audio" value={s.audio_provider_id || ''} onChange={(e) => set({ audio_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— Elige una API de audio —</option>
+                  {providersFor('audio').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <ModelPicker label="Modelo de audio (Whisper)" value={s.audio_model} onChange={(v) => set({ audio_model: v })} isOpenRouter={isOpenRouter(s.audio_provider_id)} kind="audio" placeholder="openai/whisper-large-v3-turbo" />
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {tab === 'comportamiento' && (
+        <Card className="max-w-2xl space-y-6 p-6">
+          <Input label={`Espera antes de responder (debounce): ${s.debounce_seconds} s`} type="range" min="10" max="120" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Number(e.target.value) })} className="!p-0 accent-violet-600" hint="El bot espera este silencio y responde a todo junto, como una persona." />
+
+          {isAdmin && (
+            <div className="border-t border-slate-100 pt-5">
+              <Input label="Peso en el reparto (batalla de setters)" type="number" min="0" max="1000" value={s.weight ?? 100} onChange={(e) => set({ weight: Number(e.target.value) })} className="!w-40" hint="Si varios setters casan con el mismo lead, se reparten según su peso. Con un solo setter da igual." />
+            </div>
+          )}
+
+          <div className="border-t border-slate-100 pt-5">
+            <button type="button" onClick={() => setShowTags((v) => !v)} className="mb-2 text-sm font-semibold text-violet-700 hover:underline">
+              {showTags ? '▾' : '▸'} 🏷️ Función avanzada: responder solo a leads con ciertas etiquetas
+            </button>
+            {showTags && (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-400">Si añades etiquetas, este setter SOLO atiende a contactos de GHL que las tengan (así diriges cada lead al setter correcto). Vacío = atiende a cualquiera que no tenga otro setter específico.</p>
+                {(s.required_tags || []).length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500">Debe tener</span>
+                    <Select value={s.required_tags_mode || 'any'} onChange={(e) => set({ required_tags_mode: e.target.value })} className="!w-56 !py-1.5 text-xs">
+                      <option value="any">cualquiera de estas etiquetas (O)</option>
+                      <option value="all">todas estas etiquetas (Y)</option>
+                    </Select>
+                  </div>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {(s.required_tags || []).map((tg) => (
+                    <span key={tg} className="inline-flex items-center gap-1.5 rounded-lg bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700">
+                      {tg}
+                      <button type="button" onClick={() => set({ required_tags: s.required_tags.filter((x) => x !== tg) })} className="text-violet-400 hover:text-violet-700">×</button>
+                    </span>
+                  ))}
+                  <input placeholder="escribe una etiqueta y Enter"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const v = e.target.value.trim();
+                        const cur = s.required_tags || [];
+                        if (v && !cur.includes(v)) set({ required_tags: [...cur, v] });
+                        e.target.value = '';
+                      }
+                    }}
+                    className="min-w-[180px] flex-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-violet-400" />
+                </div>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {tab === 'seguimientos' && (
+        <div className="max-w-2xl space-y-4">
+          <Banner tone="info">Si el lead deja de responder, el setter retoma la conversación solo. Cada paso se cancela si el lead contesta. Instagram/WhatsApp solo permiten responder dentro de las 24 h del último mensaje del lead.</Banner>
+          {followups.map((f, i) => (
+            <Card key={i} className="p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-sm font-bold text-slate-800">Seguimiento #{i + 1}</span>
+                <button onClick={() => set({ followups: followups.filter((_, j) => j !== i) })} className="text-slate-400 hover:text-red-500"><Trash2 size={16} /></button>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-[140px_1fr]">
+                <Input label="Horas de espera" type="number" min="1" max="23" step="0.5" value={f.hours} onChange={(e) => set({ followups: followups.map((x, j) => (j === i ? { ...x, hours: Number(e.target.value) } : x)) })} hint="máx. 23 h" />
+                <Textarea label="Instrucción para la IA" rows={2} value={f.instruction || ''} onChange={(e) => set({ followups: followups.map((x, j) => (j === i ? { ...x, instruction: e.target.value } : x)) })} placeholder="Ej.: Retoma con algo del último tema, pregunta ligera, cero presión." />
+              </div>
+            </Card>
+          ))}
+          <Button variant="secondary" onClick={() => set({ followups: [...followups, { hours: 4, instruction: '' }] })} disabled={followups.length >= 5}>
+            <Plus size={16} /> Añadir seguimiento
+          </Button>
+        </div>
+      )}
+
+      {tab === 'arquitecto' && (
+        <div className="max-w-3xl space-y-4">
+          <Banner tone="info">Habla con la IA arquitecta y arma los 3 bloques del prompt. Cuando te proponga la versión final, pulsa «Aplicar» y se guarda en ESTE setter.</Banner>
+          <Card className="overflow-hidden p-0">
+            <PromptArchitect targetPath={`/api/setters/${id}`} mode="architect" onApplied={load} />
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}

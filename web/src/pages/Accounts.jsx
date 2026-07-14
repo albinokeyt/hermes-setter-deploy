@@ -1,100 +1,151 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, Building2, Link2, Link2Off } from 'lucide-react';
+import { Plus, Building2, Link2, Link2Off, ChevronRight, Bot, Settings2 } from 'lucide-react';
 import { api } from '../api.js';
 import { CHANNEL_LABEL } from '../stages.js';
-import { Card, SectionTitle, Button, Input, EmptyState } from '../components/ui.jsx';
+import { Card, SectionTitle, Button, Input, Select, Toggle, EmptyState, Banner } from '../components/ui.jsx';
 
 export default function Accounts() {
   const navigate = useNavigate();
   const [accounts, setAccounts] = useState([]);
-  const [creating, setCreating] = useState(false);
+  const [open, setOpen] = useState({});          // accountId -> bool
+  const [setters, setSetters] = useState({});     // accountId -> [setters]
+  const [connForm, setConnForm] = useState(false);
+  const [setterForm, setSetterForm] = useState(false);
   const [name, setName] = useState('');
+  const [connFor, setConnFor] = useState(null);   // accountId para "nuevo setter"
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { api.get('/api/accounts').then(setAccounts).catch(() => {}); }, []);
+  const loadAccounts = () => api.get('/api/accounts').then(setAccounts).catch(() => {});
+  useEffect(() => { loadAccounts(); }, []);
 
-  const create = async (e) => {
+  const loadSetters = (accId) => api.get(`/api/accounts/${accId}/setters`).then((r) => setSetters((m) => ({ ...m, [accId]: r }))).catch(() => {});
+  const toggle = (accId) => {
+    setOpen((o) => ({ ...o, [accId]: !o[accId] }));
+    if (!setters[accId]) loadSetters(accId);
+  };
+
+  const createConn = async (e) => {
     e.preventDefault();
     if (!name.trim()) return;
     setLoading(true);
     try {
       const acc = await api.post('/api/accounts', { name: name.trim() });
-      navigate(`/cuentas/${acc.id}`);
-    } finally {
-      setLoading(false);
-    }
+      navigate(`/cuentas/${acc.id}?conectada=`); // lleva a conectar GHL
+    } finally { setLoading(false); }
   };
+
+  const createSetter = async (e) => {
+    e.preventDefault();
+    const accId = connFor || accounts[0]?.id;
+    if (!accId || !name.trim()) return;
+    setLoading(true);
+    try {
+      const st = await api.post(`/api/accounts/${accId}/setters`, { name: name.trim() });
+      navigate(`/setters/${st.id}`);
+    } finally { setLoading(false); }
+  };
+
+  const toggleTest = async (acc, v) => {
+    setAccounts((list) => list.map((a) => (a.id === acc.id ? { ...a, test_mode: v } : a)));
+    try { await api.put(`/api/accounts/${acc.id}`, { test_mode: v }); } catch { loadAccounts(); }
+  };
+
+  const openSetterForm = (accId) => { setConnFor(accId); setName(''); setSetterForm(true); setConnForm(false); };
 
   return (
     <div>
       <SectionTitle
-        title="Setters IA"
-        subtitle="Cada setter es una subcuenta de GHL con su propio prompt, su IA y sus seguimientos"
-        actions={<Button onClick={() => setCreating(true)}><Plus size={16} /> Nuevo setter</Button>}
+        title="Conexiones"
+        subtitle="Cada conexión es una subcuenta de GHL. Dentro viven sus setters (bots), que se reparten los leads por etiqueta."
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={() => { setSetterForm(true); setConnForm(false); setConnFor(null); setName(''); }} disabled={!accounts.length}><Bot size={16} /> Nuevo setter</Button>
+            <Button onClick={() => { setConnForm(true); setSetterForm(false); setName(''); }}><Plus size={16} /> Nueva conexión</Button>
+          </div>
+        }
       />
 
-      {creating && (
+      {connForm && (
         <Card className="mb-5 p-5">
-          <form onSubmit={create} className="flex items-end gap-3">
-            <div className="flex-1">
-              <Input label="Nombre del setter (cliente)" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Albatros · Valoraciones" autoFocus />
-            </div>
-            <Button type="submit" loading={loading}>Crear</Button>
-            <Button variant="ghost" type="button" onClick={() => setCreating(false)}>Cancelar</Button>
+          <form onSubmit={createConn} className="flex items-end gap-3">
+            <div className="flex-1"><Input label="Nombre de la conexión (cliente / subcuenta)" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Albatros" autoFocus /></div>
+            <Button type="submit" loading={loading}>Crear y conectar GHL</Button>
+            <Button variant="ghost" type="button" onClick={() => setConnForm(false)}>Cancelar</Button>
           </form>
         </Card>
       )}
 
-      {accounts.length === 0 && !creating ? (
-        <EmptyState
-          icon={Building2}
-          title="Aún no tienes setters"
-          subtitle="Crea un setter por cada cliente (subcuenta de GHL) y configúralo en minutos."
-          action={<Button onClick={() => setCreating(true)}><Plus size={16} /> Crear la primera</Button>}
-        />
+      {setterForm && (
+        <Card className="mb-5 p-5">
+          <form onSubmit={createSetter} className="flex items-end gap-3">
+            <div className="w-64">
+              <Select label="Conexión" value={connFor || accounts[0]?.id || ''} onChange={(e) => setConnFor(Number(e.target.value))}>
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </Select>
+            </div>
+            <div className="flex-1"><Input label="Nombre del setter" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Ventas high-ticket" autoFocus /></div>
+            <Button type="submit" loading={loading}>Crear</Button>
+            <Button variant="ghost" type="button" onClick={() => setSetterForm(false)}>Cancelar</Button>
+          </form>
+        </Card>
+      )}
+
+      {accounts.length === 0 && !connForm ? (
+        <EmptyState icon={Building2} title="Aún no tienes conexiones" subtitle="Crea una conexión por cada subcuenta de GHL; dentro pondrás sus setters." action={<Button onClick={() => setConnForm(true)}><Plus size={16} /> Crear la primera</Button>} />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="space-y-3">
           {accounts.map((a) => {
             const connected = a.mode === 'pit' ? Boolean(a.pit_token) : a.oauth_connected;
+            const isOpen = open[a.id];
+            const list = setters[a.id];
             return (
-              <Link key={a.id} to={`/cuentas/${a.id}`}>
-                <Card className="fade-up h-full p-5 transition hover:border-violet-300 hover:shadow-md">
-                  <div className="flex items-start justify-between">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-600">
-                      <Building2 size={19} />
-                    </div>
-                    <span className="flex items-center gap-1.5">
-                      {a.test_mode && (
-                        <span className="inline-flex items-center rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-600">🧪 TEST</span>
-                      )}
-                      <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                        a.bot_enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'
-                      }`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${a.bot_enabled ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                        {a.bot_enabled ? 'Bot activo' : 'Apagado'}
+              <Card key={a.id} className="overflow-hidden">
+                <div className="flex items-center gap-3 p-4">
+                  <button onClick={() => toggle(a.id)} className="flex flex-1 items-center gap-3 text-left">
+                    <ChevronRight size={18} className={`shrink-0 text-slate-400 transition ${isOpen ? 'rotate-90' : ''}`} />
+                    <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50 text-violet-600"><Building2 size={17} /></span>
+                    <span>
+                      <span className="block text-sm font-bold text-slate-900">{a.name}</span>
+                      <span className="flex items-center gap-1.5 text-xs text-slate-400">
+                        {connected ? <Link2 size={12} className="text-emerald-500" /> : <Link2Off size={12} className="text-amber-500" />}
+                        {connected ? `GHL conectado${a.location_id ? ` · ${a.location_id.slice(0, 8)}…` : ''}` : 'Sin conectar a GHL'}
                       </span>
                     </span>
+                  </button>
+                  <div className="hidden gap-1 sm:flex">
+                    {(a.channels || []).map((ch) => <span key={ch} className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">{CHANNEL_LABEL[ch] || ch}</span>)}
                   </div>
-                  <h3 className="mt-3 text-base font-bold text-slate-900">{a.name}</h3>
-                  <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-400">
-                    {connected ? <Link2 size={13} className="text-emerald-500" /> : <Link2Off size={13} className="text-amber-500" />}
-                    {connected ? 'GHL conectado' : 'Sin conectar a GHL'}
-                    {a.provider_name && <span>· {a.provider_name}</span>}
+                  <div className="flex items-center gap-3">
+                    <Toggle checked={a.test_mode} onChange={(v) => toggleTest(a, v)} label="🧪 Test" />
+                    <Link to={`/cuentas/${a.id}`} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"><Settings2 size={14} /> Conexión</Link>
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    {(a.channels || []).map((ch) => (
-                      <span key={ch} className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
-                        {CHANNEL_LABEL[ch] || ch}
-                      </span>
-                    ))}
+                </div>
+
+                {isOpen && (
+                  <div className="border-t border-slate-100 bg-slate-50/50 p-4">
+                    {a.test_mode && <div className="mb-3"><Banner tone="warn">🧪 Modo test: los setters de esta conexión solo responden a contactos con la etiqueta <b>{a.test_tag || 'hermes-test'}</b>.</Banner></div>}
+                    {!list ? (
+                      <div className="py-4 text-center text-xs text-slate-400">Cargando setters…</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {list.map((st) => (
+                          <Link key={st.id} to={`/setters/${st.id}`} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 transition hover:border-violet-300">
+                            <span className={`h-2 w-2 rounded-full ${st.bot_enabled ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                            <span className="flex-1">
+                              <span className="text-sm font-semibold text-slate-800">{st.name}{st.is_default && <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">principal</span>}</span>
+                              <span className="ml-2 text-xs text-slate-400">{st.provider_name || 'sin IA'}{(st.required_tags || []).length ? ` · 🏷️ ${st.required_tags.join(', ')}` : ''}</span>
+                            </span>
+                            <span className="text-xs text-slate-400">{st.conversations_count} conv.</span>
+                            <ChevronRight size={15} className="text-slate-300" />
+                          </Link>
+                        ))}
+                        <Button variant="ghost" className="!text-violet-600" onClick={() => openSetterForm(a.id)}><Plus size={15} /> Nuevo setter en esta conexión</Button>
+                      </div>
+                    )}
                   </div>
-                  <div className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-500">
-                    <span className="font-bold text-slate-800">{a.conversations_count}</span> conversaciones ·{' '}
-                    <span className="font-bold text-slate-800">{a.active_24h}</span> activas hoy
-                  </div>
-                </Card>
-              </Link>
+                )}
+              </Card>
             );
           })}
         </div>

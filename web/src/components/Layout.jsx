@@ -45,7 +45,7 @@ export default function Layout() {
     { to: '/etiquetas', label: 'Etiquetas', icon: Tags },
     ...(isAdmin
       ? [
-          { to: '/cuentas', label: 'Setters IA', icon: Bot },
+          { to: '/cuentas', label: 'Conexiones', icon: Building2 },
           { to: '/competencias', label: 'Competencias', icon: Swords },
           { to: '/apis', label: 'APIs de IA', icon: Plug },
         ]

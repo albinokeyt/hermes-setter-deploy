@@ -194,6 +194,7 @@ export default async function portalRoutes(app) {
         `INSERT INTO accounts (name, location_id, mode, webhook_token, portal_key) VALUES ($1, $2, 'oauth', $3, $4) RETURNING *`,
         [nm, loc, crypto.randomBytes(16).toString('hex'), crypto.randomBytes(24).toString('hex')]
       );
+      await q(`INSERT INTO setters (account_id, name, is_default) VALUES ($1, 'Setter principal', true)`, [account.id]);
       // Setter recién creado en ESTA instalación (control probado por OAuth) → puede reclamar.
       return resolveEntry(reply, account, email, name, true);
     }
@@ -266,6 +267,7 @@ export default async function portalRoutes(app) {
         `INSERT INTO accounts (name, location_id, mode, webhook_token, portal_key) VALUES ($1, $2, 'oauth', $3, $4) RETURNING *`,
         [nm, locationId, crypto.randomBytes(16).toString('hex'), crypto.randomBytes(24).toString('hex')]
       );
+      await q(`INSERT INTO setters (account_id, name, is_default) VALUES ($1, 'Setter principal', true)`, [account.id]);
     }
     // GHL ya certifica que el usuario pertenece a esta subcuenta → acceso directo (sin roster ni lista).
     if (!normEmail(account.owner_email)) await claimOwner(account.id, email); // primer usuario = responsable

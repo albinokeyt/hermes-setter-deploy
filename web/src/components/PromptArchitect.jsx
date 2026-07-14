@@ -5,7 +5,8 @@ import { Button, Banner } from './ui.jsx';
 
 // Chat con la IA arquitecta que arma/ajusta los 3 bloques del prompt de un setter.
 // mode: 'architect' (entrevista) o 'edit' (aplicar cambios con imágenes).
-export function PromptArchitect({ accountId, mode = 'architect', onApplied, compact = false }) {
+export function PromptArchitect({ accountId, targetPath, mode = 'architect', onApplied, compact = false }) {
+  const base = targetPath || `/api/accounts/${accountId}`;
   const [chat, setChat] = useState([]);
   const [text, setText] = useState('');
   const [images, setImages] = useState([]); // data URLs, NO se guardan
@@ -41,7 +42,7 @@ export function PromptArchitect({ accountId, mode = 'architect', onApplied, comp
     setBusy(true);
     scroll();
     try {
-      const r = await api.post(`/api/accounts/${accountId}/prompt-editor`, { history, message: msg, images: shownImgs, mode });
+      const r = await api.post(`${base}/prompt-editor`, { history, message: msg, images: shownImgs, mode });
       setChat((c) => [...c, { role: 'assistant', text: r.reply }]);
       if (r.proposal) setProposal(r.proposal);
     } catch (err) {
@@ -61,7 +62,7 @@ export function PromptArchitect({ accountId, mode = 'architect', onApplied, comp
       if (proposal.prompt_identity?.trim()) patch.prompt_identity = proposal.prompt_identity;
       if (proposal.prompt_business?.trim()) patch.prompt_business = proposal.prompt_business;
       if (proposal.prompt_flow?.trim()) patch.prompt_flow = proposal.prompt_flow;
-      await api.put(`/api/accounts/${accountId}`, patch);
+      await api.put(base, patch);
       setApplied(true);
       setProposal(null);
       setChat((c) => [...c, { role: 'assistant', text: '✅ Cambios aplicados a los 3 bloques del prompt del setter.' }]);
