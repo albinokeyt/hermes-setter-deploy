@@ -243,7 +243,8 @@ async function selectSetter(account, conv) {
   let pool = cands.filter((s) => hasReq(s) && setterMatches(s, tags));
   if (!pool.length) pool = cands.filter((s) => !hasReq(s));
   if (!pool.length) pool = cands.filter((s) => s.is_default);
-  return { setter: pool.length ? pickByWeight(pool) : null, hasSetters: true };
+  // Fuera de un versus el reparto es a partes iguales (el peso proporcional se usa en Versus).
+  return { setter: pool.length ? pool[Math.floor(Math.random() * pool.length)] : null, hasSetters: true };
 }
 
 // CTAs: si el primer mensaje contiene una palabra/frase clave, el setter espera un

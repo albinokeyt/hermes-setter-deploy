@@ -153,9 +153,8 @@ export default function SetterEdit() {
           <Input label={`Espera antes de responder (debounce): ${s.debounce_seconds} s`} type="range" min="10" max="120" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Number(e.target.value) })} className="!p-0 accent-violet-600" hint="El bot espera este silencio y responde a todo junto, como una persona." />
 
           {isAdmin && (
-            <div className="space-y-4 border-t border-slate-100 pt-5">
-              <Toggle checked={s.accepts_leads !== false} onChange={(v) => set({ accepts_leads: v })} label="Recibir leads nuevos" description="Si lo apagas, este setter deja de entrar al reparto de leads nuevos (sigue atendiendo los que ya lleva). Útil para retirar un setter de la batalla sin perder su historial." />
-              <Input label="Peso en el reparto (batalla de setters)" type="number" min="0" max="1000" value={s.weight ?? 100} onChange={(e) => set({ weight: Number(e.target.value) })} className="!w-40" hint="Si varios setters casan con el mismo lead, se reparten según su peso." />
+            <div className="border-t border-slate-100 pt-5">
+              <Toggle checked={s.accepts_leads !== false} onChange={(v) => set({ accepts_leads: v })} label="Recibir leads nuevos" description="Si lo apagas, este setter deja de recibir leads nuevos (sigue atendiendo los que ya lleva). Para repartir leads por proporción entre setters, usa un ⚔️ Versus." />
             </div>
           )}
 
