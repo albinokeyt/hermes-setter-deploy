@@ -125,7 +125,10 @@ export default function SettingsPage() {
           <Card className="space-y-4 p-6">
             <h3 className="text-sm font-bold text-slate-800">🔗 Enlace de agencia (autoservicio)</h3>
             <p className="text-xs text-slate-500">
-              Pégalo <b>UNA vez</b> como <b>Custom Menu Link a nivel agencia</b> en GHL: aparece en todas las subcuentas. Al abrirlo, GHL rellena la subcuenta y el usuario, y Hermes decide solo: si la app no está conectada la manda a instalarla, si está conectada pero sin setter lo crea (pide nombre y correo la primera vez), y si ya existe entra directo a su panel.
+              Pégalo <b>UNA vez</b> como <b>Custom Menu Link a nivel agencia</b> en GHL: aparece en todas las subcuentas. Al abrirlo, GHL rellena la subcuenta y el usuario, y Hermes decide solo: si la app no está conectada la manda a instalarla, si está conectada pero sin setter lo crea (pide nombre y correo la primera vez), y si ya existe entra a su panel.
+            </p>
+            <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+              🔒 <b>Solo entran los correos autorizados.</b> El primero que abre el setter (el instalador) queda como <b>responsable</b> y, desde su pestaña <b>Accesos</b>, decide qué otros correos pueden entrar. Aunque cualquiera del equipo vea el enlace, sin estar en la lista no accede.
             </p>
             <CopyField label="Enlace de agencia (pégalo tal cual, con las llaves)" value={cfg.agency_menu_url || ''} />
             <p className="text-xs text-slate-400">Alternativa más estricta: el enlace <b>por setter</b> (en cada setter → Conexión GHL) usa una clave única por subcuenta.</p>

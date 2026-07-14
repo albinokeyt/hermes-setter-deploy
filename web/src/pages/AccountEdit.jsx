@@ -7,12 +7,14 @@ import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 import { ModelPicker } from '../components/ModelPicker.jsx';
 import { PromptArchitect } from '../components/PromptArchitect.jsx';
+import { AccessManager } from '../components/AccessManager.jsx';
 
 const TABS = [
   { key: 'prompt', label: 'Prompt' },
   { key: 'ia', label: 'IA', adminOnly: true },
   { key: 'comportamiento', label: 'Comportamiento' },
   { key: 'seguimientos', label: 'Seguimientos' },
+  { key: 'accesos', label: 'Accesos' },
   { key: 'conexion', label: 'Conexión GHL', adminOnly: true },
   { key: 'arquitecto', label: '✨ Arquitecto de prompts', adminOnly: true },
 ];
@@ -410,6 +412,8 @@ export default function AccountEdit() {
           </Button>
         </div>
       )}
+
+      {tab === 'accesos' && <AccessManager accountId={id} />}
 
       {tab === 'conexion' && (
         <div className="max-w-2xl space-y-4">
