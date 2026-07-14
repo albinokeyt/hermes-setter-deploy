@@ -23,6 +23,17 @@ function mask(row) {
   return { ...row, api_key_masked: key ? `${key.slice(0, 6)}…${key.slice(-4)}` : '', api_key: undefined };
 }
 
+// Cache en memoria del catálogo de OpenRouter (con precios), 10 min.
+let _orCache = { at: 0, models: null };
+async function openRouterModels() {
+  if (_orCache.models && Date.now() - _orCache.at < 10 * 60 * 1000) return _orCache.models;
+  const res = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`OpenRouter /models → ${res.status}`);
+  const data = await res.json();
+  _orCache = { at: Date.now(), models: Array.isArray(data.data) ? data.data : [] };
+  return _orCache.models;
+}
+
 export default async function providerRoutes(app) {
   // las APIs de IA son solo de administración
   app.addHook('preHandler', async (req, reply) => {
@@ -30,6 +41,28 @@ export default async function providerRoutes(app) {
   });
 
   app.get('/api/providers/presets', async () => PRESETS);
+
+  // Consulta el precio de un modelo en OpenRouter y lo devuelve en $ por 1M de tokens.
+  app.get('/api/providers/price', async (req, reply) => {
+    const model = String(req.query?.model || '').trim();
+    if (!model) return reply.code(400).send({ error: 'Escribe primero el modelo' });
+    try {
+      const models = await openRouterModels();
+      const low = model.toLowerCase();
+      const m =
+        models.find((x) => x.id === model) ||
+        models.find((x) => String(x.id).toLowerCase() === low) ||
+        models.find((x) => String(x.id).toLowerCase().endsWith('/' + low)) ||
+        models.find((x) => String(x.canonical_slug || '').toLowerCase() === low);
+      if (!m || !m.pricing) {
+        return reply.code(404).send({ error: `No encontré "${model}" en OpenRouter. Escríbelo como aparece allí (ej. openai/gpt-4o-mini).` });
+      }
+      const per1M = (v) => (v ? Math.round(Number(v) * 1_000_000 * 1000) / 1000 : 0);
+      return { found: true, name: m.name || m.id, price_in: per1M(m.pricing.prompt), price_out: per1M(m.pricing.completion) };
+    } catch (err) {
+      return reply.code(502).send({ error: `No pude consultar OpenRouter: ${err.message}` });
+    }
+  });
 
   app.get('/api/providers', async () => {
     const rows = await q(`

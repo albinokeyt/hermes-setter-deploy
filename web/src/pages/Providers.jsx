@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Plug, Trash2, FlaskConical } from 'lucide-react';
+import { Plus, Plug, Trash2, FlaskConical, Search } from 'lucide-react';
 import { api } from '../api.js';
 import { Card, SectionTitle, Button, Input, Select, Banner, EmptyState } from '../components/ui.jsx';
 
@@ -41,6 +41,19 @@ export default function Providers() {
   const [testResult, setTestResult] = useState({});
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [priceLookup, setPriceLookup] = useState({ loading: false, msg: '' });
+
+  const buscarPrecio = async () => {
+    if (!form.default_model) { setPriceLookup({ loading: false, msg: 'Escribe primero el modelo por defecto' }); return; }
+    setPriceLookup({ loading: true, msg: '' });
+    try {
+      const r = await api.get(`/api/providers/price?model=${encodeURIComponent(form.default_model)}`);
+      setForm((f) => ({ ...f, price_in: String(r.price_in), price_out: String(r.price_out) }));
+      setPriceLookup({ loading: false, msg: `✓ ${r.name}: $${r.price_in} entrada / $${r.price_out} salida` });
+    } catch (err) {
+      setPriceLookup({ loading: false, msg: `✗ ${err.message}` });
+    }
+  };
 
   const load = () => api.get('/api/providers').then(setProviders).catch(() => {});
   useEffect(() => { load(); api.get('/api/providers/presets').then(setPresets).catch(() => {}); }, []);
@@ -102,9 +115,18 @@ export default function Providers() {
               <Input label="Modelo por defecto" value={form.default_model} onChange={(e) => setForm({ ...form, default_model: e.target.value })} placeholder="google/gemini-2.5-flash-lite" />
             </div>
             <KindPicker value={form.kinds} onChange={(kinds) => setForm({ ...form, kinds })} />
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Input label="Precio entrada ($ por 1M tokens)" type="number" step="0.001" min="0" value={form.price_in} onChange={(e) => setForm({ ...form, price_in: e.target.value })} hint="Opcional: para estimar el gasto. OpenRouter reporta el coste real solo." />
-              <Input label="Precio salida ($ por 1M tokens)" type="number" step="0.001" min="0" value={form.price_out} onChange={(e) => setForm({ ...form, price_out: e.target.value })} />
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-sm font-medium text-slate-700">Precios ($ por 1M tokens)</span>
+                <Button type="button" variant="secondary" className="!py-1.5 text-xs" onClick={buscarPrecio} loading={priceLookup.loading}>
+                  <Search size={14} /> Buscar precio en OpenRouter
+                </Button>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input label="Entrada" type="number" step="0.001" min="0" value={form.price_in} onChange={(e) => setForm({ ...form, price_in: e.target.value })} hint="Se rellena solo con el botón; puedes ajustarlo." />
+                <Input label="Salida" type="number" step="0.001" min="0" value={form.price_out} onChange={(e) => setForm({ ...form, price_out: e.target.value })} />
+              </div>
+              {priceLookup.msg && <p className={`mt-1.5 text-xs font-medium ${priceLookup.msg.startsWith('✓') ? 'text-emerald-600' : 'text-red-500'}`}>{priceLookup.msg}</p>}
             </div>
             <div className="flex gap-2">
               <Button type="submit" loading={saving}>{editingId ? 'Guardar cambios' : 'Añadir'}</Button>
