@@ -99,6 +99,15 @@ export async function requireManageAgents(req, reply) {
     reply.code(403).send({ error: 'Tu usuario solo tiene acceso a los mensajes, no a configurar los agentes' });
     return false;
   }
+  // La IA debe estar activada en su conexión (modelo SaaS: el admin la habilita).
+  const accId = req.auth?.accountId;
+  if (accId) {
+    const acc = await one(`SELECT ai_enabled FROM accounts WHERE id = $1`, [accId]);
+    if (acc && acc.ai_enabled === false) {
+      reply.code(403).send({ error: 'La IA no está activada en esta conexión' });
+      return false;
+    }
+  }
   return true;
 }
 

@@ -39,7 +39,8 @@ export default function Layout() {
   if (!me) return <div className="py-24 text-center text-sm text-slate-400">Cargando…</div>;
 
   const isAdmin = me.role === 'admin';
-  const restricted = !isAdmin && me.can_manage_agents === false; // solo mensajes
+  // Solo mensajes: si la IA de su conexión está apagada (SaaS) o su usuario está limitado.
+  const restricted = !isAdmin && (me.ai_enabled === false || me.can_manage_agents === false);
   const nav = [
     { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
     { to: '/conversaciones', label: 'Conversaciones', icon: MessagesSquare },

@@ -335,7 +335,7 @@ export async function handleInbound(account, evt) {
   // lead no tenga setter (por si se etiqueta más tarde). Si hay setters pero ninguno
   // aplica a este lead, NO se responde (respetar el filtro de etiquetas del setter).
   let respond = true;
-  if (!conv.setter_id) {
+  if (!conv.setter_id && account.ai_enabled) {
     const { setter, hasSetters, defer, versusId } = await selectSetter(account, conv);
     if (setter) {
       await q(`UPDATE conversations SET setter_id = $1, versus_id = $2 WHERE id = $3`, [setter.id, versusId || null, conv.id]);
@@ -413,7 +413,7 @@ export async function handleInbound(account, evt) {
       .catch(() => {});
   }
 
-  if (respond && account.bot_enabled && !conv.bot_paused) {
+  if (respond && account.ai_enabled && account.bot_enabled && !conv.bot_paused) {
     // usar el debounce del setter asignado también en mensajes posteriores (el bloque de
     // arriba solo fusiona al asignar; aquí cubrimos la conversación ya asignada).
     if (conv.setter_id && account.setter_id !== conv.setter_id) {
@@ -692,7 +692,7 @@ export async function processDebounce(job) {
 
   const { conv, account, provider, history, variantId, setterId } = await loadContext(conversationId);
   if (!conv || !account) return;
-  if (!account.bot_enabled || conv.bot_paused) return;
+  if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) return;
   if (!provider) {
     await logEvent('error_config', { conv: conv.id, msg: 'la cuenta o el agente no tiene proveedor de IA configurado' });
     return;
@@ -780,7 +780,7 @@ export async function processSend(job) {
 
   const { conv, account } = await loadContext(conversationId);
   if (!conv || !account) return;
-  if ((conv.bot_paused && !bypassPause) || !account.bot_enabled) return;
+  if ((conv.bot_paused && !bypassPause) || !account.bot_enabled || !account.ai_enabled) return;
   if (snapshotId && (await lastInboundId(conversationId)) !== snapshotId) return; // el lead volvió a escribir
   if (windowBlocked(conv)) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
@@ -827,7 +827,7 @@ export async function processFollowup(job) {
 
   const { conv, account, provider, history, variantId, setterId } = await loadContext(conversationId);
   if (!conv || !account || !provider) return;
-  if (!account.bot_enabled || conv.bot_paused) return;
+  if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) return;
 
   if (conv.stage === 'descartado') return; // lead descartado: cortar la cadena
   const steps = Array.isArray(account.followups) ? account.followups : [];

@@ -51,6 +51,11 @@ export default function Accounts() {
     try { await api.put(`/api/accounts/${acc.id}`, { test_mode: v }); } catch { loadAccounts(); }
   };
 
+  const toggleAi = async (acc, v) => {
+    setAccounts((list) => list.map((a) => (a.id === acc.id ? { ...a, ai_enabled: v } : a)));
+    try { await api.put(`/api/accounts/${acc.id}`, { ai_enabled: v }); } catch { loadAccounts(); }
+  };
+
   const openSetterForm = (accId) => { setConnFor(accId); setName(''); setSetterForm(true); setConnForm(false); };
 
   // 🏆 de la batalla: mejor tasa de agenda (o de conversión) entre setters con leads.
@@ -125,6 +130,13 @@ export default function Accounts() {
                     {(a.channels || []).map((ch) => <span key={ch} className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">{CHANNEL_LABEL[ch] || ch}</span>)}
                   </div>
                   <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => toggleAi(a, !a.ai_enabled)}
+                      title={a.ai_enabled ? 'IA activada: los setters responden y el cliente ve la configuración' : 'IA apagada: el cliente solo ve mensajes; los setters no responden'}
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${a.ai_enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}
+                    >
+                      {a.ai_enabled ? '🤖 IA activa' : '🤖 IA apagada'}
+                    </button>
                     <Toggle checked={a.test_mode} onChange={(v) => toggleTest(a, v)} label="🧪 Test" />
                     <Link to={`/cuentas/${a.id}`} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"><Settings2 size={14} /> Conexión</Link>
                   </div>
