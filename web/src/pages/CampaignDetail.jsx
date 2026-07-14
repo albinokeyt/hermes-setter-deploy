@@ -4,6 +4,7 @@ import { ArrowLeft, Plus, Trash2, Trophy, Pencil } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell } from 'recharts';
 import { api } from '../api.js';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Banner } from '../components/ui.jsx';
+import { ModelPicker } from '../components/ModelPicker.jsx';
 
 const fmtUsd = (v) => `$${Number(v || 0).toFixed(2)}`;
 const GOLD = '#b58a2e';
@@ -39,7 +40,7 @@ function VariantEditor({ campaignId, variant, providers, onDone }) {
           <option value="">— Elige —</option>
           {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </Select>
-        <Input label="Modelo" value={v.model} onChange={(e) => set({ model: e.target.value })} placeholder="por defecto" />
+        <ModelPicker label="Modelo" value={v.model} onChange={(val) => set({ model: val })} isOpenRouter={/openrouter\.ai/.test((providers.find((p) => p.id === v.provider_id) || {}).base_url || '')} placeholder="por defecto" />
         <Input label={`Temperatura: ${v.temperature}`} type="range" min="0" max="1.5" step="0.1" value={v.temperature} onChange={(e) => set({ temperature: Number(e.target.value) })} className="!p-0 accent-violet-600" />
       </div>
       <div className="flex gap-2">

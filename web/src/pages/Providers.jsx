@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Plug, Trash2, FlaskConical, Search } from 'lucide-react';
 import { api } from '../api.js';
 import { Card, SectionTitle, Button, Input, Select, Banner, EmptyState } from '../components/ui.jsx';
+import { ModelPicker } from '../components/ModelPicker.jsx';
 
 const EMPTY = { name: '', base_url: '', api_key: '', default_model: '', notes: '', price_in: '', price_out: '', kinds: ['text'] };
 
@@ -112,7 +113,15 @@ export default function Providers() {
             <Input label="URL base" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://openrouter.ai/api/v1" required />
             <div className="grid gap-4 sm:grid-cols-2">
               <Input label="API key" type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editingId ? '(dejar vacío para no cambiarla)' : 'sk-…'} required={!editingId} />
-              <Input label="Modelo por defecto" value={form.default_model} onChange={(e) => setForm({ ...form, default_model: e.target.value })} placeholder="google/gemini-2.5-flash-lite" />
+              <ModelPicker
+                label="Modelo por defecto"
+                value={form.default_model}
+                onChange={(v) => setForm((f) => ({ ...f, default_model: v }))}
+                onPick={(m) => setForm((f) => ({ ...f, default_model: m.id, price_in: String(m.price_in), price_out: String(m.price_out) }))}
+                isOpenRouter={/openrouter\.ai/.test(form.base_url || '')}
+                placeholder="google/gemini-2.5-flash-lite"
+                hint={/openrouter\.ai/.test(form.base_url || '') ? 'Busca y elige; el precio se rellena solo' : undefined}
+              />
             </div>
             <KindPicker value={form.kinds} onChange={(kinds) => setForm({ ...form, kinds })} />
             <div>

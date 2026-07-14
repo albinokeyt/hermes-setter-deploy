@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { CHANNELS, CHANNEL_LABEL } from '../stages.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
+import { ModelPicker } from '../components/ModelPicker.jsx';
 
 const TABS = [
   { key: 'prompt', label: 'Prompt' },
@@ -37,6 +38,10 @@ export default function AccountEdit() {
 
   const set = (patch) => setAcc({ ...acc, ...patch });
   const providersFor = (kind) => providers.filter((p) => !Array.isArray(p.kinds) || p.kinds.includes(kind));
+  const isOpenRouter = (providerId) => {
+    const p = providers.find((x) => x.id === providerId);
+    return Boolean(p && /openrouter\.ai/.test(p.base_url || ''));
+  };
 
   const save = async () => {
     setSaving(true);
@@ -162,12 +167,13 @@ export default function AccountEdit() {
               <option value="">— Elige una API de texto —</option>
               {providersFor('text').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </Select>
-            <Input
+            <ModelPicker
               label="Modelo"
               value={acc.model}
-              onChange={(e) => set({ model: e.target.value })}
+              onChange={(v) => set({ model: v })}
+              isOpenRouter={isOpenRouter(acc.provider_id)}
               placeholder="vacío = modelo por defecto del proveedor"
-              hint="Ej.: google/gemini-2.5-flash-lite (OpenRouter) · gemini-2.5-flash-lite (Gemini directo)"
+              hint={isOpenRouter(acc.provider_id) ? 'Busca y elige el modelo de OpenRouter' : 'Ej.: gemini-2.5-flash-lite'}
             />
             <div className="grid grid-cols-2 gap-4">
               <Input
@@ -199,7 +205,7 @@ export default function AccountEdit() {
                   <option value="">— Elige una API de imagen —</option>
                   {providersFor('image').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </Select>
-                <Input label="Modelo de imagen" value={acc.vision_model} onChange={(e) => set({ vision_model: e.target.value })} placeholder="google/gemini-2.5-flash" hint="Debe aceptar imágenes" />
+                <ModelPicker label="Modelo de imagen" value={acc.vision_model} onChange={(v) => set({ vision_model: v })} isOpenRouter={isOpenRouter(acc.vision_provider_id)} kind="image" placeholder="google/gemini-2.5-flash" hint="Debe aceptar imágenes" />
               </div>
             )}
           </Card>
@@ -217,7 +223,7 @@ export default function AccountEdit() {
                   <option value="">— Elige una API de audio —</option>
                   {providersFor('audio').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </Select>
-                <Input label="Modelo de audio (Whisper)" value={acc.audio_model} onChange={(e) => set({ audio_model: e.target.value })} placeholder="openai/whisper-large-v3-turbo" hint="Endpoint /audio/transcriptions (OpenRouter, Groq u OpenAI)" />
+                <ModelPicker label="Modelo de audio (Whisper)" value={acc.audio_model} onChange={(v) => set({ audio_model: v })} isOpenRouter={isOpenRouter(acc.audio_provider_id)} kind="audio" placeholder="openai/whisper-large-v3-turbo" hint="Transcripción /audio/transcriptions" />
               </div>
             )}
           </Card>
