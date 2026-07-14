@@ -89,6 +89,18 @@ export default async function conversationRoutes(app) {
     return one(`SELECT * FROM conversations WHERE id = $1`, [conv.id]);
   });
 
+  // Borra la conversación por completo (chat + memoria + sesión) para que el contacto
+  // vuelva a entrar como NUEVO. Útil para pruebas. No toca el contacto en GHL.
+  app.delete('/api/conversations/:id', async (req, reply) => {
+    const conv = await loadScopedConv(req, reply);
+    if (!conv) return;
+    await cancelBotJobs(conv.id); // cancela debounce/seguimientos/reactivación pendientes
+    await q(`DELETE FROM llm_usage WHERE conversation_id = $1`, [conv.id]);
+    await q(`DELETE FROM appointments WHERE conversation_id = $1`, [conv.id]);
+    await q(`DELETE FROM conversations WHERE id = $1`, [conv.id]); // cascada: mensajes + historial
+    return { ok: true };
+  });
+
   // envío manual desde el panel (toma el control: pausa el bot)
   app.post('/api/conversations/:id/send', async (req, reply) => {
     const conv = await loadScopedConv(req, reply);

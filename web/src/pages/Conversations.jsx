@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, MessagesSquare, Bot, PauseCircle, ExternalLink, User } from 'lucide-react';
+import { Search, MessagesSquare, Bot, PauseCircle, ExternalLink, User, Trash2 } from 'lucide-react';
 import { api, timeAgo, ghlContactUrl } from '../api.js';
 import { STAGES, CHANNEL_LABEL } from '../stages.js';
 import { Card, SectionTitle, StagePill, Avatar, Select, EmptyState } from '../components/ui.jsx';
@@ -20,19 +20,29 @@ export default function Conversations() {
     api.get(`/api/accounts/${filters.account_id}/setters`).then(setSetters).catch(() => setSetters([]));
   }, [filters.account_id]);
 
-  useEffect(() => {
+  const reload = () => {
     const params = new URLSearchParams();
     if (filters.account_id) params.set('account_id', filters.account_id);
     if (filters.setter_id) params.set('setter_id', filters.setter_id);
     if (filters.stage) params.set('stage', filters.stage);
     if (filters.human) params.set('human', filters.human);
     if (filters.search) params.set('search', filters.search);
-    const t = setTimeout(() => {
-      setLoading(true);
-      api.get(`/api/conversations?${params}`).then(setRows).catch(() => {}).finally(() => setLoading(false));
-    }, 250);
+    setLoading(true);
+    api.get(`/api/conversations?${params}`).then(setRows).catch(() => {}).finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    const t = setTimeout(reload, 250);
     return () => clearTimeout(t);
   }, [filters]);
+
+  const remove = async (c, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.confirm(`¿Borrar la conversación con ${c.lead_name || 'este contacto'}? Chat, memoria y sesión se borran y volverá a entrar como nuevo.`)) return;
+    await api.del(`/api/conversations/${c.id}`);
+    setRows((rs) => rs.filter((x) => x.id !== c.id));
+  };
 
   return (
     <div>
@@ -114,6 +124,9 @@ export default function Conversations() {
                     : <span title="Bot activo"><Bot size={16} className="text-emerald-500" /></span>}
                   <StagePill stage={c.stage} />
                   <span className="w-16 text-right text-[11px] text-slate-400">{timeAgo(c.updated_at)}</span>
+                  <button onClick={(e) => remove(c, e)} title="Borrar conversación (reiniciar)" className="text-slate-300 transition hover:text-red-500">
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               </div>
             );

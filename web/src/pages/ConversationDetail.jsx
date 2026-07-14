@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Send, Bot, User, Clock, ExternalLink, Ban, X } from 'lucide-react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Send, Bot, User, Clock, ExternalLink, Ban, X, Trash2 } from 'lucide-react';
 import { api, timeAgo, ghlContactUrl } from '../api.js';
 import { STAGES, CHANNEL_LABEL, stageByKey } from '../stages.js';
 import { Card, Button, StagePill, Toggle, Select, Banner } from '../components/ui.jsx';
@@ -30,6 +30,7 @@ function Bubble({ m }) {
 
 export default function ConversationDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [conv, setConv] = useState(null);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -45,6 +46,12 @@ export default function ConversationDetail() {
   if (!conv) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 
   const update = async (patch) => { await api.put(`/api/conversations/${id}`, patch); load(); };
+
+  const remove = async () => {
+    if (!window.confirm('¿Borrar TODA la conversación (chat, memoria y sesión)? El contacto volverá a entrar como nuevo. No se puede deshacer.')) return;
+    await api.del(`/api/conversations/${id}`);
+    navigate('/conversaciones');
+  };
 
   const toggleExclude = async (exclude) => {
     setExcluding(true);
@@ -195,6 +202,10 @@ export default function ConversationDetail() {
               </div>
             )}
           </Card>
+
+          <button onClick={remove} className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-400 transition hover:text-red-500">
+            <Trash2 size={14} /> Borrar conversación (reiniciar para volver a probar)
+          </button>
         </div>
       </div>
 
