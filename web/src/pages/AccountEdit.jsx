@@ -28,11 +28,18 @@ export default function AccountEdit() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [calendars, setCalendars] = useState(null);
 
   useEffect(() => {
     api.get(`/api/accounts/${id}`).then(setAcc).catch((e) => setError(e.message));
     api.get('/api/providers').then(setProviders).catch(() => {});
   }, [id]);
+
+  useEffect(() => {
+    if (tab === 'conexion' && isAdmin && calendars === null) {
+      api.get(`/api/accounts/${id}/calendars`).then((r) => setCalendars(r)).catch(() => setCalendars({ calendars: [], source: 'error' }));
+    }
+  }, [tab, isAdmin, id, calendars]);
 
   if (!acc) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 
@@ -359,6 +366,25 @@ export default function AccountEdit() {
               <option value="oauth">App de Marketplace (OAuth) — recomendado</option>
               <option value="pit">Token privado (PIT) + Workflow — sin app</option>
             </Select>
+
+            <div className="border-t border-slate-100 pt-4">
+              <Select
+                label="📅 Calendario que cuenta como 'agenda'"
+                value={acc.calendar_id || ''}
+                onChange={(e) => set({ calendar_id: e.target.value })}
+              >
+                <option value="">Cualquier calendario</option>
+                {(calendars?.calendars || []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {acc.calendar_id && !(calendars?.calendars || []).some((c) => c.id === acc.calendar_id) && (
+                  <option value={acc.calendar_id}>{acc.calendar_id} (guardado)</option>
+                )}
+              </Select>
+              <p className="mt-1 text-xs text-slate-400">
+                Cuando alguien reserve (o cancele) en este calendario, el lead pasa a <b>Agendado</b> / <b>Agenda cancelada</b>. Con "Cualquier calendario" cuenta cualquier cita de la subcuenta.
+                {calendars?.source === 'historial' && ' · Mostrando calendarios vistos en citas previas; reconecta la subcuenta para ver la lista completa con nombres.'}
+                {calendars?.source === 'sin_conexion' && ' · Conecta la subcuenta para elegir el calendario.'}
+              </p>
+            </div>
 
             {acc.mode === 'oauth' ? (
               <div className="space-y-4">

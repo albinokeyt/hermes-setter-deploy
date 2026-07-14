@@ -282,10 +282,17 @@ export async function handleAppointmentEvent(account, type, p) {
   const appt = p.appointment || p;
   const ghlId = appt.id || p.appointmentId || null;
   const contactId = String(appt.contactId || p.contactId || '');
+  const calendarId = appt.calendarId || appt.calendar_id || p.calendarId || '';
   const statusRaw = String(appt.appointmentStatus || appt.status || '').toLowerCase();
   const cancelled = type === 'AppointmentDelete' || ['cancelled', 'canceled', 'noshow', 'no_show', 'invalid'].includes(statusRaw);
   const status = cancelled ? 'cancelado' : 'agendado';
   const startTime = appt.startTime || appt.start_time || null;
+
+  // Si la cuenta tiene un calendario elegido, solo cuentan las citas de ESE calendario.
+  if (account.calendar_id && calendarId && calendarId !== account.calendar_id) {
+    await logEvent('cita_otro_calendario', { account: account.id, contactId, calendarId, esperado: account.calendar_id });
+    return;
+  }
 
   const conv = contactId
     ? await one(
@@ -303,13 +310,13 @@ export async function handleAppointmentEvent(account, type, p) {
          start_time = COALESCE(EXCLUDED.start_time, appointments.start_time),
          conversation_id = COALESCE(appointments.conversation_id, EXCLUDED.conversation_id),
          updated_at = now()`,
-      [account.id, conv?.id || null, String(ghlId), contactId, appt.calendarId || null, appt.title || '', status, startTime]
+      [account.id, conv?.id || null, String(ghlId), contactId, calendarId || null, appt.title || '', status, startTime]
     );
   } else {
     await q(
       `INSERT INTO appointments (account_id, conversation_id, ghl_contact_id, calendar_id, title, status, start_time)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [account.id, conv?.id || null, contactId, appt.calendarId || null, appt.title || '', status, startTime]
+      [account.id, conv?.id || null, contactId, calendarId || null, appt.title || '', status, startTime]
     );
   }
 

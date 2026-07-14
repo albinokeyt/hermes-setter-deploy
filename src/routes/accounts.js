@@ -2,12 +2,14 @@ import crypto from 'node:crypto';
 import { q, one } from '../db.js';
 import { config } from '../config.js';
 import { requireAdmin, scopedAccountId } from '../lib/session.js';
+import * as ghl from '../services/ghl.js';
 
 const ADMIN_EDITABLE = [
   'name', 'mode', 'pit_token', 'location_id', 'channels', 'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'active_hours',
   'timezone', 'sync_tags', 'auto_handoff', 'bot_enabled', 'test_mode', 'test_tag',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
+  'calendar_id',
 ];
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
@@ -90,5 +92,24 @@ export default async function accountRoutes(app) {
     if (!requireAdmin(req, reply)) return;
     await q(`DELETE FROM accounts WHERE id = $1`, [req.params.id]);
     return { ok: true };
+  });
+
+  // Lista de calendarios de la subcuenta (desde GHL; si falta el scope, usa los vistos en citas).
+  app.get('/api/accounts/:id/calendars', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
+    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [req.params.id]);
+    if (!account) return reply.code(404).send({ error: 'No existe' });
+    if (!account.location_id) return { calendars: [], source: 'sin_conexion' };
+    try {
+      const cals = await ghl.listCalendars(account, account.location_id);
+      if (cals.length) return { calendars: cals, source: 'ghl' };
+    } catch (err) {
+      // scope no concedido u otro error → seguimos al fallback
+    }
+    const seen = await q(
+      `SELECT DISTINCT calendar_id AS id FROM appointments WHERE account_id = $1 AND calendar_id IS NOT NULL AND calendar_id <> ''`,
+      [account.id]
+    );
+    return { calendars: seen.map((s) => ({ id: s.id, name: s.id })), source: 'historial' };
   });
 }

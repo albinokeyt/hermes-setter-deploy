@@ -137,6 +137,12 @@ export async function removeTags(account, contactId, tags) {
   return ghlApi(account, 'DELETE', `/contacts/${contactId}/tags`, { body: { tags }, version: V_CONTACTS });
 }
 
+export async function listCalendars(account, locationId) {
+  const data = await ghlApi(account, 'GET', `/calendars/?locationId=${encodeURIComponent(locationId)}`, { version: V_CONVERSATIONS });
+  const cals = Array.isArray(data?.calendars) ? data.calendars : [];
+  return cals.map((c) => ({ id: c.id, name: c.name || c.calendarName || c.id, active: c.isActive !== false }));
+}
+
 export async function getLocationName(account, locationId) {
   try {
     const data = await ghlApi(account, 'GET', `/locations/${locationId}`, { version: V_CONTACTS });

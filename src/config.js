@@ -62,5 +62,6 @@ export const OAUTH_SCOPES = [
   'contacts.readonly',
   'contacts.write',
   'locations.readonly',
+  'calendars.readonly',
   'calendars/events.readonly',
 ];
