@@ -11,6 +11,7 @@ import { startWorkers } from './workers.js';
 import authRoutes from './routes/auth.js';
 import providerRoutes from './routes/providers.js';
 import accountRoutes from './routes/accounts.js';
+import setterRoutes from './routes/setters.js';
 import conversationRoutes from './routes/conversations.js';
 import dashboardRoutes from './routes/dashboard.js';
 import playgroundRoutes from './routes/playground.js';
@@ -50,6 +51,7 @@ async function main() {
   await app.register(authRoutes);
   await app.register(providerRoutes);
   await app.register(accountRoutes);
+  await app.register(setterRoutes);
   await app.register(conversationRoutes);
   await app.register(dashboardRoutes);
   await app.register(playgroundRoutes);
