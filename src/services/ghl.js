@@ -32,6 +32,7 @@ export async function exchangeCode(code) {
     client_secret: creds.client_secret || '',
     grant_type: 'authorization_code',
     code,
+    user_type: 'Location', // pide token a NIVEL SUBCUENTA (si no, GHL devuelve uno de agencia sin locationId)
   });
 }
 
