@@ -122,6 +122,66 @@ async function pickVariant(account) {
   return { campaignId: campaign.id, variant: variants[variants.length - 1] };
 }
 
+// ─── Setters: varios bots por conexión, enrutados por etiqueta ───────────────
+
+// Aplica el "cerebro" de un setter sobre la conexión (lo que el setter no defina, hereda).
+function mergeSetter(account, s) {
+  if (!s) return account;
+  return {
+    ...account,
+    setter_id: s.id,
+    setter_name: s.name,
+    prompt_identity: s.prompt_identity,
+    prompt_business: s.prompt_business,
+    prompt_flow: s.prompt_flow,
+    provider_id: s.provider_id || account.provider_id,
+    model: s.model || account.model,
+    temperature: s.temperature,
+    max_msgs: s.max_msgs,
+    debounce_seconds: s.debounce_seconds,
+    followups: Array.isArray(s.followups) && s.followups.length ? s.followups : account.followups,
+    required_tags: s.required_tags,
+    required_tags_mode: s.required_tags_mode,
+  };
+}
+
+function setterMatches(s, tags) {
+  const req = Array.isArray(s.required_tags) ? s.required_tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : [];
+  if (!req.length) return true; // sin requisito de etiqueta → catch-all
+  if (tags === null) return false; // no pudimos leer etiquetas → los que exigen no casan
+  const mode = s.required_tags_mode === 'all' ? 'all' : 'any';
+  return mode === 'all' ? req.every((t) => tags.includes(t)) : req.some((t) => tags.includes(t));
+}
+
+function pickByWeight(pool) {
+  const total = pool.reduce((sum, s) => sum + Math.max(0, s.weight || 0), 0);
+  if (total <= 0) return pool[0];
+  let r = Math.random() * total;
+  for (const s of pool) { r -= Math.max(0, s.weight || 0); if (r <= 0) return s; }
+  return pool[pool.length - 1];
+}
+
+// Elige el setter que atiende a este lead: primero los de etiqueta específica que casan,
+// si ninguno los catch-all (sin etiqueta), y como último recurso el setter por defecto.
+// Entre varios elegibles, desempata por peso (la "batalla").
+// Devuelve { setter, hasSetters }:
+//   setter=<fila>          → ese setter atiende
+//   setter=null,hasSetters → la conexión SÍ tiene setters pero ninguno aplica → no responder
+//   setter=null,!hasSetters→ conexión sin setters (legacy) → usar config de la cuenta / campañas
+async function selectSetter(account, conv) {
+  const all = await q(`SELECT * FROM setters WHERE account_id = $1 ORDER BY id`, [account.id]);
+  if (!all.length) return { setter: null, hasSetters: false };
+  const setters = all.filter((s) => s.bot_enabled);
+  if (!setters.length) return { setter: null, hasSetters: true }; // hay setters pero todos apagados
+  if (setters.length === 1) return { setter: setters[0], hasSetters: true };
+  const tags = await getContactTags(account, conv);
+  const hasReq = (s) => Array.isArray(s.required_tags) && s.required_tags.length > 0;
+  let pool = setters.filter((s) => hasReq(s) && setterMatches(s, tags));
+  if (!pool.length) pool = setters.filter((s) => !hasReq(s));
+  if (!pool.length) pool = setters.filter((s) => s.is_default);
+  return { setter: pool.length ? pickByWeight(pool) : null, hasSetters: true };
+}
+
 export async function cancelBotJobs(conversationId) {
   await redis.del(debKey(conversationId));
   await redis.del(fuKey(conversationId));
@@ -131,7 +191,7 @@ export async function cancelBotJobs(conversationId) {
 // Registra tokens y coste de cada llamada al LLM. OpenRouter devuelve el coste
 // real (usage.cost, USD); para el resto se estima con los precios opcionales
 // del proveedor ($ por 1M de tokens).
-export async function recordUsage(accountId, conversationId, provider, model, usage, source, variantId = null) {
+export async function recordUsage(accountId, conversationId, provider, model, usage, source, variantId = null, setterId = null) {
   if (!usage) return;
   try {
     // el audio reporta input_tokens/output_tokens; el chat prompt_tokens/completion_tokens
@@ -142,9 +202,9 @@ export async function recordUsage(accountId, conversationId, provider, model, us
       cost = (pt * Number(provider.price_in || 0) + ct * Number(provider.price_out || 0)) / 1_000_000;
     }
     await q(
-      `INSERT INTO llm_usage (account_id, conversation_id, variant_id, model, prompt_tokens, completion_tokens, cost_usd, source)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [accountId, conversationId, variantId, model || '', pt, ct, cost, source]
+      `INSERT INTO llm_usage (account_id, conversation_id, variant_id, setter_id, model, prompt_tokens, completion_tokens, cost_usd, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [accountId, conversationId, variantId, setterId, model || '', pt, ct, cost, source]
     );
   } catch (err) {
     console.error('[usage]', err.message);
@@ -188,15 +248,30 @@ export async function handleInbound(account, evt) {
     [account.id, evt.contactId, evt.conversationId || null, channel, evt.contactName || '']
   );
 
-  // lead nuevo + campaña activa → se delega a un agente de la competencia por peso
-  if (conv.is_new && !conv.variant_id) {
-    const pick = await pickVariant(account);
-    if (pick) {
-      await q(`UPDATE conversations SET campaign_id = $1, variant_id = $2 WHERE id = $3`, [pick.campaignId, pick.variant.id, conv.id]);
-      conv.variant_id = pick.variant.id;
-      conv.campaign_id = pick.campaignId;
-      if (pick.variant.debounce_seconds) account = { ...account, debounce_seconds: pick.variant.debounce_seconds };
-      await logEvent('lead_asignado_campana', { conv: conv.id, campana: pick.campaignId, agente: pick.variant.name });
+  // Enrutado al setter de la conexión que casa por etiqueta. Se reintenta mientras el
+  // lead no tenga setter (por si se etiqueta más tarde). Si hay setters pero ninguno
+  // aplica a este lead, NO se responde (respetar el filtro de etiquetas del setter).
+  let respond = true;
+  if (!conv.setter_id) {
+    const { setter, hasSetters } = await selectSetter(account, conv);
+    if (setter) {
+      await q(`UPDATE conversations SET setter_id = $1 WHERE id = $2`, [setter.id, conv.id]);
+      conv.setter_id = setter.id;
+      account = mergeSetter(account, setter);
+      await logEvent('lead_asignado_setter', { conv: conv.id, setter: setter.id, nombre: setter.name });
+    } else if (hasSetters) {
+      respond = false;
+      await logEvent('sin_setter_para_lead', { conv: conv.id, contacto: conv.ghl_contact_id });
+    } else if (!conv.variant_id) {
+      // legacy (conexión sin setters): reparto por campaña/variante antigua
+      const pick = await pickVariant(account);
+      if (pick) {
+        await q(`UPDATE conversations SET campaign_id = $1, variant_id = $2 WHERE id = $3`, [pick.campaignId, pick.variant.id, conv.id]);
+        conv.variant_id = pick.variant.id;
+        conv.campaign_id = pick.campaignId;
+        if (pick.variant.debounce_seconds) account = { ...account, debounce_seconds: pick.variant.debounce_seconds };
+        await logEvent('lead_asignado_campana', { conv: conv.id, campana: pick.campaignId, agente: pick.variant.name });
+      }
     }
   }
 
@@ -232,7 +307,13 @@ export async function handleInbound(account, evt) {
       .catch(() => {});
   }
 
-  if (account.bot_enabled && !conv.bot_paused) {
+  if (respond && account.bot_enabled && !conv.bot_paused) {
+    // usar el debounce del setter asignado también en mensajes posteriores (el bloque de
+    // arriba solo fusiona al asignar; aquí cubrimos la conversación ya asignada).
+    if (conv.setter_id && account.setter_id !== conv.setter_id) {
+      const s = await one(`SELECT * FROM setters WHERE id = $1`, [conv.setter_id]);
+      if (s) account = mergeSetter(account, s);
+    }
     await scheduleDebounce(account, conv.id);
   }
   return conv;
@@ -339,20 +420,21 @@ export async function handleAppointmentEvent(account, type, p) {
 
   if (ghlId) {
     await q(
-      `INSERT INTO appointments (account_id, conversation_id, ghl_appointment_id, ghl_contact_id, calendar_id, title, status, start_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO appointments (account_id, conversation_id, setter_id, ghl_appointment_id, ghl_contact_id, calendar_id, title, status, start_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (ghl_appointment_id) WHERE ghl_appointment_id IS NOT NULL DO UPDATE SET
          status = EXCLUDED.status,
          start_time = COALESCE(EXCLUDED.start_time, appointments.start_time),
          conversation_id = COALESCE(appointments.conversation_id, EXCLUDED.conversation_id),
+         setter_id = COALESCE(appointments.setter_id, EXCLUDED.setter_id),
          updated_at = now()`,
-      [account.id, conv?.id || null, String(ghlId), contactId, calendarId || null, appt.title || '', status, startTime]
+      [account.id, conv?.id || null, conv?.setter_id || null, String(ghlId), contactId, calendarId || null, appt.title || '', status, startTime]
     );
   } else {
     await q(
-      `INSERT INTO appointments (account_id, conversation_id, ghl_contact_id, calendar_id, title, status, start_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [account.id, conv?.id || null, contactId, calendarId || null, appt.title || '', status, startTime]
+      `INSERT INTO appointments (account_id, conversation_id, setter_id, ghl_contact_id, calendar_id, title, status, start_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [account.id, conv?.id || null, conv?.setter_id || null, contactId, calendarId || null, appt.title || '', status, startTime]
     );
   }
 
@@ -390,13 +472,16 @@ async function loadContext(conversationId) {
   if (!conv) return {};
   let account = await one(`SELECT * FROM accounts WHERE id = $1`, [conv.account_id]);
   let variantId = null;
-  // si el lead está en una campaña, el "cerebro" (prompt, modelo, seguimientos) es el del agente asignado
-  if (conv.variant_id && account) {
+  let setterId = null;
+  // el "cerebro" (prompt, modelo, seguimientos) es el del SETTER asignado a la conversación
+  if (conv.setter_id && account) {
+    const s = await one(`SELECT * FROM setters WHERE id = $1`, [conv.setter_id]);
+    if (s) { account = mergeSetter(account, s); setterId = s.id; }
+  } else if (conv.variant_id && account) {
+    // legacy: conversaciones asignadas a una variante de campaña antes del modelo de setters
     const v = await one(`SELECT * FROM campaign_variants WHERE id = $1`, [conv.variant_id]);
     if (v) {
       variantId = v.id;
-      // el agente aporta su cerebro; lo que no defina (proveedor, modelo, seguimientos)
-      // hereda de la cuenta para nunca dejar al lead sin respuesta.
       account = {
         ...account,
         prompt_identity: v.prompt_identity, prompt_business: v.prompt_business, prompt_flow: v.prompt_flow,
@@ -412,7 +497,7 @@ async function loadContext(conversationId) {
   const history = (
     await q(`SELECT * FROM messages WHERE conversation_id = $1 ORDER BY id DESC LIMIT 30`, [conversationId])
   ).reverse();
-  return { conv, account, provider, history, variantId };
+  return { conv, account, provider, history, variantId, setterId };
 }
 
 // Modo test: el bot solo responde a contactos de GHL que tengan la etiqueta de prueba.
@@ -477,7 +562,7 @@ export async function processDebounce(job) {
   const { conversationId, token } = job.data;
   if (token && token !== (await redis.get(debKey(conversationId)))) return; // job viejo
 
-  const { conv, account, provider, history, variantId } = await loadContext(conversationId);
+  const { conv, account, provider, history, variantId, setterId } = await loadContext(conversationId);
   if (!conv || !account) return;
   if (!account.bot_enabled || conv.bot_paused) return;
   if (!provider) {
@@ -518,7 +603,7 @@ export async function processDebounce(job) {
     }
     return;
   }
-  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'reply', variantId);
+  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'reply', variantId, setterId);
 
   // ¿escribió algo nuevo mientras pensábamos? → re-debounce, no enviamos nada
   if ((await lastInboundId(conversationId)) !== snapshotId) {
@@ -612,7 +697,7 @@ export async function processFollowup(job) {
   const { conversationId, token } = job.data;
   if (token && token !== (await redis.get(fuKey(conversationId)))) return; // cancelado o reprogramado
 
-  const { conv, account, provider, history, variantId } = await loadContext(conversationId);
+  const { conv, account, provider, history, variantId, setterId } = await loadContext(conversationId);
   if (!conv || !account || !provider) return;
   if (!account.bot_enabled || conv.bot_paused) return;
 
@@ -661,7 +746,7 @@ export async function processFollowup(job) {
     return;
   }
   await redis.del(`furetry:${conversationId}`);
-  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'seguimiento', variantId);
+  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'seguimiento', variantId, setterId);
 
   // ¿el lead respondió mientras generábamos? → el ciclo normal (debounce) responde; este seguimiento sobra
   if ((await lastInboundId(conversationId)) !== snapshotId) return;
