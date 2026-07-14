@@ -27,6 +27,16 @@ function loadModels(cat) {
 const inputCls =
   'w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100 placeholder:text-slate-400';
 
+const UNIT_SUFFIX = { minute: '/min', hour: '/hora', second: '/seg', audio: ' · audio' };
+
+// precio con su unidad real: por token (1M) o por audio (minuto/hora/segundo)
+function priceLabel(m) {
+  if (m.unit && m.unit !== 'token') {
+    return `$${m.price}${UNIT_SUFFIX[m.unit] || ''}`;
+  }
+  return `$${m.price_in}/$${m.price_out}`;
+}
+
 export function ModelPicker({ label, value, onChange, isOpenRouter, kind = 'text', placeholder, hint, onPick }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -112,7 +122,7 @@ export function ModelPicker({ label, value, onChange, isOpenRouter, kind = 'text
                   <span className="block truncate text-sm font-medium text-slate-800">{m.id}</span>
                   <span className="block truncate text-[11px] text-slate-400">{m.name}</span>
                 </span>
-                <span className="shrink-0 text-[11px] font-medium text-slate-500">${m.price_in}/${m.price_out}</span>
+                <span className="shrink-0 text-[11px] font-medium text-slate-500">{priceLabel(m)}</span>
               </button>
             ))}
             {!loading && !matched.length && <div className="px-3 py-4 text-xs text-slate-400">Sin resultados en esta categoría</div>}

@@ -117,7 +117,7 @@ export default function Providers() {
                 label="Modelo por defecto"
                 value={form.default_model}
                 onChange={(v) => setForm((f) => ({ ...f, default_model: v }))}
-                onPick={(m) => setForm((f) => ({ ...f, default_model: m.id, price_in: String(m.price_in), price_out: String(m.price_out) }))}
+                onPick={(m) => setForm((f) => (m.unit && m.unit !== 'token' ? { ...f, default_model: m.id } : { ...f, default_model: m.id, price_in: String(m.price_in), price_out: String(m.price_out) }))}
                 isOpenRouter={/openrouter\.ai/.test(form.base_url || '')}
                 placeholder="google/gemini-2.5-flash-lite"
                 hint={/openrouter\.ai/.test(form.base_url || '') ? 'Busca y elige; el precio se rellena solo' : undefined}

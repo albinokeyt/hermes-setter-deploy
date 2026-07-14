@@ -56,6 +56,18 @@ export default async function providerRoutes(app) {
     video: '?output_modalities=video',
   };
 
+  // Los modelos de transcripción NO se cobran por token sino por audio, y la unidad
+  // (minuto / hora / segundo) varía por modelo — OpenRouter no la expone en su API,
+  // así que la mapeamos según lo que muestra su web (verificado modelo a modelo).
+  function audioUnit(id) {
+    const s = String(id).toLowerCase();
+    if (s.includes('whisper-large-v3-turbo')) return 'hour';
+    if (s.includes('mai-transcribe')) return 'hour';
+    if (s.includes('qwen3-asr') || s.includes('asr-flash')) return 'second';
+    if (s.includes('whisper') || s.includes('chirp') || s.includes('parakeet') || s.includes('voxtral')) return 'minute';
+    return 'audio'; // desconocido: mostramos el valor crudo sin afirmar la unidad
+  }
+
   // Lista de modelos de OpenRouter en vivo (con precios), por categoría.
   app.get('/api/providers/models', async (req, reply) => {
     const category = String(req.query?.category || 'text').toLowerCase();
@@ -64,12 +76,15 @@ export default async function providerRoutes(app) {
       const models = await openRouterModels(query);
       const per1M = (v) => (v ? Math.round(Number(v) * 1_000_000 * 1000) / 1000 : 0);
       const list = models
-        .map((m) => ({
-          id: m.id,
-          name: m.name || m.id,
-          price_in: per1M(m.pricing?.prompt),
-          price_out: per1M(m.pricing?.completion),
-        }))
+        .map((m) => {
+          const prompt = m.pricing?.prompt || '0';
+          const completion = m.pricing?.completion || '0';
+          // en transcripción, los modelos sin precio de salida se cobran por audio (tiempo)
+          if (category === 'transcription' && Number(completion) === 0) {
+            return { id: m.id, name: m.name || m.id, unit: audioUnit(m.id), price: String(prompt) };
+          }
+          return { id: m.id, name: m.name || m.id, unit: 'token', price_in: per1M(prompt), price_out: per1M(completion) };
+        })
         .sort((a, b) => a.id.localeCompare(b.id));
       return { models: list };
     } catch (err) {
