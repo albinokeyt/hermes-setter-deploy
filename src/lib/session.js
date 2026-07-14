@@ -123,6 +123,31 @@ export function accountScope(req) {
   return { all: false, accountId, denied: false };
 }
 
+// Conjunto de conexiones a las que un NO-admin tiene acceso: su cuenta de sesión MÁS
+// las conexiones que POSEE por correo (owner_email) — para clientes con varias subcuentas.
+// admin → null (todas). Devuelve array (vacío = sin acceso). Async.
+export async function accessibleAccountIds(req) {
+  if (req.auth?.role === 'admin') return null;
+  const ids = new Set();
+  if (req.auth?.accountId) ids.add(Number(req.auth.accountId));
+  if (req.auth?.portalUserId) {
+    const pu = await one(`SELECT email FROM portal_users WHERE id = $1`, [req.auth.portalUserId]);
+    const email = String(pu?.email || '').trim().toLowerCase();
+    if (email) {
+      const rows = await q(`SELECT id FROM accounts WHERE lower(owner_email) = $1`, [email]);
+      for (const r of rows) ids.add(Number(r.id));
+    }
+  }
+  return [...ids];
+}
+
+// ¿este no-admin puede acceder a esta cuenta? admin siempre. Async.
+export async function canAccessAccount(req, accountId) {
+  const ids = await accessibleAccountIds(req);
+  if (ids === null) return true;
+  return ids.includes(Number(accountId));
+}
+
 // Compat: id de cuenta al que está limitado un no-admin (para filtros WHERE).
 // admin → null (sin filtro). user sin cuenta → -1 (no existe → resultado vacío).
 export function scopedAccountId(req) {

@@ -3,14 +3,18 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Building2, Link2, Link2Off, ChevronRight, Bot, Settings2 } from 'lucide-react';
 import { api } from '../api.js';
 import { CHANNEL_LABEL } from '../stages.js';
+import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Select, Toggle, EmptyState, Banner } from '../components/ui.jsx';
 
 export default function Accounts() {
   const navigate = useNavigate();
+  const me = useMe();
+  const isAdmin = me?.role === 'admin';
   const [accounts, setAccounts] = useState([]);
   const [open, setOpen] = useState({});          // accountId -> bool
   const [setters, setSetters] = useState({});     // accountId -> [setters]
   const [connForm, setConnForm] = useState(false);
+  const [connInfo, setConnInfo] = useState(false);
   const [setterForm, setSetterForm] = useState(false);
   const [name, setName] = useState('');
   const [connFor, setConnFor] = useState(null);   // accountId para "nuevo setter"
@@ -69,15 +73,24 @@ export default function Accounts() {
   return (
     <div>
       <SectionTitle
-        title="Conexiones"
-        subtitle="Cada conexión es una subcuenta de GHL. Dentro viven sus setters (bots), que se reparten los leads por etiqueta."
+        title={isAdmin ? 'Conexiones' : 'Mis agentes'}
+        subtitle={isAdmin ? 'Cada conexión es una subcuenta de GHL. Dentro viven sus setters (bots), que se reparten los leads por etiqueta.' : 'Cada conexión es una de tus subcuentas de GHL. Dentro creas y configuras tus setters (agentes).'}
         actions={
           <div className="flex items-center gap-2">
             <Button variant="secondary" onClick={() => { setSetterForm(true); setConnForm(false); setConnFor(null); setName(''); }} disabled={!accounts.length}><Bot size={16} /> Nuevo setter</Button>
-            <Button onClick={() => { setConnForm(true); setSetterForm(false); setName(''); }}><Plus size={16} /> Nueva conexión</Button>
+            <Button onClick={() => { if (isAdmin) { setConnForm(true); setSetterForm(false); setName(''); } else { setConnInfo(true); } }}><Plus size={16} /> Nueva conexión</Button>
           </div>
         }
       />
+
+      {connInfo && !isAdmin && (
+        <Card className="mb-5 p-5">
+          <Banner tone="info">
+            Para añadir otra subcuenta de GHL, <b>abre Hermes desde esa subcuenta</b> en GoHighLevel (el mismo menú/página por el que entraste aquí). Se creará su conexión automáticamente y aparecerá en esta lista.
+          </Banner>
+          <div className="mt-3"><Button variant="ghost" onClick={() => setConnInfo(false)}>Entendido</Button></div>
+        </Card>
+      )}
 
       {connForm && (
         <Card className="mb-5 p-5">
@@ -130,13 +143,19 @@ export default function Accounts() {
                     {(a.channels || []).map((ch) => <span key={ch} className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">{CHANNEL_LABEL[ch] || ch}</span>)}
                   </div>
                   <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => toggleAi(a, !a.ai_enabled)}
-                      title={a.ai_enabled ? 'IA activada: los setters responden y el cliente ve la configuración' : 'IA apagada: el cliente solo ve mensajes; los setters no responden'}
-                      className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${a.ai_enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}
-                    >
-                      {a.ai_enabled ? '🤖 IA activa' : '🤖 IA apagada'}
-                    </button>
+                    {isAdmin ? (
+                      <button
+                        onClick={() => toggleAi(a, !a.ai_enabled)}
+                        title={a.ai_enabled ? 'IA activada: los setters responden y el cliente ve la configuración' : 'IA apagada: el cliente solo ve mensajes; los setters no responden'}
+                        className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${a.ai_enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}
+                      >
+                        {a.ai_enabled ? '🤖 IA activa' : '🤖 IA apagada'}
+                      </button>
+                    ) : (
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${a.ai_enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                        {a.ai_enabled ? '🤖 IA activa' : '🤖 IA pendiente'}
+                      </span>
+                    )}
                     <Toggle checked={a.test_mode} onChange={(v) => toggleTest(a, v)} label="🧪 Test" />
                     <Link to={`/cuentas/${a.id}`} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"><Settings2 size={14} /> Conexión</Link>
                   </div>

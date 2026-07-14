@@ -1,5 +1,5 @@
 import { q, one } from '../db.js';
-import { requireAdmin, scopedAccountId, requireManageAgents } from '../lib/session.js';
+import { requireAdmin, requireManageAgents, canAccessAccount } from '../lib/session.js';
 
 // El admin edita todo; un usuario del portal solo el cerebro de su setter (no el proveedor/modelo de IA).
 const ADMIN_EDITABLE = [
@@ -18,17 +18,20 @@ const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags']);
 async function loadSetterScoped(req, setterId) {
   const setter = await one(`SELECT * FROM setters WHERE id = $1`, [setterId]);
   if (!setter) return { code: 404, error: 'Setter no encontrado' };
-  const scope = scopedAccountId(req);
-  if (scope && setter.account_id !== scope) return { code: 403, error: 'Sin acceso a este setter' };
+  if (!(await canAccessAccount(req, setter.account_id))) return { code: 403, error: 'Sin acceso a este setter' };
   return { setter };
 }
 
 export default async function setterRoutes(app) {
+  // Proveedores de IA que un usuario NO admin puede elegir (solo los marcados user_available; sin claves).
+  app.get('/api/user-providers', async () => {
+    return q(`SELECT id, name, base_url, kinds FROM providers WHERE user_available = true ORDER BY id`);
+  });
+
   // Setters de una conexión (=account) con sus métricas de batalla.
   // Admin ve todas; un usuario, solo la suya.
   app.get('/api/accounts/:id/setters', async (req, reply) => {
-    const scope = scopedAccountId(req);
-    if (scope && Number(req.params.id) !== scope) return reply.code(403).send({ error: 'Sin acceso' });
+    if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso' });
     const rows = await q(
       `SELECT s.*, p.name AS provider_name,
         COUNT(c.id)::int AS leads,
@@ -60,9 +63,10 @@ export default async function setterRoutes(app) {
     });
   });
 
-  // Crear un setter dentro de una conexión (admin).
+  // Crear un setter dentro de una conexión (admin o dueño con IA activa).
   app.post('/api/accounts/:id/setters', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
+    if (!(await requireManageAgents(req, reply))) return;
+    if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso' });
     const acc = await one(`SELECT id FROM accounts WHERE id = $1`, [req.params.id]);
     if (!acc) return reply.code(404).send({ error: 'Conexión no encontrada' });
     const name = String(req.body?.name || '').trim() || 'Nuevo setter';
@@ -101,9 +105,10 @@ export default async function setterRoutes(app) {
   });
 
   app.delete('/api/setters/:id', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
+    if (!(await requireManageAgents(req, reply))) return;
     const setter = await one(`SELECT * FROM setters WHERE id = $1`, [req.params.id]);
     if (!setter) return reply.code(404).send({ error: 'No existe' });
+    if (!(await canAccessAccount(req, setter.account_id))) return reply.code(403).send({ error: 'Sin acceso' });
     const { n } = await one(`SELECT COUNT(*)::int AS n FROM setters WHERE account_id = $1`, [setter.account_id]);
     if (n <= 1) return reply.code(400).send({ error: 'No puedes borrar el único setter de la conexión' });
     await q(`DELETE FROM setters WHERE id = $1`, [req.params.id]);

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Search, Download, Send, Sparkles, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react';
 import { api } from '../api.js';
 import { CHANNEL_LABEL } from '../stages.js';
+import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Select, Toggle, Banner } from '../components/ui.jsx';
 
 const fmtUsd = (v) => `$${Number(v || 0).toFixed(4)}`;
@@ -19,6 +20,8 @@ const QUIEN_CLS = {
 };
 
 export default function Archive() {
+  const me = useMe();
+  const isAdmin = me?.role === 'admin';
   const [accounts, setAccounts] = useState([]);
   const [providers, setProviders] = useState([]);
   const [settings, setSettings] = useState(null);
@@ -40,7 +43,7 @@ export default function Archive() {
     loadSpend();
   }, []);
 
-  const loadSpend = () => api.get('/api/archive/spend').then(setSpend).catch(() => {});
+  const loadSpend = () => { if (isAdmin) api.get('/api/archive/spend').then(setSpend).catch(() => {}); };
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -116,7 +119,7 @@ export default function Archive() {
         title="Archivo de mensajes"
         subtitle="Todo lo que entra y sale (IA o humano), con fecha, quién y contenido — y una IA para preguntar sobre ello"
         actions={
-          settings && (
+          isAdmin && settings && (
             <Toggle
               checked={settings.enabled !== false}
               onChange={(v) => saveSettings({ enabled: v })}
@@ -240,18 +243,20 @@ export default function Archive() {
 
             <div className="border-t border-slate-100 p-3 space-y-2">
               {askError && <Banner tone="error">{askError}</Banner>}
-              <div className="grid grid-cols-2 gap-2">
-                <Select value={settings?.provider_id || ''} onChange={(e) => saveSettings({ provider_id: e.target.value ? Number(e.target.value) : null })} className="!py-2 text-xs">
-                  <option value="">Modelo de IA…</option>
-                  {textProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </Select>
-                <input
-                  value={settings?.model || ''}
-                  onChange={(e) => saveSettings({ model: e.target.value })}
-                  placeholder="modelo (opcional)"
-                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs outline-none focus:border-violet-400"
-                />
-              </div>
+              {isAdmin && (
+                <div className="grid grid-cols-2 gap-2">
+                  <Select value={settings?.provider_id || ''} onChange={(e) => saveSettings({ provider_id: e.target.value ? Number(e.target.value) : null })} className="!py-2 text-xs">
+                    <option value="">Modelo de IA…</option>
+                    {textProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </Select>
+                  <input
+                    value={settings?.model || ''}
+                    onChange={(e) => saveSettings({ model: e.target.value })}
+                    placeholder="modelo (opcional)"
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs outline-none focus:border-violet-400"
+                  />
+                </div>
+              )}
               <form onSubmit={ask} className="flex items-center gap-2">
                 <input
                   value={question}
@@ -261,10 +266,12 @@ export default function Archive() {
                 />
                 <Button type="submit" className="!px-3.5" loading={asking}><Send size={16} /></Button>
               </form>
-              <div className="flex items-center justify-between text-[11px] text-slate-400">
-                <span>Gasto de esta sección (aparte del panel):</span>
-                <span className="font-semibold text-slate-600">{fmtUsd(spend.total)} · {spend.preguntas} preguntas</span>
-              </div>
+              {isAdmin && (
+                <div className="flex items-center justify-between text-[11px] text-slate-400">
+                  <span>Gasto de esta sección (aparte del panel):</span>
+                  <span className="font-semibold text-slate-600">{fmtUsd(spend.total)} · {spend.preguntas} preguntas</span>
+                </div>
+              )}
             </div>
           </Card>
         </div>

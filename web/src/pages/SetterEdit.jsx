@@ -9,10 +9,10 @@ import { PromptArchitect } from '../components/PromptArchitect.jsx';
 
 const TABS = [
   { key: 'prompt', label: 'Prompt' },
-  { key: 'ia', label: 'IA', adminOnly: true },
+  { key: 'ia', label: 'IA' },
   { key: 'comportamiento', label: 'Comportamiento' },
   { key: 'seguimientos', label: 'Seguimientos' },
-  { key: 'arquitecto', label: '✨ Arquitecto', adminOnly: true },
+  { key: 'arquitecto', label: '✨ Arquitecto' },
 ];
 
 export default function SetterEdit() {
@@ -30,7 +30,11 @@ export default function SetterEdit() {
   const [showTags, setShowTags] = useState(false);
 
   const load = () => api.get(`/api/setters/${id}`).then((r) => { setS(r); setShowTags((r.required_tags || []).length > 0 || (r.excluded_tags || []).length > 0); }).catch((e) => setError(e.message));
-  useEffect(() => { load(); api.get('/api/providers').then(setProviders).catch(() => {}); }, [id]);
+  useEffect(() => {
+    load();
+    // admin ve todas las APIs; un usuario solo las habilitadas para usuarios (sin claves).
+    api.get(isAdmin ? '/api/providers' : '/api/user-providers').then(setProviders).catch(() => {});
+  }, [id, isAdmin]);
 
   if (!s) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 

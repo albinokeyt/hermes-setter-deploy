@@ -2,7 +2,7 @@ import { q, one } from '../db.js';
 import { STAGES, STAGE_KEYS } from '../config.js';
 import { applyStage, cancelBotJobs, invalidateContactTags } from '../services/pipeline.js';
 import * as ghl from '../services/ghl.js';
-import { scopedAccountId } from '../lib/session.js';
+import { accessibleAccountIds, canAccessAccount } from '../lib/session.js';
 
 async function loadScopedConv(req, reply) {
   const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [req.params.id]);
@@ -10,8 +10,7 @@ async function loadScopedConv(req, reply) {
     reply.code(404).send({ error: 'No existe' });
     return null;
   }
-  const scope = scopedAccountId(req);
-  if (scope && conv.account_id !== scope) {
+  if (!(await canAccessAccount(req, conv.account_id))) {
     reply.code(403).send({ error: 'Sin acceso a esta conversación' });
     return null;
   }
@@ -23,10 +22,11 @@ export default async function conversationRoutes(app) {
 
   app.get('/api/conversations', async (req) => {
     const { stage, search, setter_id, human, limit = 50, offset = 0 } = req.query || {};
-    const account_id = scopedAccountId(req) || req.query?.account_id;
+    const ids = await accessibleAccountIds(req); // null = admin (todas)
     const where = [];
     const vals = [];
-    if (account_id) { vals.push(account_id); where.push(`c.account_id = $${vals.length}`); }
+    if (ids) { vals.push(ids); where.push(`c.account_id = ANY($${vals.length}::int[])`); }
+    if (req.query?.account_id) { vals.push(req.query.account_id); where.push(`c.account_id = $${vals.length}`); }
     if (setter_id) { vals.push(setter_id); where.push(`c.setter_id = $${vals.length}`); }
     if (stage) { vals.push(stage); where.push(`c.stage = $${vals.length}`); }
     if (search) { vals.push(`%${search}%`); where.push(`(c.lead_name ILIKE $${vals.length} OR c.lead_email ILIKE $${vals.length} OR c.ghl_contact_id ILIKE $${vals.length})`); }
@@ -158,10 +158,14 @@ export default async function conversationRoutes(app) {
   });
 
   app.get('/api/kanban/counts', async (req) => {
-    const scope = scopedAccountId(req) || req.query?.account_id;
+    const ids = await accessibleAccountIds(req);
+    const where = [];
+    const vals = [];
+    if (ids) { vals.push(ids); where.push(`account_id = ANY($${vals.length}::int[])`); }
+    if (req.query?.account_id) { vals.push(req.query.account_id); where.push(`account_id = $${vals.length}`); }
     const rows = await q(
-      `SELECT stage, COUNT(*)::int AS n FROM conversations ${scope ? 'WHERE account_id = $1' : ''} GROUP BY stage`,
-      scope ? [scope] : []
+      `SELECT stage, COUNT(*)::int AS n FROM conversations ${where.length ? 'WHERE ' + where.join(' AND ') : ''} GROUP BY stage`,
+      vals
     );
     const counts = {};
     for (const r of rows) counts[r.stage] = r.n;
@@ -169,15 +173,15 @@ export default async function conversationRoutes(app) {
   });
 
   app.get('/api/kanban', async (req) => {
-    const scope = scopedAccountId(req);
+    const ids = await accessibleAccountIds(req);
     const rows = await q(
       `SELECT c.id, c.lead_name, c.ghl_contact_id, c.channel, c.stage, c.updated_at, c.bot_paused,
               a.name AS account_name,
               (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message
        FROM conversations c JOIN accounts a ON a.id = c.account_id
-       ${scope ? 'WHERE c.account_id = $1' : ''}
+       ${ids ? 'WHERE c.account_id = ANY($1::int[])' : ''}
        ORDER BY c.updated_at DESC LIMIT 400`,
-      scope ? [scope] : []
+      ids ? [ids] : []
     );
     const board = {};
     for (const s of STAGE_KEYS) board[s] = [];

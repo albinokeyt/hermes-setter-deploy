@@ -51,11 +51,14 @@ export default function Layout() {
           { to: '/versus', label: 'Versus', icon: Swords },
           { to: '/apis', label: 'APIs de IA', icon: Plug },
         ]
-      : (!restricted && me.account_id)
-        ? [{ to: `/cuentas/${me.account_id}`, label: 'Mi agente', icon: Bot }]
+      : !restricted
+        ? [
+            { to: '/cuentas', label: 'Mis agentes', icon: Bot },
+            { to: '/versus', label: 'Versus', icon: Swords },
+          ]
         : []),
     ...(restricted ? [] : [{ to: '/prueba', label: 'Probar agente', icon: FlaskConical }]),
-    ...(isAdmin ? [{ to: '/archivo', label: 'Archivo', icon: Database }] : []),
+    ...(isAdmin || !restricted ? [{ to: '/archivo', label: 'Archivo', icon: Database }] : []),
   ];
   const navBottom = [
     ...(isAdmin ? [{ to: '/configuracion', label: 'Configuración', icon: Settings }] : []),

@@ -9,10 +9,10 @@ import { AccessManager } from '../components/AccessManager.jsx';
 
 const TABS = [
   { key: 'setters', label: '🤖 Setters' },
-  { key: 'ajustes', label: 'Ajustes', adminOnly: true },
-  { key: 'ctas', label: '🎯 CTAs', adminOnly: true },
+  { key: 'ajustes', label: 'Ajustes' },
+  { key: 'ctas', label: '🎯 CTAs' },
   { key: 'accesos', label: 'Accesos' },
-  { key: 'conexion', label: 'Conexión GHL', adminOnly: true },
+  { key: 'conexion', label: 'Conexión GHL' },
 ];
 
 const fmtWait = (s) => {
@@ -45,10 +45,10 @@ export default function AccountEdit() {
   }, [id]);
 
   useEffect(() => {
-    if (tab === 'conexion' && isAdmin && calendars === null) {
+    if (tab === 'conexion' && calendars === null) {
       api.get(`/api/accounts/${id}/calendars`).then(setCalendars).catch(() => setCalendars({ calendars: [], source: 'error' }));
     }
-  }, [tab, isAdmin, id, calendars]);
+  }, [tab, id, calendars]);
 
   if (!acc) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 
@@ -90,7 +90,7 @@ export default function AccountEdit() {
         subtitle={acc.location_id ? `Subcuenta GHL: ${acc.location_id}` : 'Todavía sin subcuenta de GHL conectada'}
         actions={
           <div className="flex items-center gap-3">
-            {isAdmin && <Toggle checked={acc.bot_enabled} onChange={(v) => set({ bot_enabled: v })} label={acc.bot_enabled ? 'Conexión activa' : 'Conexión apagada'} />}
+            <Toggle checked={acc.bot_enabled} onChange={(v) => set({ bot_enabled: v })} label={acc.bot_enabled ? 'Conexión activa' : 'Conexión apagada'} />
             <Button onClick={save} loading={saving}>{saved ? '✓ Guardado' : 'Guardar'}</Button>
           </div>
         }
@@ -261,8 +261,10 @@ export default function AccountEdit() {
                 <p className="text-sm text-slate-500">Instala la app en la subcuenta del cliente (Configuración → Enlace de instalación) y todo queda conectado: recepción y envío.</p>
                 {acc.oauth_connected ? (
                   <Banner tone="ok">✓ Subcuenta <b>{acc.location_id}</b> conectada por OAuth.</Banner>
-                ) : (
+                ) : isAdmin ? (
                   <Button onClick={connectOauth}><Sparkles size={16} /> Conectar subcuenta de GHL</Button>
+                ) : (
+                  <Banner tone="warn">Esta conexión aún no está conectada a GHL. Contacta con la agencia.</Banner>
                 )}
                 <CopyField label="Enlace del portal para el cliente (Custom Menu Link de GHL)" value={acc.portal_url || ''} hint="Único por conexión. El cliente entra a su panel sin contraseña." />
                 <CopyField label="Plan B — webhook por workflow (recepción alternativa)" value={acc.webhook_url || ''} hint='Workflow en la subcuenta: Trigger "Customer Replied" → Custom Webhook (POST) a esta URL. Desactívalo si el webhook de la app ya entrega mensajes.' />
@@ -283,15 +285,17 @@ export default function AccountEdit() {
             </div>
           </Card>
 
-          <Card className="p-6">
-            <h3 className="mb-2 text-sm font-bold text-red-600">Zona de peligro</h3>
-            <p className="mb-4 text-xs text-slate-500">Elimina la conexión con TODOS sus setters, conversaciones y mensajes. No se puede deshacer.</p>
-            <Button variant="danger" onClick={async () => {
-              if (window.confirm(`¿Eliminar la conexión "${acc.name}" y todo lo suyo?`)) { await api.del(`/api/accounts/${id}`); navigate('/cuentas'); }
-            }}>
-              <Trash2 size={15} /> Eliminar conexión
-            </Button>
-          </Card>
+          {isAdmin && (
+            <Card className="p-6">
+              <h3 className="mb-2 text-sm font-bold text-red-600">Zona de peligro</h3>
+              <p className="mb-4 text-xs text-slate-500">Elimina la conexión con TODOS sus setters, conversaciones y mensajes. No se puede deshacer.</p>
+              <Button variant="danger" onClick={async () => {
+                if (window.confirm(`¿Eliminar la conexión "${acc.name}" y todo lo suyo?`)) { await api.del(`/api/accounts/${id}`); navigate('/cuentas'); }
+              }}>
+                <Trash2 size={15} /> Eliminar conexión
+              </Button>
+            </Card>
+          )}
         </div>
       )}
     </div>

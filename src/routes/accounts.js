@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { q, one } from '../db.js';
 import { config } from '../config.js';
-import { requireAdmin, scopedAccountId, requireManageAgents } from '../lib/session.js';
+import { requireAdmin, scopedAccountId, requireManageAgents, accessibleAccountIds, canAccessAccount } from '../lib/session.js';
 import * as ghl from '../services/ghl.js';
 
 const ADMIN_EDITABLE = [
@@ -29,21 +29,20 @@ function stripSecrets(row, req) {
 
 export default async function accountRoutes(app) {
   app.get('/api/accounts', async (req) => {
-    const scope = scopedAccountId(req);
+    const ids = await accessibleAccountIds(req); // null = admin (todas)
     const rows = await q(`
       SELECT a.*, p.name AS provider_name,
         (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id) AS conversations_count,
         (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id AND c.updated_at > now() - interval '24 hours') AS active_24h,
         EXISTS(SELECT 1 FROM ghl_tokens t WHERE t.location_id = a.location_id) AS oauth_connected
       FROM accounts a LEFT JOIN providers p ON p.id = a.provider_id
-      ${scope ? 'WHERE a.id = $1' : ''}
-      ORDER BY a.id`, scope ? [scope] : []);
+      ${ids ? 'WHERE a.id = ANY($1::int[])' : ''}
+      ORDER BY a.id`, ids ? [ids] : []);
     return rows.map((r) => stripSecrets(r, req));
   });
 
   app.get('/api/accounts/:id', async (req, reply) => {
-    const scope = scopedAccountId(req);
-    if (scope && Number(req.params.id) !== scope) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });
+    if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });
     const row = await one(`
       SELECT a.*, p.name AS provider_name,
         EXISTS(SELECT 1 FROM ghl_tokens t WHERE t.location_id = a.location_id) AS oauth_connected
@@ -74,8 +73,7 @@ export default async function accountRoutes(app) {
 
   app.put('/api/accounts/:id', async (req, reply) => {
     if (!(await requireManageAgents(req, reply))) return;
-    const scope = scopedAccountId(req);
-    if (scope && Number(req.params.id) !== scope) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });
+    if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });
     const existing = await one(`SELECT * FROM accounts WHERE id = $1`, [req.params.id]);
     if (!existing) return reply.code(404).send({ error: 'No existe' });
     const editable = req.auth?.role === 'admin' ? ADMIN_EDITABLE : USER_EDITABLE;
@@ -101,7 +99,7 @@ export default async function accountRoutes(app) {
 
   // Lista de calendarios de la subcuenta (desde GHL; si falta el scope, usa los vistos en citas).
   app.get('/api/accounts/:id/calendars', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
+    if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso' });
     const account = await one(`SELECT * FROM accounts WHERE id = $1`, [req.params.id]);
     if (!account) return reply.code(404).send({ error: 'No existe' });
     if (!account.location_id) return { calendars: [], source: 'sin_conexion' };

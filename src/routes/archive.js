@@ -1,5 +1,5 @@
 import { q, one, getSetting, setSetting } from '../db.js';
-import { requireAdmin } from '../lib/session.js';
+import { requireAdmin, requireManageAgents, accessibleAccountIds } from '../lib/session.js';
 import { chatCompletion } from '../services/llm.js';
 import { recordUsage, invalidateArchiveCache } from '../services/pipeline.js';
 
@@ -11,9 +11,10 @@ function quien(m) {
 }
 
 // Construye el WHERE de los filtros de la sección.
-function buildFilter(query) {
+function buildFilter(query, ids) {
   const where = [];
   const vals = [];
+  if (ids) { vals.push(ids); where.push(`c.account_id = ANY($${vals.length}::int[])`); } // no-admin: solo sus conexiones
   const aid = Number(query.account_id);
   if (Number.isInteger(aid) && aid > 0) { vals.push(aid); where.push(`c.account_id = $${vals.length}`); }
   if (query.direction === 'inbound' || query.direction === 'outbound') { vals.push(query.direction); where.push(`m.direction = $${vals.length}`); }
@@ -36,15 +37,17 @@ const BASE_SELECT = `
   JOIN accounts a ON a.id = c.account_id`;
 
 export default async function archiveRoutes(app) {
+  // Bloquea a usuarios restringidos (solo-mensajes / IA apagada). Admin y usuarios con IA entran.
   app.addHook('preHandler', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return reply;
+    if (!(await requireManageAgents(req, reply))) return reply;
   });
 
   app.get('/api/archive/settings', async () => {
     return (await getSetting('archive', { enabled: true, provider_id: null, model: '' })) || { enabled: true };
   });
 
-  app.put('/api/archive/settings', async (req) => {
+  app.put('/api/archive/settings', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return; // la recaudación/modelo global solo la cambia el admin
     const cur = (await getSetting('archive', {})) || {};
     const b = req.body || {};
     const next = {
@@ -58,7 +61,7 @@ export default async function archiveRoutes(app) {
   });
 
   app.get('/api/archive/messages', async (req) => {
-    const { clause, vals } = buildFilter(req.query || {});
+    const { clause, vals } = buildFilter(req.query || {}, await accessibleAccountIds(req));
     const limit = Math.min(Number(req.query?.limit) || 100, 500);
     const offset = Number(req.query?.offset) || 0;
     const total = await one(`SELECT COUNT(*)::int AS n FROM messages m JOIN conversations c ON c.id = m.conversation_id ${clause}`, vals);
@@ -73,6 +76,8 @@ export default async function archiveRoutes(app) {
   app.get('/api/archive/comments', async (req) => {
     const where = [];
     const vals = [];
+    const ids = await accessibleAccountIds(req);
+    if (ids) { vals.push(ids); where.push(`co.account_id = ANY($${vals.length}::int[])`); } // no-admin: solo lo suyo
     const aid = Number(req.query?.account_id);
     if (Number.isInteger(aid) && aid > 0) { vals.push(aid); where.push(`co.account_id = $${vals.length}`); }
     if (req.query?.search) { vals.push(`%${req.query.search}%`); where.push(`(co.text ILIKE $${vals.length} OR co.author ILIKE $${vals.length})`); }
@@ -90,7 +95,7 @@ export default async function archiveRoutes(app) {
   });
 
   app.get('/api/archive/export', async (req, reply) => {
-    const { clause, vals } = buildFilter(req.query || {});
+    const { clause, vals } = buildFilter(req.query || {}, await accessibleAccountIds(req));
     const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.id DESC LIMIT 50000`, vals);
     const header = ['Fecha', 'Hora', 'Cuenta', 'Canal', 'Lead', 'Direccion', 'Quien', 'Mensaje'];
     const lines = [header.map(csvCell).join(',')];
@@ -112,7 +117,8 @@ export default async function archiveRoutes(app) {
     return '﻿' + lines.join('\r\n');
   });
 
-  app.get('/api/archive/spend', async () => {
+  app.get('/api/archive/spend', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return; // el gasto global de la IA de revisión es del admin
     const row = await one(`
       SELECT
         COALESCE(SUM(cost_usd) FILTER (WHERE created_at > now() - interval '24 hours'), 0) AS d24,
@@ -131,7 +137,7 @@ export default async function archiveRoutes(app) {
     const provider = b.provider_id ? await one(`SELECT * FROM providers WHERE id = $1`, [b.provider_id]) : null;
     if (!provider) return reply.code(400).send({ error: 'Elige un modelo de texto para la IA de esta sección' });
 
-    const { clause, vals } = buildFilter(b);
+    const { clause, vals } = buildFilter(b, await accessibleAccountIds(req));
     // newest-first; recortamos por presupuesto quedándonos con los MÁS RECIENTES,
     // luego los ordenamos cronológicamente para el prompt.
     const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.id DESC LIMIT 500`, vals);

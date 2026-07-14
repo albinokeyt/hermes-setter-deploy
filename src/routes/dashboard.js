@@ -1,5 +1,5 @@
 import { q, one } from '../db.js';
-import { scopedAccountId } from '../lib/session.js';
+import { accessibleAccountIds } from '../lib/session.js';
 
 const DAY = 86400000;
 
@@ -18,17 +18,23 @@ function parseRange(query) {
 
 export default async function dashboardRoutes(app) {
   app.get('/api/dashboard', async (req) => {
+    // Conexiones accesibles (null = admin, ve todas). El admin puede filtrar por ?account_id;
+    // un no-admin queda restringido a SUS conexiones (y opcionalmente a una de ellas).
+    const ids = await accessibleAccountIds(req);
     const parsed = Number(req.query?.account_id);
-    const accountFilter = scopedAccountId(req) || (Number.isInteger(parsed) && parsed > 0 ? parsed : null);
+    let list = ids; // null = todas
+    if (Number.isInteger(parsed) && parsed > 0) list = list ? list.filter((n) => n === parsed) : [parsed];
+    // lista de enteros validados → IN (...) seguro (sin inyección)
+    const inIds = list ? (list.map(Number).filter(Number.isInteger).join(',') || '-1') : null;
     const { from, to } = parseRange(req.query || {});
     const P = [from, to]; // $1 = desde, $2 = hasta
 
-    const cond = accountFilter ? `AND c.account_id = ${accountFilter}` : '';
-    const condM = accountFilter
-      ? `AND m.conversation_id IN (SELECT id FROM conversations WHERE account_id = ${accountFilter})`
+    const cond = inIds ? `AND c.account_id IN (${inIds})` : '';
+    const condM = inIds
+      ? `AND m.conversation_id IN (SELECT id FROM conversations WHERE account_id IN (${inIds}))`
       : '';
-    const condA = accountFilter ? `AND ap.account_id = ${accountFilter}` : '';
-    const condU = accountFilter ? `AND u.account_id = ${accountFilter}` : '';
+    const condA = inIds ? `AND ap.account_id IN (${inIds})` : '';
+    const condU = inIds ? `AND u.account_id IN (${inIds})` : '';
 
     const totals = await one(`
       SELECT
@@ -47,7 +53,7 @@ export default async function dashboardRoutes(app) {
       SELECT stage, COUNT(*)::int AS total FROM conversations c WHERE true ${cond} GROUP BY stage
     `);
 
-    const condC = accountFilter ? `AND c2.account_id = ${accountFilter}` : '';
+    const condC = inIds ? `AND c2.account_id IN (${inIds})` : '';
     const daily = await q(`
       SELECT to_char(d, 'YYYY-MM-DD') AS dia,
         COALESCE((SELECT COUNT(*)::int FROM messages m WHERE m.direction='inbound' AND m.created_at::date = d ${condM}), 0) AS recibidos,
@@ -67,7 +73,7 @@ export default async function dashboardRoutes(app) {
         COUNT(c.id) FILTER (WHERE c.updated_at BETWEEN $1 AND $2)::int AS activas,
         (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.account_id = a.id AND u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2) AS gasto
       FROM accounts a LEFT JOIN conversations c ON c.account_id = a.id
-      ${accountFilter ? `WHERE a.id = ${accountFilter}` : ''}
+      ${inIds ? `WHERE a.id IN (${inIds})` : ''}
       GROUP BY a.id ORDER BY a.id
     `, P);
 
@@ -84,7 +90,7 @@ export default async function dashboardRoutes(app) {
       SELECT source, COALESCE(SUM(cost_usd), 0) AS total
       FROM llm_usage
       WHERE source <> 'archivo' AND created_at BETWEEN $1 AND $2
-        ${accountFilter ? `AND account_id = ${accountFilter}` : ''}
+        ${inIds ? `AND account_id IN (${inIds})` : ''}
       GROUP BY source ORDER BY total DESC
     `, P);
 
