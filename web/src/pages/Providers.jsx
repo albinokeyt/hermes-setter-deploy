@@ -3,7 +3,35 @@ import { Plus, Plug, Trash2, FlaskConical } from 'lucide-react';
 import { api } from '../api.js';
 import { Card, SectionTitle, Button, Input, Select, Banner, EmptyState } from '../components/ui.jsx';
 
-const EMPTY = { name: '', base_url: '', api_key: '', default_model: '', notes: '', price_in: '', price_out: '' };
+const EMPTY = { name: '', base_url: '', api_key: '', default_model: '', notes: '', price_in: '', price_out: '', kinds: ['text'] };
+
+const KIND_META = [
+  { key: 'text', label: 'Texto (chat)', icon: '💬' },
+  { key: 'image', label: 'Imagen (visión)', icon: '👁️' },
+  { key: 'audio', label: 'Audio (voz)', icon: '🎤' },
+];
+
+function KindPicker({ value, onChange }) {
+  const kinds = Array.isArray(value) ? value : [];
+  const toggle = (k) => onChange(kinds.includes(k) ? kinds.filter((x) => x !== k) : [...kinds, k]);
+  return (
+    <div>
+      <span className="mb-1.5 block text-sm font-medium text-slate-700">¿Para qué sirve esta API?</span>
+      <div className="flex flex-wrap gap-2">
+        {KIND_META.map((k) => {
+          const on = kinds.includes(k.key);
+          return (
+            <button key={k.key} type="button" onClick={() => toggle(k.key)}
+              className={`rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${on ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'}`}>
+              {k.icon} {k.label}
+            </button>
+          );
+        })}
+      </div>
+      <span className="mt-1 block text-xs text-slate-400">Marca todo lo que soporte. OpenRouter suele valer para las tres.</span>
+    </div>
+  );
+}
 
 export default function Providers() {
   const [providers, setProviders] = useState([]);
@@ -19,7 +47,7 @@ export default function Providers() {
 
   const applyPreset = (name) => {
     const p = presets.find((x) => x.name === name);
-    if (p) setForm({ ...form, name: p.name === 'Personalizado' ? '' : p.name, base_url: p.base_url, default_model: p.default_model, notes: p.notes });
+    if (p) setForm({ ...form, name: p.name === 'Personalizado' ? '' : p.name, base_url: p.base_url, default_model: p.default_model, notes: p.notes, kinds: p.kinds || ['text'] });
   };
 
   const save = async (e) => {
@@ -73,6 +101,7 @@ export default function Providers() {
               <Input label="API key" type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editingId ? '(dejar vacío para no cambiarla)' : 'sk-…'} required={!editingId} />
               <Input label="Modelo por defecto" value={form.default_model} onChange={(e) => setForm({ ...form, default_model: e.target.value })} placeholder="google/gemini-2.5-flash-lite" />
             </div>
+            <KindPicker value={form.kinds} onChange={(kinds) => setForm({ ...form, kinds })} />
             <div className="grid gap-4 sm:grid-cols-2">
               <Input label="Precio entrada ($ por 1M tokens)" type="number" step="0.001" min="0" value={form.price_in} onChange={(e) => setForm({ ...form, price_in: e.target.value })} hint="Opcional: para estimar el gasto. OpenRouter reporta el coste real solo." />
               <Input label="Precio salida ($ por 1M tokens)" type="number" step="0.001" min="0" value={form.price_out} onChange={(e) => setForm({ ...form, price_out: e.target.value })} />
@@ -99,7 +128,7 @@ export default function Providers() {
               <div className="flex items-start justify-between">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600"><Plug size={18} /></div>
                 <div className="flex items-center gap-1">
-                  <Button variant="ghost" className="!px-2.5 !py-1.5 text-xs" onClick={() => { setEditingId(p.id); setForm({ name: p.name, base_url: p.base_url, api_key: '', default_model: p.default_model, notes: p.notes, price_in: p.price_in || '', price_out: p.price_out || '' }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+                  <Button variant="ghost" className="!px-2.5 !py-1.5 text-xs" onClick={() => { setEditingId(p.id); setForm({ name: p.name, base_url: p.base_url, api_key: '', default_model: p.default_model, notes: p.notes, price_in: p.price_in || '', price_out: p.price_out || '', kinds: p.kinds || ['text'] }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
                     Editar
                   </Button>
                   <button
@@ -112,6 +141,12 @@ export default function Providers() {
               </div>
               <h3 className="mt-3 font-bold text-slate-900">{p.name}</h3>
               <p className="truncate text-xs text-slate-400">{p.base_url}</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {(p.kinds || []).map((k) => {
+                  const m = KIND_META.find((x) => x.key === k);
+                  return m ? <span key={k} className="rounded-md bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">{m.icon} {m.label.split(' ')[0]}</span> : null;
+                })}
+              </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
                 {p.default_model && <span className="rounded-md bg-slate-100 px-2 py-0.5 font-semibold text-slate-500">{p.default_model}</span>}
                 <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-slate-400">{p.api_key_masked}</span>

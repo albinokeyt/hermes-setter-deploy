@@ -36,6 +36,7 @@ export default function AccountEdit() {
   if (!acc) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 
   const set = (patch) => setAcc({ ...acc, ...patch });
+  const providersFor = (kind) => providers.filter((p) => !Array.isArray(p.kinds) || p.kinds.includes(kind));
 
   const save = async () => {
     setSaving(true);
@@ -148,74 +149,79 @@ export default function AccountEdit() {
       )}
 
       {tab === 'ia' && (
-        <Card className="max-w-2xl space-y-5 p-6">
-          <Select
-            label="Proveedor de IA"
-            value={acc.provider_id || ''}
-            onChange={(e) => set({ provider_id: e.target.value ? Number(e.target.value) : null })}
-          >
-            <option value="">— Elige un proveedor (sección APIs) —</option>
-            {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </Select>
-          <Input
-            label="Modelo"
-            value={acc.model}
-            onChange={(e) => set({ model: e.target.value })}
-            placeholder="vacío = modelo por defecto del proveedor"
-            hint="Ej.: google/gemini-2.5-flash-lite (OpenRouter) · gemini-2.5-flash-lite (Gemini directo)"
-          />
-          <div className="grid grid-cols-2 gap-4">
-            <Input
-              label={`Temperatura: ${acc.temperature}`}
-              type="range" min="0" max="1.5" step="0.1"
-              value={acc.temperature}
-              onChange={(e) => set({ temperature: Number(e.target.value) })}
-              className="!p-0 accent-violet-600"
-              hint="Más alta = más creativo y variado"
-            />
-            <Select label="Máximo de mensajes por respuesta" value={acc.max_msgs} onChange={(e) => set({ max_msgs: Number(e.target.value) })}>
-              <option value={2}>2 mensajes</option>
-              <option value={3}>3 mensajes</option>
-              <option value={4}>4 mensajes</option>
-            </Select>
-          </div>
+        <div className="max-w-2xl space-y-4">
+          {providers.length === 0 && <Banner tone="warn">Aún no tienes APIs. Créalas en la sección <b>APIs de IA</b> y marca de qué tipo es cada una (texto, imagen, audio).</Banner>}
 
-          <div className="space-y-4 rounded-xl border border-slate-100 pt-1">
+          <Card className="space-y-5 p-6">
+            <div className="flex items-center gap-2 text-sm font-bold text-slate-800">💬 API de texto (el chat del agente)</div>
+            <Select
+              label="Proveedor de texto"
+              value={acc.provider_id || ''}
+              onChange={(e) => set({ provider_id: e.target.value ? Number(e.target.value) : null })}
+            >
+              <option value="">— Elige una API de texto —</option>
+              {providersFor('text').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </Select>
+            <Input
+              label="Modelo"
+              value={acc.model}
+              onChange={(e) => set({ model: e.target.value })}
+              placeholder="vacío = modelo por defecto del proveedor"
+              hint="Ej.: google/gemini-2.5-flash-lite (OpenRouter) · gemini-2.5-flash-lite (Gemini directo)"
+            />
+            <div className="grid grid-cols-2 gap-4">
+              <Input
+                label={`Temperatura: ${acc.temperature}`}
+                type="range" min="0" max="1.5" step="0.1"
+                value={acc.temperature}
+                onChange={(e) => set({ temperature: Number(e.target.value) })}
+                className="!p-0 accent-violet-600"
+                hint="Más alta = más creativo y variado"
+              />
+              <Select label="Máximo de mensajes por respuesta" value={acc.max_msgs} onChange={(e) => set({ max_msgs: Number(e.target.value) })}>
+                <option value={2}>2 mensajes</option>
+                <option value={3}>3 mensajes</option>
+                <option value={4}>4 mensajes</option>
+              </Select>
+            </div>
+          </Card>
+
+          <Card className="space-y-4 p-6">
             <Toggle
               checked={acc.vision_enabled}
               onChange={(v) => set({ vision_enabled: v })}
-              label="👁️ Leer imágenes"
-              description="Cuando el lead envía una foto o captura, el agente la lee y la usa en la conversación"
+              label="👁️ API de imagen (leer fotos y capturas)"
+              description="Cuando el lead envía una imagen, el agente la lee y la usa en la conversación"
             />
             {acc.vision_enabled && (
               <div className="grid grid-cols-2 gap-4 pl-1">
-                <Select label="Proveedor de visión" value={acc.vision_provider_id || ''} onChange={(e) => set({ vision_provider_id: e.target.value ? Number(e.target.value) : null })}>
-                  <option value="">— Elige —</option>
-                  {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                <Select label="Proveedor de imagen" value={acc.vision_provider_id || ''} onChange={(e) => set({ vision_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— Elige una API de imagen —</option>
+                  {providersFor('image').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </Select>
-                <Input label="Modelo de visión" value={acc.vision_model} onChange={(e) => set({ vision_model: e.target.value })} placeholder="google/gemini-2.5-flash" hint="Debe aceptar imágenes" />
+                <Input label="Modelo de imagen" value={acc.vision_model} onChange={(e) => set({ vision_model: e.target.value })} placeholder="google/gemini-2.5-flash" hint="Debe aceptar imágenes" />
               </div>
             )}
-          </div>
+          </Card>
 
-          <div className="space-y-4 rounded-xl border-t border-slate-100 pt-4">
+          <Card className="space-y-4 p-6">
             <Toggle
               checked={acc.audio_enabled}
               onChange={(v) => set({ audio_enabled: v })}
-              label="🎤 Transcribir audios"
+              label="🎤 API de audio (transcribir notas de voz)"
               description="Convierte las notas de voz del lead en texto para que el agente las entienda"
             />
             {acc.audio_enabled && (
               <div className="grid grid-cols-2 gap-4 pl-1">
                 <Select label="Proveedor de audio" value={acc.audio_provider_id || ''} onChange={(e) => set({ audio_provider_id: e.target.value ? Number(e.target.value) : null })}>
-                  <option value="">— Elige —</option>
-                  {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  <option value="">— Elige una API de audio —</option>
+                  {providersFor('audio').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </Select>
-                <Input label="Modelo de audio (Whisper)" value={acc.audio_model} onChange={(e) => set({ audio_model: e.target.value })} placeholder="whisper-large-v3" hint="Endpoint /audio/transcriptions (Groq u OpenAI)" />
+                <Input label="Modelo de audio (Whisper)" value={acc.audio_model} onChange={(e) => set({ audio_model: e.target.value })} placeholder="openai/whisper-large-v3-turbo" hint="Endpoint /audio/transcriptions (OpenRouter, Groq u OpenAI)" />
               </div>
             )}
-          </div>
-        </Card>
+          </Card>
+        </div>
       )}
 
       {tab === 'comportamiento' && (
