@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, ShieldCheck, ShieldAlert, ShieldHalf, Wand2 } from 'lucide-react';
+import { RefreshCw, ShieldCheck, ShieldAlert, ShieldHalf, Wand2, Wrench } from 'lucide-react';
 import { api, timeAgo } from '../api.js';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Banner, CopyField } from '../components/ui.jsx';
 
@@ -32,7 +32,7 @@ export default function SettingsPage() {
 
   const savePrompts = async () => {
     await api.put('/api/settings/prompts', {
-      guardrail: prompts.guardrail, architect: prompts.architect,
+      guardrail: prompts.guardrail, architect: prompts.architect, corrector: prompts.corrector,
       architect_provider_id: prompts.architect_provider_id, architect_model: prompts.architect_model,
       corrector_provider_id: prompts.corrector_provider_id, corrector_model: prompts.corrector_model,
     });
@@ -62,6 +62,15 @@ export default function SettingsPage() {
             <div className="flex gap-2">
               <Button onClick={savePrompts}>{pSaved ? '✓ Guardado' : 'Guardar'}</Button>
               <Button variant="ghost" onClick={() => setPrompts({ ...prompts, architect: prompts.architect_default })}>Restaurar por defecto</Button>
+            </div>
+          </Card>
+          <Card className="space-y-3 p-6">
+            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Wrench size={16} className="text-violet-600" /> Ingeniero / corrector de prompts</h3>
+            <p className="text-xs text-slate-500">Cómo el "Importar cambio" del playground AJUSTA un prompt ya existente (ediciones quirúrgicas, sin reescribir de más). Es distinto del arquitecto, que crea desde cero.</p>
+            <Textarea rows={7} value={prompts.corrector} onChange={(e) => setPrompts({ ...prompts, corrector: e.target.value })} />
+            <div className="flex gap-2">
+              <Button onClick={savePrompts}>{pSaved ? '✓ Guardado' : 'Guardar'}</Button>
+              <Button variant="ghost" onClick={() => setPrompts({ ...prompts, corrector: prompts.corrector_default })}>Restaurar por defecto</Button>
             </div>
           </Card>
 

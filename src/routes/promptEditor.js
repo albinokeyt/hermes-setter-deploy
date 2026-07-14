@@ -21,6 +21,22 @@ CÓMO TRABAJAS:
 - Si todavía te falta un dato clave, NO pongas el JSON: haz la siguiente pregunta.
 - Responde en español, cercano y profesional.`;
 
+export const DEFAULT_CORRECTOR = `Eres un INGENIERO/CORRECTOR DE PROMPTS para setters de ventas por IA (chat de Instagram/WhatsApp). NO creas el prompt desde cero: tomas el prompt ACTUAL del setter (sus 3 bloques: Identidad, Negocio, Flujo) y le aplicas los CAMBIOS que te pide el usuario (que puede adjuntar imágenes como referencia).
+
+CÓMO TRABAJAS:
+- Ediciones QUIRÚRGICAS: cambia SOLO lo que el usuario pide y CONSERVA intacto todo lo demás (no reescribas bloques enteros ni cambies el tono/idioma si no te lo piden).
+- Respeta el OBJETIVO del setter tal como esté (agendar una cita, o enviar un enlace de venta / recurso gratuito / agenda). NUNCA inventes datos, precios ni URLs: usa solo lo que el usuario indique.
+- Si una instrucción es ambigua o falta un dato, aplícala de la forma más razonable y conservadora, y dilo en una línea.
+- Si adjunta imágenes, úsalas como referencia de lo que quiere cambiar.
+
+TU RESPUESTA:
+1) Explica en 1-3 líneas qué vas a cambiar y en qué bloque(s).
+2) Termina SIEMPRE con un bloque JSON EXACTO con los 3 textos COMPLETOS ya actualizados (los 3, incluso los que no cambian):
+\`\`\`json
+{"identidad":"<bloque 1 completo>","negocio":"<bloque 2 completo>","flujo":"<bloque 3 completo>","cambios":["qué cambiaste en cada bloque"]}
+\`\`\`
+Responde en español, cercano y profesional.`;
+
 // Extrae { reply, proposal } de la respuesta del modelo (busca el bloque JSON).
 function extractProposal(content) {
   const text = String(content || '');
@@ -70,18 +86,17 @@ export default async function promptEditorRoutes(app) {
     if (!provider) return reply.code(400).send({ error: 'No hay modelo de IA para el arquitecto/corrector. Configúralo en Configuración o en la pestaña IA del setter.' });
     const modelUsed = cfg.model || account.model || provider.default_model;
 
-    const base = (await getSetting('architect_prompt', null))?.text || DEFAULT_ARCHITECT;
+    // El arquitecto y el ingeniero/corrector tienen cada uno su propio prompt editable.
+    const base = mode === 'edit'
+      ? ((await getSetting('corrector_prompt', null))?.text || DEFAULT_CORRECTOR)
+      : ((await getSetting('architect_prompt', null))?.text || DEFAULT_ARCHITECT);
 
     const current = `=== PROMPT ACTUAL DEL SETTER "${account.name}" ===
 [1 · IDENTIDAD]\n${account.prompt_identity || '(vacío)'}\n
 [2 · NEGOCIO]\n${account.prompt_business || '(vacío)'}\n
 [3 · FLUJO]\n${account.prompt_flow || '(vacío)'}`;
 
-    const modeNote = mode === 'edit'
-      ? '\n\nMODO EDICIÓN: el usuario te dará instrucciones (y quizá imágenes) para AJUSTAR el prompt actual. Explica brevemente qué cambiarás en cada bloque y termina SIEMPRE con el bloque JSON con los 3 textos completos ya actualizados (conserva lo que no se cambia).'
-      : '';
-
-    const system = `${base}\n\n${current}${modeNote}`;
+    const system = `${base}\n\n${current}`;
     const history = (Array.isArray(b.history) ? b.history : [])
       .slice(-20)
       .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.text || '') }))

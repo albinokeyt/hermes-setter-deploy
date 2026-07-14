@@ -2,7 +2,7 @@ import { q, getSetting, setSetting } from '../db.js';
 import { config, OAUTH_SCOPES } from '../config.js';
 import { requireAdmin } from '../lib/session.js';
 import { DEFAULT_GUARDRAIL, invalidateGuardrailCache } from '../services/agent.js';
-import { DEFAULT_ARCHITECT } from './promptEditor.js';
+import { DEFAULT_ARCHITECT, DEFAULT_CORRECTOR } from './promptEditor.js';
 import { agencyKey } from './portal.js';
 
 export default async function settingsRoutes(app) {
@@ -14,6 +14,7 @@ export default async function settingsRoutes(app) {
   app.get('/api/settings/prompts', async () => {
     const g = (await getSetting('guardrail', null)) || {};
     const a = (await getSetting('architect_prompt', null)) || {};
+    const c = (await getSetting('corrector_prompt', null)) || {};
     const am = (await getSetting('architect_model', {})) || {};
     const cm = (await getSetting('corrector_model', {})) || {};
     return {
@@ -21,6 +22,8 @@ export default async function settingsRoutes(app) {
       guardrail_default: DEFAULT_GUARDRAIL,
       architect: a.text || DEFAULT_ARCHITECT,
       architect_default: DEFAULT_ARCHITECT,
+      corrector: c.text || DEFAULT_CORRECTOR,
+      corrector_default: DEFAULT_CORRECTOR,
       architect_provider_id: am.provider_id ?? null,
       architect_model: am.model || '',
       corrector_provider_id: cm.provider_id ?? null,
@@ -32,6 +35,7 @@ export default async function settingsRoutes(app) {
     const b = req.body || {};
     if (typeof b.guardrail === 'string') { await setSetting('guardrail', { text: b.guardrail.trim() }); invalidateGuardrailCache(); }
     if (typeof b.architect === 'string') { await setSetting('architect_prompt', { text: b.architect.trim() }); }
+    if (typeof b.corrector === 'string') { await setSetting('corrector_prompt', { text: b.corrector.trim() }); }
     if ('architect_provider_id' in b || 'architect_model' in b) {
       await setSetting('architect_model', { provider_id: b.architect_provider_id || null, model: b.architect_model || '' });
     }
