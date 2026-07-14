@@ -52,7 +52,7 @@ export async function destroySession(token) {
   if (token) await redis.del(`sess:${token}`);
 }
 
-const PUBLIC_PREFIXES = ['/api/auth/login', '/api/webhooks/', '/api/oauth/callback', '/api/health', '/api/portal/register'];
+const PUBLIC_PREFIXES = ['/api/auth/login', '/api/webhooks/', '/api/oauth/callback', '/api/health', '/api/portal/register', '/api/portal/sso'];
 
 export function authHook() {
   return async (req, reply) => {

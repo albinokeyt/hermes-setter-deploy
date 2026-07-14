@@ -5,6 +5,7 @@ import { createSession, setSessionCookie } from '../lib/session.js';
 import { config, OAUTH_SCOPES } from '../config.js';
 import { getLocationName, listLocationUsers } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
+import { decryptGhlSso } from '../lib/sso.js';
 
 // Clave global del link de agencia (se genera sola).
 export async function agencyKey() {
@@ -236,6 +237,39 @@ export default async function portalRoutes(app) {
     await redis.del(`portalreg:${regToken}`);
     reply.clearCookie('hermes_portal_reg', { path: '/' });
     await startPortalSession(reply, account, cleanName, cleanEmail);
+    return { ok: true };
+  });
+
+  // --- SSO de GHL (Custom Page) -------------------------------------------
+  // Blindaje real: la identidad la entrega GHL CIFRADA por postMessage y se descifra
+  // aquí con el Shared Secret. NO viaja por la URL → no se puede falsificar.
+  app.post('/api/portal/sso', async (req, reply) => {
+    const cfg = (await getSetting('ghl_app', {})) || {};
+    if (!cfg.sso_secret) return reply.code(503).send({ error: 'SSO aún no configurado. El administrador debe pegar el Shared Secret en Configuración.' });
+    let payload;
+    try {
+      payload = decryptGhlSso(req.body?.encrypted, cfg.sso_secret);
+    } catch (e) {
+      await logEvent('sso_error', { error: String(e.message || e).slice(0, 150) });
+      return reply.code(403).send({ error: 'No se pudo verificar tu identidad con GHL.' });
+    }
+    const email = normEmail(payload.email);
+    const locationId = String(payload.activeLocation || payload.locationId || payload.location_id || '');
+    const name = String(payload.userName || payload.name || [payload.firstName, payload.lastName].filter(Boolean).join(' ')).trim();
+    if (!email.includes('@') || !locationId) return reply.code(400).send({ error: 'GHL no envió email o subcuenta en el SSO.' });
+
+    // Identidad certificada por GHL para ESTA subcuenta → buscar/crear su setter y entrar.
+    let account = await one(`SELECT * FROM accounts WHERE location_id = $1`, [locationId]);
+    if (!account) {
+      const nm = (await getLocationName({ mode: 'oauth', location_id: locationId }, locationId)) || `Setter ${locationId.slice(0, 6)}`;
+      account = await one(
+        `INSERT INTO accounts (name, location_id, mode, webhook_token, portal_key) VALUES ($1, $2, 'oauth', $3, $4) RETURNING *`,
+        [nm, locationId, crypto.randomBytes(16).toString('hex'), crypto.randomBytes(24).toString('hex')]
+      );
+    }
+    // GHL ya certifica que el usuario pertenece a esta subcuenta → acceso directo (sin roster ni lista).
+    if (!normEmail(account.owner_email)) await claimOwner(account.id, email); // primer usuario = responsable
+    await startPortalSession(reply, account, name, email);
     return { ok: true };
   });
 

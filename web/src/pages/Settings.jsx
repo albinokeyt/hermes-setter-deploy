@@ -7,6 +7,7 @@ export default function SettingsPage() {
   const [cfg, setCfg] = useState(null);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [ssoSecret, setSsoSecret] = useState('');
   const [saved, setSaved] = useState(false);
   const [log, setLog] = useState([]);
   const [showGuide, setShowGuide] = useState(false);
@@ -21,8 +22,9 @@ export default function SettingsPage() {
   if (!cfg) return <div className="py-24 text-center text-sm text-slate-400">Cargando…</div>;
 
   const save = async () => {
-    await api.put('/api/settings/ghl', { client_id: clientId, client_secret: clientSecret || undefined });
+    await api.put('/api/settings/ghl', { client_id: clientId, client_secret: clientSecret || undefined, sso_secret: ssoSecret || undefined });
     setClientSecret('');
+    setSsoSecret('');
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
     load();
@@ -119,6 +121,14 @@ export default function SettingsPage() {
               onChange={(e) => setClientSecret(e.target.value)}
               placeholder={cfg.client_secret_set ? '••••••••  (guardado — escribir para reemplazar)' : 'pega el secret'}
             />
+            <Input
+              label="SSO Shared Secret (para el acceso blindado por Custom Page)"
+              type="password"
+              value={ssoSecret}
+              onChange={(e) => setSsoSecret(e.target.value)}
+              placeholder={cfg.sso_secret_set ? '••••••••  (guardado — escribir para reemplazar)' : 'pega el Shared Secret de Advanced Settings'}
+              hint="En la app del marketplace → Advanced Settings → Auth → SSO / Shared Secret. Con esto la identidad del usuario la certifica GHL cifrada (no por URL): imposible falsificar."
+            />
             <Button onClick={save}>{saved ? '✓ Guardado' : 'Guardar credenciales'}</Button>
           </Card>
 
@@ -136,6 +146,11 @@ export default function SettingsPage() {
 
           <Card className="space-y-4 p-6">
             <h3 className="text-sm font-bold text-slate-800">URLs para pegar en la app de GHL</h3>
+            <CopyField
+              label="Custom Page URL (acceso blindado con SSO)"
+              value={cfg.custom_page_url || ''}
+              hint="En la app del marketplace → Custom Pages → añade una página con esta URL. El cliente la abre EMBEBIDA dentro de GHL y su identidad se verifica por SSO (no por la URL). Es el acceso recomendado y a prueba de falsificación."
+            />
             <CopyField label="Redirect URL (OAuth)" value={cfg.redirect_url} />
             <CopyField label="Webhook URL (eventos de mensajes)" value={cfg.marketplace_webhook_url} />
             <CopyField label="Scopes (cópialos tal cual)" value={cfg.scopes.join(' ')} />

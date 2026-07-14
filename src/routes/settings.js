@@ -47,10 +47,12 @@ export default async function settingsRoutes(app) {
     return {
       client_id: app_.client_id || '',
       client_secret_set: Boolean(app_.client_secret),
+      sso_secret_set: Boolean(app_.sso_secret),
       app_base_url: config.appBaseUrl,
       redirect_url: `${config.appBaseUrl}/api/oauth/callback`,
       marketplace_webhook_url: `${config.appBaseUrl}/api/webhooks/inbox`,
       agency_menu_url: `${config.appBaseUrl}/ghl-app?key=${ak}&location_id={{location.id}}&email={{user.email}}&name={{user.name}}`,
+      custom_page_url: `${config.appBaseUrl}/`,
       scopes: OAUTH_SCOPES,
       signature_check: !config.allowUnsignedWebhooks,
     };
@@ -62,6 +64,7 @@ export default async function settingsRoutes(app) {
     const next = {
       client_id: b.client_id !== undefined ? String(b.client_id).trim() : current.client_id || '',
       client_secret: b.client_secret ? String(b.client_secret).trim() : current.client_secret || '',
+      sso_secret: b.sso_secret ? String(b.sso_secret).trim() : current.sso_secret || '',
     };
     await setSetting('ghl_app', next);
     return { ok: true };
