@@ -23,7 +23,8 @@ const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_
 
 function stripSecrets(row, req) {
   if (req.auth?.role === 'admin') return row;
-  const { pit_token, webhook_token, webhook_url, portal_key, portal_url, ...safe } = row;
+  // el token crudo de comentarios no se expone; solo la URL ya montada (comment_webhook_url)
+  const { pit_token, webhook_token, webhook_url, portal_key, portal_url, comment_token, ...safe } = row;
   return safe;
 }
 
@@ -49,7 +50,7 @@ export default async function accountRoutes(app) {
       FROM accounts a LEFT JOIN providers p ON p.id = a.provider_id WHERE a.id = $1`, [req.params.id]);
     if (!row) return reply.code(404).send({ error: 'No existe' });
     row.webhook_url = `${config.appBaseUrl}/api/webhooks/workflow/${row.webhook_token}`;
-    row.comment_webhook_url = `${config.appBaseUrl}/api/webhooks/comment/${row.webhook_token}`;
+    row.comment_webhook_url = `${config.appBaseUrl}/api/webhooks/comment/${row.comment_token}`;
     if (req.auth?.role === 'admin') {
       row.portal_url = `${config.appBaseUrl}/ghl-portal?key=${row.portal_key}&location_id={{location.id}}&email={{user.email}}&name={{user.name}}`;
     }

@@ -100,7 +100,7 @@ export default async function webhookRoutes(app) {
   // Comentarios entrantes de Instagram: automatización de GHL → este webhook (por conexión).
   // Acepta campos flexibles (customData o top-level). Se guardan para el Archivo.
   app.post('/api/webhooks/comment/:token', async (req, reply) => {
-    const account = await one(`SELECT id FROM accounts WHERE webhook_token = $1`, [req.params.token]);
+    const account = await one(`SELECT id FROM accounts WHERE comment_token = $1`, [req.params.token]);
     if (!account) return reply.code(404).send({ error: 'token desconocido' });
     reply.send({ ok: true });
     try {

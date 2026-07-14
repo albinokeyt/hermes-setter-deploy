@@ -192,6 +192,14 @@ export default function AccountEdit() {
             <Toggle checked={acc.sync_tags} onChange={(v) => set({ sync_tags: v })} label="Sincronizar etiquetas con GHL" description='Añade tags "setter-calificado", etc. al contacto en GHL' />
           </div>
           <p className="border-t border-slate-100 pt-4 text-xs text-slate-400">La lectura de imágenes y la transcripción de audios se configuran <b>por setter</b> (pestaña IA de cada setter), porque cada agente puede usar su propio modelo.</p>
+
+          <div className="space-y-2 border-t border-slate-100 pt-5">
+            <span className="block text-sm font-bold text-slate-800">💬 Comentarios de Instagram</span>
+            <p className="-mt-1 text-xs text-slate-400">
+              Para recibir los comentarios de tus publicaciones: en esta subcuenta de GHL crea una automatización que, cuando alguien comente, mande un <b>Custom Webhook (POST)</b> a esta URL con <code>customData</code>: <code>comment</code>, <code>author</code> y <code>post</code>. Aparecerán en <b>Archivo → 💬 Comentarios entrantes</b>.
+            </p>
+            <CopyField label="Tu webhook de comentarios (cópialo en la automatización de GHL)" value={acc.comment_webhook_url || ''} />
+          </div>
         </Card>
       )}
 
@@ -276,13 +284,6 @@ export default function AccountEdit() {
                 <CopyField label="URL de webhook para el workflow de GHL" value={acc.webhook_url || ''} hint='Workflow: Trigger "Customer Replied" → Custom Webhook (POST) a esta URL.' />
               </div>
             )}
-            <div className="border-t border-slate-100 pt-4">
-              <CopyField
-                label="💬 Webhook de comentarios de Instagram"
-                value={acc.comment_webhook_url || ''}
-                hint='Para recibir comentarios: en la subcuenta crea una automatización que, cuando alguien comente, mande un Custom Webhook (POST) a esta URL con customData: comment = {{...}}, author = {{...}}, post = {{...}}. Aparecerán en Archivo → Comentarios entrantes.'
-              />
-            </div>
           </Card>
 
           {isAdmin && (
