@@ -69,6 +69,26 @@ export default async function archiveRoutes(app) {
     return { total: total?.n || 0, messages: rows.map((m) => ({ ...m, quien: quien(m) })) };
   });
 
+  // Comentarios entrantes de Instagram (recibidos por webhook).
+  app.get('/api/archive/comments', async (req) => {
+    const where = [];
+    const vals = [];
+    const aid = Number(req.query?.account_id);
+    if (Number.isInteger(aid) && aid > 0) { vals.push(aid); where.push(`co.account_id = $${vals.length}`); }
+    if (req.query?.search) { vals.push(`%${req.query.search}%`); where.push(`(co.text ILIKE $${vals.length} OR co.author ILIKE $${vals.length})`); }
+    const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const limit = Math.min(Number(req.query?.limit) || 100, 500);
+    const offset = Number(req.query?.offset) || 0;
+    const total = await one(`SELECT COUNT(*)::int AS n FROM comments co ${clause}`, vals);
+    const rows = await q(
+      `SELECT co.id, co.created_at, co.author, co.author_id, co.text, co.post_ref, co.channel, a.name AS account_name
+       FROM comments co LEFT JOIN accounts a ON a.id = co.account_id
+       ${clause} ORDER BY co.id DESC LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}`,
+      [...vals, limit, offset]
+    );
+    return { total: total?.n || 0, comments: rows };
+  });
+
   app.get('/api/archive/export', async (req, reply) => {
     const { clause, vals } = buildFilter(req.query || {});
     const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.id DESC LIMIT 50000`, vals);

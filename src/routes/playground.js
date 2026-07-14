@@ -2,10 +2,11 @@ import { one } from '../db.js';
 import { generateReply } from '../services/agent.js';
 import { typingDelayMs } from '../services/humanize.js';
 import { recordUsage, mergeSetter } from '../services/pipeline.js';
-import { scopedAccountId } from '../lib/session.js';
+import { scopedAccountId, requireManageAgents } from '../lib/session.js';
 
 export default async function playgroundRoutes(app) {
   app.post('/api/playground/reply', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
     const { account_id, setter_id, history = [], memory = {} } = req.body || {};
     const scope = scopedAccountId(req);
     if (scope && Number(account_id) !== scope) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });

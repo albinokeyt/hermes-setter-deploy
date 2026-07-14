@@ -97,7 +97,7 @@ export default function UsersPage() {
       <SectionTitle
         title="Usuarios"
         subtitle={isAdmin ? 'Tu acceso, el equipo del panel y los accesos desde GHL' : 'Tu acceso al panel'}
-        actions={isAdmin && <Button onClick={() => setForm({ username: '', password: '', role: 'user', account_id: '' })}><Plus size={16} /> Nuevo usuario</Button>}
+        actions={isAdmin && <Button onClick={() => setForm({ username: '', password: '', role: 'user', account_id: '', can_manage_agents: true })}><Plus size={16} /> Nuevo usuario</Button>}
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -125,6 +125,12 @@ export default function UsersPage() {
                     </Select>
                   )}
                 </div>
+                {form.role === 'user' && (
+                  <label className="flex cursor-pointer items-start gap-2 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                    <input type="checkbox" className="mt-0.5 accent-violet-600" checked={form.can_manage_agents !== false} onChange={(e) => setForm({ ...form, can_manage_agents: e.target.checked })} />
+                    <span><b>Puede gestionar su agente</b> (editar prompt, IA, seguimientos, probar). Si lo <b>desmarcas</b>, el usuario <b>solo verá los mensajes</b> (conversaciones y etiquetas), sin tocar la configuración.</span>
+                  </label>
+                )}
                 <div className="flex gap-2">
                   <Button type="submit">Crear</Button>
                   <Button variant="ghost" type="button" onClick={() => setForm(null)}>Cancelar</Button>
@@ -148,6 +154,15 @@ export default function UsersPage() {
                       </div>
                       <div className="text-xs text-slate-400">{u.account_name ? `Cuenta: ${u.account_name}` : u.role === 'admin' ? 'Acceso total' : 'Sin cuenta asignada'}</div>
                     </div>
+                    {u.role === 'user' && (
+                      <button
+                        onClick={() => updateUser(u, { can_manage_agents: u.can_manage_agents === false })}
+                        title="Alternar entre gestionar el agente o solo ver mensajes"
+                        className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${u.can_manage_agents === false ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}
+                      >
+                        {u.can_manage_agents === false ? '💬 Solo mensajes' : '🤖 Gestiona agente'}
+                      </button>
+                    )}
                     {u.role === 'user' && (
                       <select
                         value={u.account_id || ''}

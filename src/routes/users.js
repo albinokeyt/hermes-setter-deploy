@@ -8,7 +8,7 @@ export default async function userRoutes(app) {
 
   app.get('/api/users', async () => {
     const panel = await q(`
-      SELECT u.id, u.username, u.role, u.account_id, u.created_at, a.name AS account_name
+      SELECT u.id, u.username, u.role, u.account_id, u.can_manage_agents, u.created_at, a.name AS account_name
       FROM users u LEFT JOIN accounts a ON a.id = u.account_id ORDER BY u.id`);
     const portal = await q(`
       SELECT p.id, p.name, p.email, p.account_id, p.last_seen_at, a.name AS account_name
@@ -18,7 +18,7 @@ export default async function userRoutes(app) {
   });
 
   app.post('/api/users', async (req, reply) => {
-    const { username, password, role = 'user', account_id = null } = req.body || {};
+    const { username, password, role = 'user', account_id = null, can_manage_agents = true } = req.body || {};
     const name = String(username || '').trim();
     if (!name || !password) return reply.code(400).send({ error: 'Usuario y contraseña son obligatorios' });
     if (!['admin', 'user'].includes(role)) return reply.code(400).send({ error: 'Rol inválido' });
@@ -26,9 +26,9 @@ export default async function userRoutes(app) {
     const exists = await one(`SELECT id FROM users WHERE username = $1`, [name]);
     if (exists) return reply.code(400).send({ error: 'Ese nombre de usuario ya existe' });
     const row = await one(
-      `INSERT INTO users (username, password_hash, role, account_id) VALUES ($1, $2, $3, $4)
-       RETURNING id, username, role, account_id, created_at`,
-      [name, hashPassword(String(password)), role, role === 'admin' ? null : account_id || null]
+      `INSERT INTO users (username, password_hash, role, account_id, can_manage_agents) VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, username, role, account_id, can_manage_agents, created_at`,
+      [name, hashPassword(String(password)), role, role === 'admin' ? null : account_id || null, role === 'admin' ? true : Boolean(can_manage_agents)]
     );
     return row;
   });
@@ -43,14 +43,16 @@ export default async function userRoutes(app) {
     }
     const nextAccountId = role === 'admin' ? null : (b.account_id !== undefined ? b.account_id || null : target.account_id);
     if (role === 'user' && !nextAccountId) return reply.code(400).send({ error: 'Un usuario normal debe estar asignado a una cuenta' });
+    const nextManage = role === 'admin' ? true : (b.can_manage_agents !== undefined ? Boolean(b.can_manage_agents) : target.can_manage_agents !== false);
     const row = await one(
-      `UPDATE users SET username = $1, role = $2, account_id = $3, password_hash = $4
-       WHERE id = $5 RETURNING id, username, role, account_id, created_at`,
+      `UPDATE users SET username = $1, role = $2, account_id = $3, password_hash = $4, can_manage_agents = $5
+       WHERE id = $6 RETURNING id, username, role, account_id, can_manage_agents, created_at`,
       [
         String(b.username || target.username).trim(),
         role,
         nextAccountId,
         b.password ? hashPassword(String(b.password)) : target.password_hash,
+        nextManage,
         target.id,
       ]
     );

@@ -23,8 +23,8 @@ export default function Archive() {
   const [providers, setProviders] = useState([]);
   const [settings, setSettings] = useState(null);
   const [spend, setSpend] = useState({ d24: 0, d30: 0, total: 0, preguntas: 0 });
-  const [filters, setFilters] = useState({ account_id: '', direction: '', search: '' });
-  const [data, setData] = useState({ total: 0, messages: [] });
+  const [filters, setFilters] = useState({ account_id: '', direction: '', search: '', kind: 'messages' });
+  const [data, setData] = useState({ total: 0, messages: [], kind: 'messages' });
   const [loading, setLoading] = useState(true);
 
   const [chat, setChat] = useState([]);
@@ -45,12 +45,17 @@ export default function Archive() {
   useEffect(() => {
     const params = new URLSearchParams();
     if (filters.account_id) params.set('account_id', filters.account_id);
-    if (filters.direction) params.set('direction', filters.direction);
     if (filters.search) params.set('search', filters.search);
     params.set('limit', '150');
+    const isComments = filters.kind === 'comments';
+    if (!isComments && filters.direction) params.set('direction', filters.direction);
     const t = setTimeout(() => {
       setLoading(true);
-      api.get(`/api/archive/messages?${params}`).then(setData).catch(() => {}).finally(() => setLoading(false));
+      const url = isComments ? `/api/archive/comments?${params}` : `/api/archive/messages?${params}`;
+      api.get(url)
+        .then((r) => setData({ ...r, kind: isComments ? 'comments' : 'messages' }))
+        .catch(() => {})
+        .finally(() => setLoading(false));
     }, 250);
     return () => clearTimeout(t);
   }, [filters]);
@@ -139,38 +144,64 @@ export default function Archive() {
                 className="w-60 rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3.5 text-sm outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
               />
             </div>
-            <Select value={filters.account_id} onChange={(e) => setFilters({ ...filters, account_id: e.target.value })} className="!w-44">
-              <option value="">Todos los setters</option>
+            <Select value={filters.account_id} onChange={(e) => setFilters({ ...filters, account_id: e.target.value })} className="!w-40">
+              <option value="">Todas las conexiones</option>
               {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
-            <Select value={filters.direction} onChange={(e) => setFilters({ ...filters, direction: e.target.value })} className="!w-40">
-              <option value="">Entrantes y salientes</option>
-              <option value="inbound">Solo entrantes</option>
-              <option value="outbound">Solo salientes</option>
+            <Select value={filters.kind} onChange={(e) => setFilters({ ...filters, kind: e.target.value })} className="!w-44">
+              <option value="messages">Mensajes (DM)</option>
+              <option value="comments">💬 Comentarios entrantes</option>
             </Select>
-            <Button variant="secondary" onClick={download}><Download size={15} /> Descargar CSV</Button>
+            {filters.kind === 'messages' && (
+              <Select value={filters.direction} onChange={(e) => setFilters({ ...filters, direction: e.target.value })} className="!w-40">
+                <option value="">Entrantes y salientes</option>
+                <option value="inbound">Solo entrantes</option>
+                <option value="outbound">Solo salientes</option>
+              </Select>
+            )}
+            {filters.kind === 'messages' && <Button variant="secondary" onClick={download}><Download size={15} /> Descargar CSV</Button>}
           </div>
 
           <Card className="overflow-hidden">
-            <div className="border-b border-slate-100 px-5 py-3 text-xs text-slate-400">
-              {loading ? 'Cargando…' : `${data.total.toLocaleString('es-ES')} mensajes en total · mostrando ${data.messages.length}`}
-            </div>
-            <div className="scroll-thin max-h-[64vh] overflow-y-auto divide-y divide-slate-50">
-              {data.messages.map((m) => (
-                <div key={m.id} className="px-5 py-3">
-                  <div className="mb-1 flex items-center gap-2 text-[11px]">
-                    {m.direction === 'inbound'
-                      ? <ArrowDownToLine size={13} className="text-blue-500" />
-                      : <ArrowUpFromLine size={13} className="text-emerald-500" />}
-                    <span className={`rounded-md px-1.5 py-0.5 font-semibold ${QUIEN_CLS[m.quien] || 'bg-slate-100 text-slate-600'}`}>{m.quien}</span>
-                    <span className="text-slate-400">{m.account_name} · {m.lead_name || m.ghl_contact_id} · {CHANNEL_LABEL[m.channel] || m.channel}</span>
-                    <span className="ml-auto text-slate-400">{fecha(m.created_at)}</span>
+            {(() => {
+              const isComments = data.kind === 'comments';
+              const items = isComments ? (data.comments || []) : (data.messages || []);
+              return (
+                <>
+                  <div className="border-b border-slate-100 px-5 py-3 text-xs text-slate-400">
+                    {loading ? 'Cargando…' : `${(data.total || 0).toLocaleString('es-ES')} ${isComments ? 'comentarios' : 'mensajes'} en total · mostrando ${items.length}`}
                   </div>
-                  <p className="text-sm text-slate-700">{m.body}</p>
-                </div>
-              ))}
-              {!loading && data.messages.length === 0 && <p className="px-5 py-10 text-center text-sm text-slate-400">Sin mensajes con esos filtros</p>}
-            </div>
+                  <div className="scroll-thin max-h-[64vh] divide-y divide-slate-50 overflow-y-auto">
+                    {isComments
+                      ? items.map((c) => (
+                          <div key={c.id} className="px-5 py-3">
+                            <div className="mb-1 flex items-center gap-2 text-[11px]">
+                              <span className="rounded-md bg-pink-50 px-1.5 py-0.5 font-semibold text-pink-600">💬 Comentario</span>
+                              <span className="text-slate-400">{c.author || c.author_id || 'anónimo'} · {c.account_name} · {CHANNEL_LABEL[c.channel] || c.channel}</span>
+                              <span className="ml-auto text-slate-400">{fecha(c.created_at)}</span>
+                            </div>
+                            <p className="text-sm text-slate-700">{c.text}</p>
+                            {c.post_ref && <p className="mt-0.5 truncate text-[11px] text-slate-400">post: {c.post_ref}</p>}
+                          </div>
+                        ))
+                      : items.map((m) => (
+                          <div key={m.id} className="px-5 py-3">
+                            <div className="mb-1 flex items-center gap-2 text-[11px]">
+                              {m.direction === 'inbound'
+                                ? <ArrowDownToLine size={13} className="text-blue-500" />
+                                : <ArrowUpFromLine size={13} className="text-emerald-500" />}
+                              <span className={`rounded-md px-1.5 py-0.5 font-semibold ${QUIEN_CLS[m.quien] || 'bg-slate-100 text-slate-600'}`}>{m.quien}</span>
+                              <span className="text-slate-400">{m.account_name} · {m.lead_name || m.ghl_contact_id} · {CHANNEL_LABEL[m.channel] || m.channel}</span>
+                              <span className="ml-auto text-slate-400">{fecha(m.created_at)}</span>
+                            </div>
+                            <p className="text-sm text-slate-700">{m.body}</p>
+                          </div>
+                        ))}
+                    {!loading && items.length === 0 && <p className="px-5 py-10 text-center text-sm text-slate-400">Sin {isComments ? 'comentarios' : 'mensajes'} con esos filtros</p>}
+                  </div>
+                </>
+              );
+            })()}
           </Card>
         </div>
 

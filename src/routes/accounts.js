@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { q, one } from '../db.js';
 import { config } from '../config.js';
-import { requireAdmin, scopedAccountId } from '../lib/session.js';
+import { requireAdmin, scopedAccountId, requireManageAgents } from '../lib/session.js';
 import * as ghl from '../services/ghl.js';
 
 const ADMIN_EDITABLE = [
@@ -50,6 +50,7 @@ export default async function accountRoutes(app) {
       FROM accounts a LEFT JOIN providers p ON p.id = a.provider_id WHERE a.id = $1`, [req.params.id]);
     if (!row) return reply.code(404).send({ error: 'No existe' });
     row.webhook_url = `${config.appBaseUrl}/api/webhooks/workflow/${row.webhook_token}`;
+    row.comment_webhook_url = `${config.appBaseUrl}/api/webhooks/comment/${row.webhook_token}`;
     if (req.auth?.role === 'admin') {
       row.portal_url = `${config.appBaseUrl}/ghl-portal?key=${row.portal_key}&location_id={{location.id}}&email={{user.email}}&name={{user.name}}`;
     }
@@ -72,6 +73,7 @@ export default async function accountRoutes(app) {
   });
 
   app.put('/api/accounts/:id', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
     const scope = scopedAccountId(req);
     if (scope && Number(req.params.id) !== scope) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });
     const existing = await one(`SELECT * FROM accounts WHERE id = $1`, [req.params.id]);

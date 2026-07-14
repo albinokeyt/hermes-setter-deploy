@@ -90,6 +90,18 @@ export function requireAdmin(req, reply) {
   return true;
 }
 
+// Devuelve false (y responde 403) si el usuario NO puede gestionar agentes.
+// Admin siempre puede; un usuario restringido (can_manage_agents=false) no.
+export async function requireManageAgents(req, reply) {
+  if (req.auth?.role === 'admin') return true;
+  const u = req.userId ? await one(`SELECT can_manage_agents FROM users WHERE id = $1`, [req.userId]) : null;
+  if (u && u.can_manage_agents === false) {
+    reply.code(403).send({ error: 'Tu usuario solo tiene acceso a los mensajes, no a configurar los agentes' });
+    return false;
+  }
+  return true;
+}
+
 // Alcance de datos de una petición. FAIL-CLOSED: un no-admin sin cuenta asignada
 // no ve NADA (denied), en lugar de verlo todo.
 //   admin           → { all: true }

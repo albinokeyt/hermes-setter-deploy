@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { one } from '../db.js';
+import { one, q } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
 import { handleInbound, handleOutboundEvent, handleAppointmentEvent, accountByLocation, logEvent } from '../services/pipeline.js';
@@ -97,6 +97,36 @@ export default async function webhookRoutes(app) {
   app.post('/api/webhooks/ghl', marketplaceHandler);
 
   // Webhook alternativo por cuenta (workflow "Customer Replied" → Custom Webhook), modo sin app de marketplace
+  // Comentarios entrantes de Instagram: automatización de GHL → este webhook (por conexión).
+  // Acepta campos flexibles (customData o top-level). Se guardan para el Archivo.
+  app.post('/api/webhooks/comment/:token', async (req, reply) => {
+    const account = await one(`SELECT id FROM accounts WHERE webhook_token = $1`, [req.params.token]);
+    if (!account) return reply.code(404).send({ error: 'token desconocido' });
+    reply.send({ ok: true });
+    try {
+      const p = req.body || {};
+      const c = p.customData || p.custom_data || p;
+      const text = c.comment || c.text || c.message || p.body || '';
+      const author = c.author || c.username || c.from || c.contact_name || c.full_name || '';
+      const authorId = c.author_id || c.user_id || p.contact_id || p.contactId || '';
+      const post = c.post || c.post_id || c.media_id || c.permalink || c.post_url || '';
+      const channel = c.channel || 'IG';
+      if (!String(text).trim()) {
+        await logEvent('comentario_incompleto', { account: account.id, keys: Object.keys(p) });
+        return;
+      }
+      await q(
+        `INSERT INTO comments (account_id, author, author_id, text, post_ref, channel, raw)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
+        [account.id, String(author), String(authorId), String(text), String(post), String(channel), JSON.stringify(p)]
+      );
+      await logEvent('comentario_recibido', { account: account.id, author: String(author), texto: String(text).slice(0, 200) });
+    } catch (err) {
+      console.error('[webhook comment]', err);
+      await logEvent('error_webhook', { error: err.message }).catch(() => {});
+    }
+  });
+
   app.post('/api/webhooks/workflow/:token', async (req, reply) => {
     const account = await one(`SELECT * FROM accounts WHERE webhook_token = $1`, [req.params.token]);
     if (!account) return reply.code(404).send({ error: 'token desconocido' });

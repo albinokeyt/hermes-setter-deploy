@@ -39,8 +39,8 @@ export default async function authRoutes(app) {
       const pu = req.auth.portalUserId ? await one(`SELECT name, email FROM portal_users WHERE id = $1`, [req.auth.portalUserId]) : null;
       return { ...base, username: pu?.name || pu?.email || 'Usuario GHL' };
     }
-    const user = await one(`SELECT id, username, role, account_id, created_at FROM users WHERE id = $1`, [req.userId]);
-    return { ...base, ...(user || {}), account_id: base.account_id, role: base.role };
+    const user = await one(`SELECT id, username, role, account_id, can_manage_agents, created_at FROM users WHERE id = $1`, [req.userId]);
+    return { ...base, ...(user || {}), account_id: base.account_id, role: base.role, can_manage_agents: user?.can_manage_agents !== false };
   });
 
   app.put('/api/auth/me', async (req, reply) => {

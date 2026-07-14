@@ -1,5 +1,5 @@
 import { q, one } from '../db.js';
-import { requireAdmin, scopedAccountId } from '../lib/session.js';
+import { requireAdmin, scopedAccountId, requireManageAgents } from '../lib/session.js';
 
 // El admin edita todo; un usuario del portal solo el cerebro de su setter (no el proveedor/modelo de IA).
 const ADMIN_EDITABLE = [
@@ -83,6 +83,7 @@ export default async function setterRoutes(app) {
   });
 
   app.put('/api/setters/:id', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
     const { setter, code, error } = await loadSetterScoped(req, req.params.id);
     if (code) return reply.code(code).send({ error });
     const editable = req.auth?.role === 'admin' ? ADMIN_EDITABLE : USER_EDITABLE;

@@ -274,6 +274,13 @@ export default function AccountEdit() {
                 <CopyField label="URL de webhook para el workflow de GHL" value={acc.webhook_url || ''} hint='Workflow: Trigger "Customer Replied" → Custom Webhook (POST) a esta URL.' />
               </div>
             )}
+            <div className="border-t border-slate-100 pt-4">
+              <CopyField
+                label="💬 Webhook de comentarios de Instagram"
+                value={acc.comment_webhook_url || ''}
+                hint='Para recibir comentarios: en la subcuenta crea una automatización que, cuando alguien comente, mande un Custom Webhook (POST) a esta URL con customData: comment = {{...}}, author = {{...}}, post = {{...}}. Aparecerán en Archivo → Comentarios entrantes.'
+              />
+            </div>
           </Card>
 
           <Card className="p-6">

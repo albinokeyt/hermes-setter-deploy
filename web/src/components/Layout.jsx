@@ -39,6 +39,7 @@ export default function Layout() {
   if (!me) return <div className="py-24 text-center text-sm text-slate-400">Cargando…</div>;
 
   const isAdmin = me.role === 'admin';
+  const restricted = !isAdmin && me.can_manage_agents === false; // solo mensajes
   const nav = [
     { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
     { to: '/conversaciones', label: 'Conversaciones', icon: MessagesSquare },
@@ -49,10 +50,10 @@ export default function Layout() {
           { to: '/versus', label: 'Versus', icon: Swords },
           { to: '/apis', label: 'APIs de IA', icon: Plug },
         ]
-      : me.account_id
+      : (!restricted && me.account_id)
         ? [{ to: `/cuentas/${me.account_id}`, label: 'Mi agente', icon: Bot }]
         : []),
-    { to: '/prueba', label: 'Probar agente', icon: FlaskConical },
+    ...(restricted ? [] : [{ to: '/prueba', label: 'Probar agente', icon: FlaskConical }]),
     ...(isAdmin ? [{ to: '/archivo', label: 'Archivo', icon: Database }] : []),
   ];
   const navBottom = [
