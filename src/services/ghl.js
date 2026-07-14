@@ -143,6 +143,20 @@ export async function listCalendars(account, locationId) {
   return cals.map((c) => ({ id: c.id, name: c.name || c.calendarName || c.id, active: c.isActive !== false }));
 }
 
+// Usuarios reales de la subcuenta en GHL (para autorizar el acceso al portal).
+// Requiere el scope users.readonly y token de la subcuenta.
+export async function listLocationUsers(account, locationId) {
+  const data = await ghlApi(account, 'GET', `/users/?locationId=${encodeURIComponent(locationId)}`, { version: V_CONTACTS });
+  const users = Array.isArray(data?.users) ? data.users : Array.isArray(data) ? data : [];
+  return users
+    .map((u) => ({
+      id: u.id,
+      email: String(u.email || '').trim().toLowerCase(),
+      name: u.name || [u.firstName, u.lastName].filter(Boolean).join(' ').trim(),
+    }))
+    .filter((u) => u.email.includes('@'));
+}
+
 export async function getLocationName(account, locationId) {
   try {
     const data = await ghlApi(account, 'GET', `/locations/${locationId}`, { version: V_CONTACTS });

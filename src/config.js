@@ -64,4 +64,5 @@ export const OAUTH_SCOPES = [
   'locations.readonly',
   'calendars.readonly',
   'calendars/events.readonly',
+  'users.readonly', // para autorizar el acceso al portal por los usuarios reales de la subcuenta
 ];

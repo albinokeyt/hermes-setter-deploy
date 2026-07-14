@@ -128,7 +128,7 @@ export default function SettingsPage() {
               Pégalo <b>UNA vez</b> como <b>Custom Menu Link a nivel agencia</b> en GHL: aparece en todas las subcuentas. Al abrirlo, GHL rellena la subcuenta y el usuario, y Hermes decide solo: si la app no está conectada la manda a instalarla, si está conectada pero sin setter lo crea (pide nombre y correo la primera vez), y si ya existe entra a su panel.
             </p>
             <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-              🔒 <b>Solo entran los correos autorizados.</b> El primero que abre el setter (el instalador) queda como <b>responsable</b> y, desde su pestaña <b>Accesos</b>, decide qué otros correos pueden entrar. Aunque cualquiera del equipo vea el enlace, sin estar en la lista no accede.
+              🔒 <b>Acceso automático por usuarios de GHL.</b> Entra solo quien sea usuario de esa subcuenta en GoHighLevel; nadie más. Se administra desde GHL (das de alta/baja al usuario allí). En la pestaña <b>Accesos</b> de cada setter puedes además añadir correos <b>extra</b> que no tengan usuario en GHL. Requiere el scope <b>users.readonly</b> en la app y reconectar las subcuentas.
             </p>
             <CopyField label="Enlace de agencia (pégalo tal cual, con las llaves)" value={cfg.agency_menu_url || ''} />
             <p className="text-xs text-slate-400">Alternativa más estricta: el enlace <b>por setter</b> (en cada setter → Conexión GHL) usa una clave única por subcuenta.</p>

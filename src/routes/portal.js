@@ -3,7 +3,7 @@ import { one, q, getSetting, setSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { createSession, setSessionCookie } from '../lib/session.js';
 import { config, OAUTH_SCOPES } from '../config.js';
-import { getLocationName } from '../services/ghl.js';
+import { getLocationName, listLocationUsers } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
 
 // Clave global del link de agencia (se genera sola).
@@ -27,27 +27,46 @@ function emailList(account) {
   return arr.map(normEmail).filter(Boolean);
 }
 
-// ¿Puede este correo entrar al panel de este setter?
-//  - lista vacía            → aún sin dueño: el primero en entrar la reclama (bootstrap)
-//  - correo en la lista     → permitido
-//  - correo fuera de lista  → denegado
-//  - sin correo             → hay que pedirlo (registro)
-function accessDecision(account, email) {
-  const e = normEmail(email);
-  if (!e || !e.includes('@')) return { ok: false, reason: 'no_email' };
-  const list = emailList(account);
-  if (!list.length) return { ok: true, bootstrap: true, email: e };
-  if (list.includes(e)) return { ok: true, bootstrap: false, email: e };
-  return { ok: false, reason: 'not_authorized', email: e };
+// Correos de los usuarios REALES de la subcuenta en GHL (cache 5 min por location).
+// Devuelve null si no se puede consultar (sin conexión / sin scope / error): en ese
+// caso caemos a la lista manual (fail-closed sobre el roster, nunca abrimos por error).
+async function ghlUserEmails(account) {
+  if (!account.location_id) return null;
+  const cacheKey = `ghlusers:${account.location_id}`;
+  try { const c = await redis.get(cacheKey); if (c) return JSON.parse(c); } catch {}
+  try {
+    const users = await listLocationUsers(account, account.location_id);
+    const emails = users.map((u) => normEmail(u.email)).filter(Boolean);
+    await redis.setex(cacheKey, 300, JSON.stringify(emails));
+    return emails;
+  } catch (e) {
+    await logEvent('ghl_users_error', { account: account.id, error: String(e.message || e).slice(0, 200) });
+    return null;
+  }
 }
 
-// El primer correo que entra a un setter sin lista lo reclama como responsable.
+// ¿Puede este correo entrar? Autorizado = usuario real de la subcuenta en GHL
+// (automático) O correo en la lista manual de extras.
+async function authState(account, email) {
+  const e = normEmail(email);
+  if (!e || !e.includes('@')) return { authorized: false, reason: 'no_email' };
+  if (emailList(account).includes(e)) return { authorized: true, source: 'manual', email: e };
+  const roster = await ghlUserEmails(account);
+  if (roster && roster.includes(e)) return { authorized: true, source: 'ghl', email: e };
+  return { authorized: false, reason: 'not_authorized', email: e };
+}
+
+// Fija al responsable (gestor de los extras manuales) la primera vez. Solo desde
+// orígenes de confianza (allowBootstrap). Si el setter aún no tenía lista, siembra
+// ese correo como primer extra; si ya tenía, deja la lista intacta.
 async function claimOwner(accountId, email) {
   const e = normEmail(email);
   if (!e) return;
   await q(
-    `UPDATE accounts SET owner_email = $2, authorized_emails = $3::jsonb
-     WHERE id = $1 AND (authorized_emails IS NULL OR authorized_emails = '[]'::jsonb)`,
+    `UPDATE accounts SET owner_email = $2,
+       authorized_emails = CASE WHEN (authorized_emails IS NULL OR authorized_emails = '[]'::jsonb)
+                                THEN $3::jsonb ELSE authorized_emails END
+     WHERE id = $1 AND (owner_email IS NULL OR owner_email = '')`,
     [accountId, e, JSON.stringify([e])]
   );
 }
@@ -70,14 +89,6 @@ function deniedHtml(account) {
   return infoHtml('🔒', `Sin acceso a ${safeName(account)}`,
     'Tu correo de GHL no está autorizado para entrar a este panel. Pídele a la persona responsable que añada tu correo desde su pestaña <b>Accesos</b>.',
     'Si eres el responsable, entra con el correo con el que instalaste la app.');
-}
-
-// Setter existente pero aún sin lista de accesos: no se puede "reclamar" por el
-// enlace global de agencia (evita que alguien con otro location_id se apropie de él).
-function needsSetupHtml(account) {
-  return infoHtml('⏳', `${safeName(account)} aún no tiene accesos`,
-    'Este setter existe pero todavía no tiene correos autorizados. Pídele a la agencia que te añada como responsable desde el panel, o usa el enlace de portal propio de tu subcuenta.',
-    null);
 }
 
 async function upsertPortalUser(accountId, name, email) {
@@ -113,18 +124,15 @@ async function sendToRegister(reply, accountId, allowBootstrap) {
 // En el enlace global de agencia sobre un setter YA existente es false: si no tiene
 // lista, no se puede reclamar (evita apropiárselo conociendo el location_id).
 async function resolveEntry(reply, account, email, name, allowBootstrap) {
-  if (!emailList(account).length && !allowBootstrap) {
-    await logEvent('portal_sin_accesos', { account: account.id });
-    return reply.code(403).type('text/html; charset=utf-8').send(needsSetupHtml(account));
-  }
-  const d = accessDecision(account, email);
-  if (d.ok) {
-    if (d.bootstrap) await claimOwner(account.id, d.email);
-    await startPortalSession(reply, account, name, d.email);
+  const st = await authState(account, email);
+  if (st.authorized) {
+    // Fijar responsable la primera vez, solo desde orígenes de confianza.
+    if (!normEmail(account.owner_email) && allowBootstrap) await claimOwner(account.id, st.email);
+    await startPortalSession(reply, account, name, st.email);
     return reply.redirect('/');
   }
-  if (d.reason === 'not_authorized') {
-    await logEvent('portal_acceso_denegado', { account: account.id, email: d.email });
+  if (st.reason === 'not_authorized') {
+    await logEvent('portal_acceso_denegado', { account: account.id, email: st.email });
     return reply.code(403).type('text/html; charset=utf-8').send(deniedHtml(account));
   }
   return sendToRegister(reply, account.id, allowBootstrap); // no_email → pedir correo
@@ -172,8 +180,9 @@ export default async function portalRoutes(app) {
     let account = await one(`SELECT * FROM accounts WHERE location_id = $1`, [loc]);
 
     // Caso 3: setter ya existe → entrar solo si el correo está autorizado.
-    // allowBootstrap=false: por el enlace global NO se puede reclamar un setter existente.
-    if (account) return resolveEntry(reply, account, email, name, false);
+    // Reclamar responsable SOLO si aún no lo tiene (un setter con responsable NO se
+    // puede reclamar por el enlace global; uno huérfano lo reclama el 1er autorizado).
+    if (account) return resolveEntry(reply, account, email, name, !normEmail(account.owner_email));
 
     // ¿La app está conectada en esta subcuenta (hay token OAuth)?
     const token = await one(`SELECT location_id FROM ghl_tokens WHERE location_id = $1`, [loc]);
@@ -218,14 +227,11 @@ export default async function portalRoutes(app) {
     const cleanEmail = normEmail(req.body?.email);
     if (!cleanName || !cleanEmail.includes('@')) return reply.code(400).send({ error: 'Nombre y correo válidos son obligatorios' });
 
-    // Setter sin lista solo se puede reclamar si el origen lo permitía (no por enlace global).
-    if (!emailList(account).length && !allowBootstrap) {
-      return reply.code(403).send({ error: 'Este setter aún no tiene accesos configurados. Pídele a la agencia que te añada como responsable.' });
-    }
-    // Lista blanca: solo entra un correo autorizado (o el primero, que reclama el setter).
-    const d = accessDecision(account, cleanEmail);
-    if (!d.ok) return reply.code(403).send({ error: 'Tu correo no tiene acceso a este panel. Pídele al responsable que te añada desde su pestaña «Accesos».' });
-    if (d.bootstrap) await claimOwner(account.id, cleanEmail);
+    // Autorizado = usuario real de la subcuenta en GHL O correo en la lista manual.
+    const st = await authState(account, cleanEmail);
+    if (!st.authorized) return reply.code(403).send({ error: 'Tu correo no tiene acceso a este panel. Debes ser usuario de la subcuenta en GHL, o pedirle al responsable que te añada desde su pestaña «Accesos».' });
+    // Fijar responsable la primera vez, solo desde orígenes de confianza.
+    if (!normEmail(account.owner_email) && allowBootstrap) await claimOwner(account.id, cleanEmail);
 
     await redis.del(`portalreg:${regToken}`);
     reply.clearCookie('hermes_portal_reg', { path: '/' });
@@ -254,15 +260,18 @@ export default async function portalRoutes(app) {
     }
     const myEmail = await currentPortalEmail(req);
     const canManage = req.auth?.role === 'admin' || (myEmail && myEmail === normEmail(account.owner_email));
-    // A quien NO gestiona no se le revela el correo del responsable ni la lista completa:
+    // A quien NO gestiona no se le revela el correo del responsable ni las listas:
     // esos datos convertirían el residual del correo falsificable en un oráculo del dueño.
     if (!canManage) {
       return { account_id: account.id, my_email: myEmail, can_manage: false, has_owner: Boolean(account.owner_email) };
     }
+    const roster = await ghlUserEmails(account); // null si no hay conexión/scope
     return {
       account_id: account.id,
       owner_email: account.owner_email || '',
-      emails: emailList(account),
+      emails: emailList(account),          // extras manuales (editables)
+      ghl_users: roster || [],             // usuarios de GHL con acceso automático (solo lectura)
+      ghl_available: roster !== null,      // false = falta conectar o el scope users.readonly
       my_email: myEmail,
       can_manage: true,
     };
