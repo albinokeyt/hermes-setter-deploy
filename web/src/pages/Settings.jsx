@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { RefreshCw, ShieldCheck, ShieldAlert, ShieldHalf, Wand2 } from 'lucide-react';
 import { api, timeAgo } from '../api.js';
-import { Card, SectionTitle, Button, Input, Banner, CopyField } from '../components/ui.jsx';
+import { Card, SectionTitle, Button, Input, Textarea, Select, Banner, CopyField } from '../components/ui.jsx';
 
 export default function SettingsPage() {
   const [cfg, setCfg] = useState(null);
@@ -10,10 +10,13 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false);
   const [log, setLog] = useState([]);
   const [showGuide, setShowGuide] = useState(false);
+  const [prompts, setPrompts] = useState(null);
+  const [pSaved, setPSaved] = useState(false);
 
+  const [providers, setProviders] = useState([]);
   const load = () => api.get('/api/settings/ghl').then((c) => { setCfg(c); setClientId(c.client_id); }).catch(() => {});
   const loadLog = () => api.get('/api/settings/webhook-log?limit=60').then(setLog).catch(() => {});
-  useEffect(() => { load(); loadLog(); }, []);
+  useEffect(() => { load(); loadLog(); api.get('/api/settings/prompts').then(setPrompts).catch(() => {}); api.get('/api/providers').then(setProviders).catch(() => {}); }, []);
 
   if (!cfg) return <div className="py-24 text-center text-sm text-slate-400">Cargando…</div>;
 
@@ -25,9 +28,66 @@ export default function SettingsPage() {
     load();
   };
 
+  const savePrompts = async () => {
+    await api.put('/api/settings/prompts', {
+      guardrail: prompts.guardrail, architect: prompts.architect,
+      architect_provider_id: prompts.architect_provider_id, architect_model: prompts.architect_model,
+      corrector_provider_id: prompts.corrector_provider_id, corrector_model: prompts.corrector_model,
+    });
+    setPSaved(true);
+    setTimeout(() => setPSaved(false), 2000);
+  };
+
   return (
     <div>
-      <SectionTitle title="Configuración" subtitle="Conexión con GoHighLevel y registro de actividad" />
+      <SectionTitle title="Configuración" subtitle="Conexión con GoHighLevel, seguridad de la IA y registro de actividad" />
+
+      {prompts && (
+        <div className="mb-4 grid gap-4 lg:grid-cols-2">
+          <Card className="space-y-3 p-6">
+            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><ShieldHalf size={16} className="text-emerald-600" /> Guardarraíl de seguridad</h3>
+            <p className="text-xs text-slate-500">Regla inquebrantable que se aplica a TODOS los setters: evita que inventen datos o actúen como chatbot general. Va por encima de sus prompts.</p>
+            <Textarea rows={7} value={prompts.guardrail} onChange={(e) => setPrompts({ ...prompts, guardrail: e.target.value })} />
+            <div className="flex gap-2">
+              <Button onClick={savePrompts}>{pSaved ? '✓ Guardado' : 'Guardar'}</Button>
+              <Button variant="ghost" onClick={() => setPrompts({ ...prompts, guardrail: prompts.guardrail_default })}>Restaurar por defecto</Button>
+            </div>
+          </Card>
+          <Card className="space-y-3 p-6">
+            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Wand2 size={16} className="text-violet-600" /> Arquitecto de prompts</h3>
+            <p className="text-xs text-slate-500">El "prompt que ayuda a crear los prompts". Define cómo entrevista la IA arquitecta para armar los 3 bloques de cada setter.</p>
+            <Textarea rows={7} value={prompts.architect} onChange={(e) => setPrompts({ ...prompts, architect: e.target.value })} />
+            <div className="flex gap-2">
+              <Button onClick={savePrompts}>{pSaved ? '✓ Guardado' : 'Guardar'}</Button>
+              <Button variant="ghost" onClick={() => setPrompts({ ...prompts, architect: prompts.architect_default })}>Restaurar por defecto</Button>
+            </div>
+          </Card>
+
+          <Card className="space-y-4 p-6 lg:col-span-2">
+            <h3 className="text-sm font-bold text-slate-800">Modelos de IA del arquitecto y del corrector</h3>
+            <p className="text-xs text-slate-500">Con qué modelo trabaja cada uno (independiente del modelo de chat de cada setter). Si lo dejas vacío, usa el del setter.</p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <span className="block text-xs font-semibold text-violet-700">✨ Arquitecto (crea el prompt)</span>
+                <Select value={prompts.architect_provider_id || ''} onChange={(e) => setPrompts({ ...prompts, architect_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— del setter —</option>
+                  {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <Input placeholder="modelo (ej. openai/gpt-5.1)" value={prompts.architect_model || ''} onChange={(e) => setPrompts({ ...prompts, architect_model: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <span className="block text-xs font-semibold text-violet-700">🛠️ Corrector / ingeniero (ajusta el prompt)</span>
+                <Select value={prompts.corrector_provider_id || ''} onChange={(e) => setPrompts({ ...prompts, corrector_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— del setter —</option>
+                  {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <Input placeholder="modelo (ej. openai/gpt-5.1)" value={prompts.corrector_model || ''} onChange={(e) => setPrompts({ ...prompts, corrector_model: e.target.value })} />
+              </div>
+            </div>
+            <Button onClick={savePrompts}>{pSaved ? '✓ Guardado' : 'Guardar modelos'}</Button>
+          </Card>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="space-y-4">
@@ -63,10 +123,12 @@ export default function SettingsPage() {
           </Card>
 
           <Card className="space-y-4 p-6">
-            <h3 className="text-sm font-bold text-slate-800">Portal para clientes (menú de GHL)</h3>
+            <h3 className="text-sm font-bold text-slate-800">🔗 Enlace de agencia (autoservicio)</h3>
             <p className="text-xs text-slate-500">
-              Cada cuenta tiene su <b>propio</b> enlace de portal (por seguridad, uno por subcuenta). Lo encuentras en <b>Cuentas → [la cuenta] → Conexión GHL</b>. Se pega en GHL como <b>Custom Menu Link</b> de esa subcuenta; el cliente entra directo a SU panel sin contraseña.
+              Pégalo <b>UNA vez</b> como <b>Custom Menu Link a nivel agencia</b> en GHL: aparece en todas las subcuentas. Al abrirlo, GHL rellena la subcuenta y el usuario, y Hermes decide solo: si la app no está conectada la manda a instalarla, si está conectada pero sin setter lo crea (pide nombre y correo la primera vez), y si ya existe entra directo a su panel.
             </p>
+            <CopyField label="Enlace de agencia (pégalo tal cual, con las llaves)" value={cfg.agency_menu_url || ''} />
+            <p className="text-xs text-slate-400">Alternativa más estricta: el enlace <b>por setter</b> (en cada setter → Conexión GHL) usa una clave única por subcuenta.</p>
           </Card>
 
           <Card className="space-y-4 p-6">

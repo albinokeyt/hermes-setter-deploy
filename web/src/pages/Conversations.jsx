@@ -40,7 +40,7 @@ export default function Conversations() {
           />
         </div>
         <Select value={filters.account_id} onChange={(e) => setFilters({ ...filters, account_id: e.target.value })} className="!w-48">
-          <option value="">Todas las cuentas</option>
+          <option value="">Todos los setters</option>
           {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
         </Select>
         <Select value={filters.stage} onChange={(e) => setFilters({ ...filters, stage: e.target.value })} className="!w-48">

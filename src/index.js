@@ -21,6 +21,7 @@ import userRoutes from './routes/users.js';
 import portalRoutes from './routes/portal.js';
 import campaignRoutes from './routes/campaigns.js';
 import archiveRoutes from './routes/archive.js';
+import promptEditorRoutes from './routes/promptEditor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,7 +29,8 @@ async function main() {
   await migrate();
   await seedAdmin();
 
-  const app = Fastify({ logger: { level: 'info' }, trustProxy: true });
+  // bodyLimit alto: el arquitecto de prompts puede enviar imágenes en base64
+  const app = Fastify({ logger: { level: 'info' }, trustProxy: true, bodyLimit: 20 * 1024 * 1024 });
 
   // guardamos el body crudo para poder verificar la firma de los webhooks
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, payload, done) => {
@@ -58,6 +60,7 @@ async function main() {
   await app.register(portalRoutes);
   await app.register(campaignRoutes);
   await app.register(archiveRoutes);
+  await app.register(promptEditorRoutes);
 
   // frontend compilado (SPA)
   const webDist = path.join(__dirname, '..', 'web', 'dist');

@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Send, RotateCcw, FlaskConical } from 'lucide-react';
+import { Send, RotateCcw, FlaskConical, Wand2, X } from 'lucide-react';
 import { api } from '../api.js';
 import { Card, SectionTitle, Button, Select, StagePill, Banner, EmptyState } from '../components/ui.jsx';
+import { PromptArchitect } from '../components/PromptArchitect.jsx';
 
 export default function Playground() {
   const [accounts, setAccounts] = useState([]);
   const [accountId, setAccountId] = useState('');
   const [history, setHistory] = useState([]);
   const [memory, setMemory] = useState({});
+  const [importOpen, setImportOpen] = useState(false);
   const [meta, setMeta] = useState(null);
   const [text, setText] = useState('');
   const [thinking, setThinking] = useState(false);
@@ -147,8 +149,30 @@ export default function Playground() {
               </dl>
             )}
           </Card>
+
+          <Card className="p-5">
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">Ajustar el prompt</h3>
+            <p className="mb-3 text-xs text-slate-400">¿Ves algo que mejorar mientras pruebas? Dile los cambios (con imágenes si quieres) y los aplica a los 3 bloques.</p>
+            <Button variant="secondary" className="w-full" onClick={() => setImportOpen(true)} disabled={!accountId}>
+              <Wand2 size={15} /> Importar cambio
+            </Button>
+          </Card>
         </div>
       </div>
+
+      {importOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setImportOpen(false)}>
+          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Wand2 size={16} className="text-violet-600" /> Importar cambio al prompt</h3>
+              <button onClick={() => setImportOpen(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
+            </div>
+            <div className="p-3">
+              <PromptArchitect accountId={accountId} mode="edit" compact onApplied={() => { /* prompts guardados en el setter */ }} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

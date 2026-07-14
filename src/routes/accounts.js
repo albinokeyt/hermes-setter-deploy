@@ -9,16 +9,17 @@ const ADMIN_EDITABLE = [
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'active_hours',
   'timezone', 'sync_tags', 'auto_handoff', 'bot_enabled', 'test_mode', 'test_tag',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
-  'calendar_id',
+  'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode',
 ];
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
 const USER_EDITABLE = [
   'prompt_identity', 'prompt_business', 'prompt_flow', 'followups', 'debounce_seconds', 'max_msgs',
-  'active_hours', 'timezone', 'temperature', 'bot_enabled', 'test_mode', 'test_tag',
+  'active_hours', 'timezone', 'temperature', 'bot_enabled', 'test_mode', 'test_tag', 'auto_handoff_minutes',
+  'required_tags', 'required_tags_mode',
 ];
 
-const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours']);
+const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags']);
 
 function stripSecrets(row, req) {
   if (req.auth?.role === 'admin') return row;

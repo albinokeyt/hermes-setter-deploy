@@ -142,8 +142,8 @@ export default async function providerRoutes(app) {
     if (!name || !base_url || !api_key) return reply.code(400).send({ error: 'Faltan nombre, URL base o API key' });
     const kinds = cleanKinds(req.body?.kinds, ['text']);
     const row = await one(
-      `INSERT INTO providers (name, base_url, api_key, default_model, notes, price_in, price_out, kinds) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING *`,
-      [name, String(base_url).replace(/\/+$/, ''), api_key, default_model || '', notes || '', price_in || null, price_out || null, JSON.stringify(kinds)]
+      `INSERT INTO providers (name, base_url, api_key, default_model, notes, price_in, price_out, kinds, user_available) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9) RETURNING *`,
+      [name, String(base_url).replace(/\/+$/, ''), api_key, default_model || '', notes || '', price_in || null, price_out || null, JSON.stringify(kinds), Boolean(req.body?.user_available)]
     );
     return mask(row);
   });
@@ -154,7 +154,7 @@ export default async function providerRoutes(app) {
     const b = req.body || {};
     const kinds = cleanKinds(b.kinds, existing.kinds);
     const row = await one(
-      `UPDATE providers SET name=$1, base_url=$2, api_key=$3, default_model=$4, notes=$5, price_in=$6, price_out=$7, kinds=$8::jsonb WHERE id=$9 RETURNING *`,
+      `UPDATE providers SET name=$1, base_url=$2, api_key=$3, default_model=$4, notes=$5, price_in=$6, price_out=$7, kinds=$8::jsonb, user_available=$9 WHERE id=$10 RETURNING *`,
       [
         b.name || existing.name,
         String(b.base_url || existing.base_url).replace(/\/+$/, ''),
@@ -164,6 +164,7 @@ export default async function providerRoutes(app) {
         b.price_in !== undefined ? b.price_in || null : existing.price_in,
         b.price_out !== undefined ? b.price_out || null : existing.price_out,
         JSON.stringify(kinds),
+        b.user_available !== undefined ? Boolean(b.user_available) : existing.user_available,
         existing.id,
       ]
     );

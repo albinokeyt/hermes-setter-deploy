@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Plus, Plug, Trash2, FlaskConical, Search } from 'lucide-react';
 import { api } from '../api.js';
-import { Card, SectionTitle, Button, Input, Select, Banner, EmptyState } from '../components/ui.jsx';
+import { Card, SectionTitle, Button, Input, Select, Toggle, Banner, EmptyState } from '../components/ui.jsx';
 import { ModelPicker } from '../components/ModelPicker.jsx';
 
-const EMPTY = { name: '', base_url: '', api_key: '', default_model: '', notes: '', price_in: '', price_out: '', kinds: ['text'] };
+const EMPTY = { name: '', base_url: '', api_key: '', default_model: '', notes: '', price_in: '', price_out: '', kinds: ['text'], user_available: false };
 
 const KIND_META = [
   { key: 'text', label: 'Texto (chat)', icon: '💬' },
@@ -129,6 +129,14 @@ export default function Providers() {
               />
             </div>
             <KindPicker value={form.kinds} onChange={(kinds) => setForm({ ...form, kinds })} />
+            <div className="rounded-xl border border-slate-100 bg-slate-50/50 p-3">
+              <Toggle
+                checked={Boolean(form.user_available)}
+                onChange={(v) => setForm({ ...form, user_available: v })}
+                label="Disponible para usuarios"
+                description="Los admins ven y usan todas las APIs. Los usuarios normales solo pueden usar las marcadas aquí."
+              />
+            </div>
             <div>
               <div className="mb-2 flex items-center justify-between gap-3">
                 <span className="text-sm font-medium text-slate-700">Precio del modelo de texto (opcional)</span>
@@ -165,7 +173,7 @@ export default function Providers() {
               <div className="flex items-start justify-between">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600"><Plug size={18} /></div>
                 <div className="flex items-center gap-1">
-                  <Button variant="ghost" className="!px-2.5 !py-1.5 text-xs" onClick={() => { setEditingId(p.id); setForm({ name: p.name, base_url: p.base_url, api_key: '', default_model: p.default_model, notes: p.notes, price_in: p.price_in || '', price_out: p.price_out || '', kinds: p.kinds || ['text'] }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+                  <Button variant="ghost" className="!px-2.5 !py-1.5 text-xs" onClick={() => { setEditingId(p.id); setForm({ name: p.name, base_url: p.base_url, api_key: '', default_model: p.default_model, notes: p.notes, price_in: p.price_in || '', price_out: p.price_out || '', kinds: p.kinds || ['text'], user_available: Boolean(p.user_available) }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
                     Editar
                   </Button>
                   <button
@@ -183,6 +191,7 @@ export default function Providers() {
                   const m = KIND_META.find((x) => x.key === k);
                   return m ? <span key={k} className="rounded-md bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">{m.icon} {m.label.split(' ')[0]}</span> : null;
                 })}
+                {p.user_available && <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">👤 usuarios</span>}
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
                 {p.default_model && <span className="rounded-md bg-slate-100 px-2 py-0.5 font-semibold text-slate-500">{p.default_model}</span>}

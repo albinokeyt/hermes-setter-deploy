@@ -1,0 +1,112 @@
+import { q, one, getSetting } from '../db.js';
+import { requireAdmin } from '../lib/session.js';
+import { chatCompletion } from '../services/llm.js';
+import { recordUsage } from '../services/pipeline.js';
+
+export const DEFAULT_ARCHITECT = `Eres un ARQUITECTO DE PROMPTS experto para setters de ventas por IA (chat de Instagram/WhatsApp). Ayudas al dueño del setter a construir los 3 bloques de su prompt:
+1) IDENTIDAD Y PERSONALIDAD — quién es el setter, tono, idioma, cómo escribe (mensajes cortos, 1 pregunta por mensaje, humano, sin sonar robótico), qué jamás diría.
+2) NEGOCIO Y OFERTA — qué se vende, a quién, precios/condiciones (o que no se dan por chat), beneficios, objeciones y respuestas, enlaces permitidos.
+3) FLUJO Y OBJETIVO — el paso a paso de la conversación: cómo cualifica, el FILTRO de encaje, el OBJETIVO, y cuándo el lead está calificado / en conversión / descartado.
+
+MUY IMPORTANTE SOBRE EL OBJETIVO: NO asumas que hay que agendar una cita. El objetivo puede ser: (a) agendar una cita/valoración en un calendario, (b) enviar un enlace de venta/checkout, (c) enviar un enlace de recurso gratuito (lead magnet), o (d) enviar el enlace de agenda. Pregunta SIEMPRE cuál es el objetivo (puede haber más de uno) y con qué enlace(s), y redacta el flujo para ese objetivo concreto. Si es un enlace, el flujo debe indicar cuándo y cómo enviarlo (nunca inventes URLs: usa las que dé el usuario).
+
+CÓMO TRABAJAS:
+- Entrevistas con preguntas claras y UNA a la vez. No abrumes. Si el usuario ya te dio contexto o pega material, aprovéchalo.
+- Entre tus primeras preguntas, aclara el OBJETIVO (agendar / enviar link de venta / recurso gratis / agenda) y pide el/los enlace(s) exactos.
+- Escribes prompts EXCELENTES: concretos, accionables, con reglas de estilo humano y de humanización.
+- Cuando tengas suficiente información (o el usuario pida aplicar), termina tu mensaje con un bloque JSON EXACTO:
+\`\`\`json
+{"identidad":"<texto completo del bloque 1>","negocio":"<texto completo del bloque 2>","flujo":"<texto completo del bloque 3>","cambios":["qué pusiste/cambiaste en cada bloque"]}
+\`\`\`
+- Si todavía te falta un dato clave, NO pongas el JSON: haz la siguiente pregunta.
+- Responde en español, cercano y profesional.`;
+
+// Extrae { reply, proposal } de la respuesta del modelo (busca el bloque JSON).
+function extractProposal(content) {
+  const text = String(content || '');
+  const m = text.match(/```json\s*([\s\S]*?)```/i) || text.match(/(\{[\s\S]*"identidad"[\s\S]*"flujo"[\s\S]*\})/i);
+  let proposal = null;
+  if (m) {
+    try {
+      const parsed = JSON.parse(m[1].trim());
+      if (parsed && (parsed.identidad || parsed.negocio || parsed.flujo)) {
+        proposal = {
+          prompt_identity: String(parsed.identidad || ''),
+          prompt_business: String(parsed.negocio || ''),
+          prompt_flow: String(parsed.flujo || ''),
+          cambios: Array.isArray(parsed.cambios) ? parsed.cambios.map(String) : [],
+        };
+      }
+    } catch {}
+  }
+  const reply = m ? text.replace(m[0], '').trim() : text.trim();
+  return { reply: reply || 'Listo, te dejo la propuesta abajo.', proposal };
+}
+
+function toUserContent(text, images) {
+  const imgs = Array.isArray(images) ? images.filter((u) => typeof u === 'string' && u.startsWith('data:')).slice(0, 4) : [];
+  if (!imgs.length) return text;
+  return [{ type: 'text', text }, ...imgs.map((url) => ({ type: 'image_url', image_url: { url } }))];
+}
+
+export default async function promptEditorRoutes(app) {
+  app.addHook('preHandler', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return reply;
+  });
+
+  // Chat del arquitecto / editor de prompts para un setter concreto.
+  // body: { history:[{role:'user'|'assistant', text}], images?:[dataUrl], mode:'architect'|'edit', message? }
+  app.post('/api/accounts/:id/prompt-editor', async (req, reply) => {
+    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [req.params.id]);
+    if (!account) return reply.code(404).send({ error: 'Setter no encontrado' });
+
+    const b = req.body || {};
+    const mode = b.mode === 'edit' ? 'edit' : 'architect';
+
+    // Modelo configurado en Configuración para el arquitecto / corrector; si no, el del setter.
+    const cfg = (await getSetting(mode === 'edit' ? 'corrector_model' : 'architect_model', {})) || {};
+    const provId = cfg.provider_id || account.provider_id;
+    const provider = provId ? await one(`SELECT * FROM providers WHERE id = $1`, [provId]) : null;
+    if (!provider) return reply.code(400).send({ error: 'No hay modelo de IA para el arquitecto/corrector. Configúralo en Configuración o en la pestaña IA del setter.' });
+    const modelUsed = cfg.model || account.model || provider.default_model;
+
+    const base = (await getSetting('architect_prompt', null))?.text || DEFAULT_ARCHITECT;
+
+    const current = `=== PROMPT ACTUAL DEL SETTER "${account.name}" ===
+[1 · IDENTIDAD]\n${account.prompt_identity || '(vacío)'}\n
+[2 · NEGOCIO]\n${account.prompt_business || '(vacío)'}\n
+[3 · FLUJO]\n${account.prompt_flow || '(vacío)'}`;
+
+    const modeNote = mode === 'edit'
+      ? '\n\nMODO EDICIÓN: el usuario te dará instrucciones (y quizá imágenes) para AJUSTAR el prompt actual. Explica brevemente qué cambiarás en cada bloque y termina SIEMPRE con el bloque JSON con los 3 textos completos ya actualizados (conserva lo que no se cambia).'
+      : '';
+
+    const system = `${base}\n\n${current}${modeNote}`;
+    const history = (Array.isArray(b.history) ? b.history : [])
+      .slice(-20)
+      .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.text || '') }))
+      .filter((m) => m.content);
+
+    const messages = [{ role: 'system', content: system }, ...history];
+    const lastText = String(b.message || (history.length ? '' : (mode === 'edit' ? 'Aplica los cambios indicados.' : 'Ayúdame a crear el prompt de mi setter.')));
+    if (lastText || (b.images && b.images.length)) {
+      messages.push({ role: 'user', content: toUserContent(lastText || 'Aplica estos cambios según las imágenes.', b.images) });
+    }
+
+    let result;
+    try {
+      result = await chatCompletion({
+        provider,
+        model: modelUsed,
+        temperature: 0.5,
+        maxTokens: 2000,
+        json: false,
+        messages,
+      });
+    } catch (err) {
+      return reply.code(502).send({ error: err.message });
+    }
+    await recordUsage(account.id, null, provider, modelUsed, result.usage, mode === 'edit' ? 'corrector' : 'arquitecto');
+    return extractProposal(result.content);
+  });
+}

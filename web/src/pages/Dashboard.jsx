@@ -58,7 +58,7 @@ export default function Dashboard() {
         actions={
           me?.account_id ? null : (
             <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} className="!w-52">
-              <option value="">Todas las cuentas</option>
+              <option value="">Todos los setters</option>
               {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
           )
@@ -195,7 +195,7 @@ export default function Dashboard() {
 
       <Card className="mt-6 overflow-hidden">
         <div className="border-b border-slate-100 px-5 py-4">
-          <h3 className="text-sm font-semibold text-slate-700">Rendimiento por cuenta · {rango}</h3>
+          <h3 className="text-sm font-semibold text-slate-700">Rendimiento por setter · {rango}</h3>
         </div>
         {(data.perAccount || []).length === 0 ? (
           <p className="py-10 text-center text-sm text-slate-400">Crea tu primera cuenta en la sección Cuentas</p>
@@ -204,7 +204,7 @@ export default function Dashboard() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-slate-400">
-                  <th className="px-5 py-3 font-medium">Cuenta</th>
+                  <th className="px-5 py-3 font-medium">Setter</th>
                   <th className="px-3 py-3 font-medium">Conversaciones</th>
                   <th className="px-3 py-3 font-medium">Activas</th>
                   <th className="px-3 py-3 font-medium">En seguimiento</th>

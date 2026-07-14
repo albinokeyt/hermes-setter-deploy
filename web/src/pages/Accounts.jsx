@@ -29,16 +29,16 @@ export default function Accounts() {
   return (
     <div>
       <SectionTitle
-        title="Cuentas"
-        subtitle="Cada cuenta es una subcuenta de GHL con su propio setter: su prompt, su IA y sus seguimientos"
-        actions={<Button onClick={() => setCreating(true)}><Plus size={16} /> Nueva cuenta</Button>}
+        title="Setters IA"
+        subtitle="Cada setter es una subcuenta de GHL con su propio prompt, su IA y sus seguimientos"
+        actions={<Button onClick={() => setCreating(true)}><Plus size={16} /> Nuevo setter</Button>}
       />
 
       {creating && (
         <Card className="mb-5 p-5">
           <form onSubmit={create} className="flex items-end gap-3">
             <div className="flex-1">
-              <Input label="Nombre de la cuenta (cliente)" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Albatros · Valoraciones" autoFocus />
+              <Input label="Nombre del setter (cliente)" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Albatros · Valoraciones" autoFocus />
             </div>
             <Button type="submit" loading={loading}>Crear</Button>
             <Button variant="ghost" type="button" onClick={() => setCreating(false)}>Cancelar</Button>
@@ -49,8 +49,8 @@ export default function Accounts() {
       {accounts.length === 0 && !creating ? (
         <EmptyState
           icon={Building2}
-          title="Aún no tienes cuentas"
-          subtitle="Crea una cuenta por cada cliente (subcuenta de GHL) y configura su setter en minutos."
+          title="Aún no tienes setters"
+          subtitle="Crea un setter por cada cliente (subcuenta de GHL) y configúralo en minutos."
           action={<Button onClick={() => setCreating(true)}><Plus size={16} /> Crear la primera</Button>}
         />
       ) : (

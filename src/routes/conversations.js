@@ -64,8 +64,10 @@ export default async function conversationRoutes(app) {
     const b = req.body || {};
 
     if (typeof b.bot_paused === 'boolean' && b.bot_paused !== conv.bot_paused) {
-      await q(`UPDATE conversations SET bot_paused = $1, updated_at = now() WHERE id = $2`, [b.bot_paused, conv.id]);
-      if (b.bot_paused) await cancelBotJobs(conv.id);
+      // pausa manual: marca 'manual' (no se reactiva sola). Reactivar a mano limpia el estado.
+      const pausedBy = b.bot_paused ? 'manual' : '';
+      await q(`UPDATE conversations SET bot_paused = $1, paused_by = $2, updated_at = now() WHERE id = $3`, [b.bot_paused, pausedBy, conv.id]);
+      await cancelBotJobs(conv.id); // cancela debounce, seguimientos y cualquier reactivación pendiente
     }
     if (b.stage && STAGE_KEYS.includes(b.stage) && b.stage !== conv.stage) {
       await applyStage(conv, account, b.stage, 'cambio manual desde el panel');
@@ -89,7 +91,7 @@ export default async function conversationRoutes(app) {
         `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id) VALUES ($1,'outbound','humano',$2,$3)`,
         [conv.id, message, res?.messageId || null]
       );
-      await q(`UPDATE conversations SET bot_paused = true, last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
+      await q(`UPDATE conversations SET bot_paused = true, paused_by = 'manual', last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
       await cancelBotJobs(conv.id);
       return { ok: true };
     } catch (err) {

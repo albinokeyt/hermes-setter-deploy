@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
-import { debounceQueue, sendQueue, followupQueue } from '../queues.js';
+import { debounceQueue, sendQueue, followupQueue, reactivateQueue } from '../queues.js';
 import { generateReply } from './agent.js';
 import { describeImage, transcribeAudio } from './llm.js';
 import * as ghl from './ghl.js';
@@ -125,6 +125,7 @@ async function pickVariant(account) {
 export async function cancelBotJobs(conversationId) {
   await redis.del(debKey(conversationId));
   await redis.del(fuKey(conversationId));
+  await redis.del(reactKey(conversationId));
 }
 
 // Registra tokens y coste de cada llamada al LLM. OpenRouter devuelve el coste
@@ -269,11 +270,45 @@ export async function handleOutboundEvent(account, evt) {
   }
 
   // Solo pausamos si lo escribió una persona desde GHL (userId presente)
-  if (evt.userId && account.auto_handoff && !conv.bot_paused) {
-    await q(`UPDATE conversations SET bot_paused = true, updated_at = now() WHERE id = $1`, [conv.id]);
-    await cancelBotJobs(conv.id);
-    await logEvent('handoff_humano', { conversation: conv.id, userId: evt.userId });
+  if (evt.userId && account.auto_handoff) {
+    if (!conv.bot_paused) {
+      await q(`UPDATE conversations SET bot_paused = true, paused_by = 'humano', updated_at = now() WHERE id = $1`, [conv.id]);
+      await cancelBotJobs(conv.id);
+      await logEvent('handoff_humano', { conversation: conv.id, userId: evt.userId });
+    }
+    // reprograma la reactivación en cada mensaje humano (el reloj se reinicia)
+    await scheduleReactivate(account, conv.id);
   }
+}
+
+// Reactivación del bot tras intervención humana, si pasa el tiempo configurado sin mensajes humanos.
+const reactKey = (id) => `reacttoken:${id}`;
+const MAX_HANDOFF_MIN = 7 * 24 * 60; // 7 días
+
+export async function scheduleReactivate(account, conversationId) {
+  const mins = Math.min(Math.max(0, Number(account.auto_handoff_minutes) || 0), MAX_HANDOFF_MIN);
+  if (mins <= 0) return; // 0 = queda pausado hasta reactivar a mano
+  const token = crypto.randomUUID();
+  // TTL del token estrictamente mayor que el delay del job (margen de 1 día)
+  await redis.set(reactKey(conversationId), token, 'EX', mins * 60 + 86400);
+  await reactivateQueue.add('reactivate', { conversationId, token }, { delay: mins * 60_000 });
+}
+
+// Cancela una reactivación pendiente (al pausar/reactivar a mano).
+export async function cancelReactivate(conversationId) {
+  await redis.del(reactKey(conversationId));
+}
+
+export async function processReactivate(job) {
+  const { conversationId, token } = job.data;
+  // consumo atómico del token: solo reactiva si este job sigue siendo el vigente
+  const script = `if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('del', KEYS[1]) return 1 else return 0 end`;
+  const ok = token && (await redis.eval(script, 1, reactKey(conversationId), token)) === 1;
+  if (!ok) return; // reprogramado o cancelado
+  const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [conversationId]);
+  if (!conv || !conv.bot_paused || conv.paused_by !== 'humano') return;
+  await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conversationId]);
+  await logEvent('bot_reactivado', { conversation: conversationId, motivo: 'tiempo sin mensaje humano' });
 }
 
 // ─── Citas del calendario (AppointmentCreate / Update / Delete) ─────────────
@@ -288,9 +323,10 @@ export async function handleAppointmentEvent(account, type, p) {
   const status = cancelled ? 'cancelado' : 'agendado';
   const startTime = appt.startTime || appt.start_time || null;
 
-  // Si la cuenta tiene un calendario elegido, solo cuentan las citas de ESE calendario.
-  if (account.calendar_id && calendarId && calendarId !== account.calendar_id) {
-    await logEvent('cita_otro_calendario', { account: account.id, contactId, calendarId, esperado: account.calendar_id });
+  // Si el setter tiene calendarios elegidos, solo cuentan las citas de ESOS calendarios.
+  const watched = Array.isArray(account.calendar_ids) ? account.calendar_ids.filter(Boolean) : [];
+  if (watched.length && calendarId && !watched.includes(calendarId)) {
+    await logEvent('cita_otro_calendario', { account: account.id, contactId, calendarId, vigilados: watched });
     return;
   }
 
@@ -381,23 +417,45 @@ async function loadContext(conversationId) {
 
 // Modo test: el bot solo responde a contactos de GHL que tengan la etiqueta de prueba.
 // Se consulta el contacto en GHL (con caché de 60 s) y ante cualquier duda NO se responde.
-async function allowedByTestMode(account, conv) {
-  if (!account.test_mode) return true;
-  const tag = String(account.test_tag || 'hermes-test').trim().toLowerCase();
-  if (!tag) return true;
-  const cacheKey = `testtag:${conv.account_id}:${conv.ghl_contact_id}`;
+// Etiquetas del contacto en GHL (minúsculas), cacheadas 60s.
+async function getContactTags(account, conv) {
+  const cacheKey = `ctags:${conv.account_id}:${conv.ghl_contact_id}`;
   const cached = await redis.get(cacheKey);
-  if (cached !== null) return cached === '1';
-  let ok = false;
+  if (cached !== null) { try { return JSON.parse(cached); } catch { return []; } }
+  let tags = [];
   try {
     const contact = await ghl.getContact(account, conv.ghl_contact_id);
-    const tags = Array.isArray(contact?.tags) ? contact.tags.map((t) => String(t).trim().toLowerCase()) : [];
-    ok = tags.includes(tag);
+    tags = Array.isArray(contact?.tags) ? contact.tags.map((t) => String(t).trim().toLowerCase()) : [];
   } catch (err) {
-    await logEvent('error_test_tag', { conv: conv.id, error: err.message });
+    await logEvent('error_contact_tags', { conv: conv.id, error: err.message });
+    tags = null; // no se pudo consultar
   }
-  await redis.setex(cacheKey, 60, ok ? '1' : '0');
-  return ok;
+  await redis.setex(cacheKey, 60, JSON.stringify(tags || []));
+  return tags;
+}
+
+// El bot solo responde si pasa el modo test Y el filtro de etiquetas requeridas.
+async function allowedByTags(account, conv) {
+  const needTest = Boolean(account.test_mode);
+  const required = Array.isArray(account.required_tags)
+    ? account.required_tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean)
+    : [];
+  if (!needTest && !required.length) return true; // sin filtros de etiqueta
+  if (!(account.location_id || account.pit_token)) return true; // sin GHL no podemos consultar etiquetas
+
+  const tags = await getContactTags(account, conv);
+  if (tags === null) return false; // error consultando → no respondemos (seguro)
+
+  if (needTest) {
+    const tt = String(account.test_tag || 'hermes-test').trim().toLowerCase();
+    if (tt && !tags.includes(tt)) return false;
+  }
+  if (required.length) {
+    const mode = account.required_tags_mode === 'all' ? 'all' : 'any';
+    const ok = mode === 'all' ? required.every((t) => tags.includes(t)) : required.some((t) => tags.includes(t));
+    if (!ok) return false;
+  }
+  return true;
 }
 
 async function lastInboundId(conversationId) {
@@ -430,8 +488,8 @@ export async function processDebounce(job) {
   const lastMsg = history[history.length - 1];
   if (!lastMsg || lastMsg.direction === 'outbound') return;
 
-  if (!(await allowedByTestMode(account, conv))) {
-    await logEvent('test_mode_omitido', { conv: conv.id, contacto: conv.ghl_contact_id, tag: account.test_tag });
+  if (!(await allowedByTags(account, conv))) {
+    await logEvent('respuesta_omitida_por_etiqueta', { conv: conv.id, contacto: conv.ghl_contact_id, test_mode: account.test_mode, required_tags: account.required_tags });
     return;
   }
 
@@ -488,7 +546,7 @@ export async function processDebounce(job) {
   }
 
   if (result.handoff) {
-    await q(`UPDATE conversations SET bot_paused = true, updated_at = now() WHERE id = $1`, [conv.id]);
+    await q(`UPDATE conversations SET bot_paused = true, paused_by = 'ia', updated_at = now() WHERE id = $1`, [conv.id]);
     await redis.del(fuKey(conv.id));
     await logEvent('handoff_ia', { conv: conv.id, motivo: result.motivo });
   } else if (result.etiqueta === 'descartado') {
@@ -567,7 +625,7 @@ export async function processFollowup(job) {
   // si el lead respondió después del último envío, el ciclo normal ya se encarga
   if (conv.last_inbound_at && conv.last_outbound_at && new Date(conv.last_inbound_at) > new Date(conv.last_outbound_at)) return;
 
-  if (!(await allowedByTestMode(account, conv))) return;
+  if (!(await allowedByTags(account, conv))) return;
 
   if (windowBlocked(conv)) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);

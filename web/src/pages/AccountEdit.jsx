@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, ExternalLink, Sparkles } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, ExternalLink, Sparkles, Wand2, Send } from 'lucide-react';
 import { api } from '../api.js';
 import { CHANNELS, CHANNEL_LABEL } from '../stages.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 import { ModelPicker } from '../components/ModelPicker.jsx';
+import { PromptArchitect } from '../components/PromptArchitect.jsx';
 
 const TABS = [
   { key: 'prompt', label: 'Prompt' },
@@ -13,6 +14,7 @@ const TABS = [
   { key: 'comportamiento', label: 'Comportamiento' },
   { key: 'seguimientos', label: 'Seguimientos' },
   { key: 'conexion', label: 'Conexión GHL', adminOnly: true },
+  { key: 'arquitecto', label: '✨ Arquitecto de prompts', adminOnly: true },
 ];
 
 export default function AccountEdit() {
@@ -83,7 +85,7 @@ export default function AccountEdit() {
     <div>
       {isAdmin && (
         <Link to="/cuentas" className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-800">
-          <ArrowLeft size={15} /> Cuentas
+          <ArrowLeft size={15} /> Setters
         </Link>
       )}
       <SectionTitle
@@ -150,7 +152,7 @@ export default function AccountEdit() {
           <Card className="p-5">
             <Textarea
               label="3 · Flujo y objetivo"
-              hint="El paso a paso de la conversación: cómo cualificar, qué filtro aplicar, cuál es el objetivo (agendar, mandar link…) y cuándo considerar al lead calificado, en conversión o descartado."
+              hint="El paso a paso: cómo cualificar, qué filtro aplicar, y el OBJETIVO (puede ser agendar una cita, o enviar un enlace de venta / de recurso gratis / de agenda — la agenda no es obligatoria). Indica cuándo es calificado, en conversión o descartado."
               rows={8}
               value={acc.prompt_flow}
               onChange={(e) => set({ prompt_flow: e.target.value })}
@@ -269,6 +271,44 @@ export default function AccountEdit() {
               })}
             </div>
           </div>}
+
+          <div className="space-y-3 border-t border-slate-100 pt-5">
+            <div>
+              <span className="block text-sm font-medium text-slate-700">🏷️ Responder solo a leads con estas etiquetas de GHL</span>
+              <span className="block text-xs text-slate-400">Si añades etiquetas, el setter SOLO responde a contactos que las tengan. Déjalo vacío para responder a todos.</span>
+            </div>
+            {(acc.required_tags || []).length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500">Debe tener</span>
+                <Select value={acc.required_tags_mode || 'any'} onChange={(e) => set({ required_tags_mode: e.target.value })} className="!w-56 !py-1.5 text-xs">
+                  <option value="any">cualquiera de estas etiquetas (O)</option>
+                  <option value="all">todas estas etiquetas (Y)</option>
+                </Select>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {(acc.required_tags || []).map((tg) => (
+                <span key={tg} className="inline-flex items-center gap-1.5 rounded-lg bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700">
+                  {tg}
+                  <button type="button" onClick={() => set({ required_tags: acc.required_tags.filter((x) => x !== tg) })} className="text-violet-400 hover:text-violet-700">×</button>
+                </span>
+              ))}
+              <input
+                placeholder="escribe una etiqueta y Enter"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const v = e.target.value.trim();
+                    const cur = acc.required_tags || [];
+                    if (v && !cur.includes(v)) set({ required_tags: [...cur, v] });
+                    e.target.value = '';
+                  }
+                }}
+                className="min-w-[180px] flex-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-violet-400"
+              />
+            </div>
+          </div>
+
           <div className="space-y-4 border-t border-slate-100 pt-5">
             <Toggle
               checked={!(activeHours.always !== false)}
@@ -308,6 +348,18 @@ export default function AccountEdit() {
               label="Pausar bot si un humano interviene"
               description="Si alguien responde manualmente desde GHL, el bot se aparta solo en ese chat"
             />
+            {acc.auto_handoff && (
+              <div className="pl-1">
+                <Input
+                  label="Reactivar el bot tras (minutos sin mensaje humano)"
+                  type="number" min="0" max="10080" step="5"
+                  value={acc.auto_handoff_minutes ?? 0}
+                  onChange={(e) => set({ auto_handoff_minutes: Number(e.target.value) })}
+                  className="!w-48"
+                  hint="0 = queda pausado hasta reactivarlo a mano. Ej.: 60 = el bot vuelve solo 60 min después del último mensaje del humano."
+                />
+              </div>
+            )}
             <Toggle
               checked={acc.sync_tags}
               onChange={(v) => set({ sync_tags: v })}
@@ -368,21 +420,30 @@ export default function AccountEdit() {
             </Select>
 
             <div className="border-t border-slate-100 pt-4">
-              <Select
-                label="📅 Calendario que cuenta como 'agenda'"
-                value={acc.calendar_id || ''}
-                onChange={(e) => set({ calendar_id: e.target.value })}
-              >
-                <option value="">Cualquier calendario</option>
-                {(calendars?.calendars || []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                {acc.calendar_id && !(calendars?.calendars || []).some((c) => c.id === acc.calendar_id) && (
-                  <option value={acc.calendar_id}>{acc.calendar_id} (guardado)</option>
-                )}
-              </Select>
-              <p className="mt-1 text-xs text-slate-400">
-                Cuando alguien reserve (o cancele) en este calendario, el lead pasa a <b>Agendado</b> / <b>Agenda cancelada</b>. Con "Cualquier calendario" cuenta cualquier cita de la subcuenta.
+              <span className="mb-2 block text-sm font-medium text-slate-700">📅 Calendarios que cuentan como "agenda"</span>
+              {(() => {
+                const selected = Array.isArray(acc.calendar_ids) ? acc.calendar_ids : [];
+                const list = calendars?.calendars || [];
+                const toggleCal = (cid) => set({ calendar_ids: selected.includes(cid) ? selected.filter((x) => x !== cid) : [...selected, cid] });
+                return (
+                  <div className="flex flex-wrap gap-2">
+                    {list.length === 0 && <span className="text-xs text-slate-400">No hay calendarios que mostrar todavía.</span>}
+                    {list.map((c) => {
+                      const on = selected.includes(c.id);
+                      return (
+                        <button key={c.id} type="button" onClick={() => toggleCal(c.id)}
+                          className={`rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${on ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'}`}>
+                          {on ? '✓ ' : ''}{c.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+              <p className="mt-1.5 text-xs text-slate-400">
+                Solo si el objetivo de este setter es <b>agendar</b>. Marca uno o varios calendarios: cuando alguien reserve (o cancele) en cualquiera de ellos, el lead pasa a <b>Agendado</b> / <b>Agenda cancelada</b>. Si no marcas ninguno, cuenta cualquier cita de la subcuenta. Si el objetivo es enviar un enlace (venta o recurso), déjalo vacío: el lead llegará hasta <b>En conversión</b>.
                 {calendars?.source === 'historial' && ' · Mostrando calendarios vistos en citas previas; reconecta la subcuenta para ver la lista completa con nombres.'}
-                {calendars?.source === 'sin_conexion' && ' · Conecta la subcuenta para elegir el calendario.'}
+                {calendars?.source === 'sin_conexion' && ' · Conecta la subcuenta para elegir calendarios.'}
               </p>
             </div>
 
@@ -437,14 +498,29 @@ export default function AccountEdit() {
             <Button
               variant="danger"
               onClick={async () => {
-                if (window.confirm(`¿Eliminar la cuenta "${acc.name}" y todas sus conversaciones?`)) {
+                if (window.confirm(`¿Eliminar el setter "${acc.name}" y todas sus conversaciones?`)) {
                   await api.del(`/api/accounts/${id}`);
                   navigate('/cuentas');
                 }
               }}
             >
-              <Trash2 size={15} /> Eliminar cuenta
+              <Trash2 size={15} /> Eliminar setter
             </Button>
+          </Card>
+        </div>
+      )}
+
+      {tab === 'arquitecto' && (
+        <div className="max-w-3xl space-y-4">
+          <Banner tone="info">
+            Habla con la IA arquitecta y arma los 3 bloques del prompt (Identidad, Negocio, Flujo) respondiendo sus preguntas. Cuando te proponga la versión final, pulsa «Aplicar» y se guarda en este setter. Puedes ajustar cómo trabaja la arquitecta en Configuración.
+          </Banner>
+          <Card className="overflow-hidden p-0">
+            <PromptArchitect
+              accountId={id}
+              mode="architect"
+              onApplied={() => api.get(`/api/accounts/${id}`).then(setAcc).catch(() => {})}
+            />
           </Card>
         </div>
       )}

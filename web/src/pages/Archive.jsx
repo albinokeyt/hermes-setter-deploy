@@ -140,7 +140,7 @@ export default function Archive() {
               />
             </div>
             <Select value={filters.account_id} onChange={(e) => setFilters({ ...filters, account_id: e.target.value })} className="!w-44">
-              <option value="">Todas las cuentas</option>
+              <option value="">Todos los setters</option>
               {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
             <Select value={filters.direction} onChange={(e) => setFilters({ ...filters, direction: e.target.value })} className="!w-40">

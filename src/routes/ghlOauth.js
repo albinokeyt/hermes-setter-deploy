@@ -42,10 +42,13 @@ export default async function ghlOauthRoutes(app) {
     // Sin state → instalación directa desde el portal/marketplace de GHL (GHL no
     // envía state en ese flujo): se acepta y se crea/reutiliza la cuenta por locationId.
     let boundAccountId = '';
+    let selfserveKey = '';
     if (state) {
       const stateKey = `oauthstate:${state}`;
-      boundAccountId = (await redis.get(stateKey)) || '';
+      const val = (await redis.get(stateKey)) || '';
       await redis.del(stateKey);
+      if (val.startsWith('selfserve:')) selfserveKey = val.slice('selfserve:'.length);
+      else boundAccountId = val;
     } else {
       await logEvent('oauth_instalacion_directa', { nota: 'instalación sin state (lanzada desde GHL, no desde el panel)' });
     }
@@ -53,6 +56,12 @@ export default async function ghlOauthRoutes(app) {
     try {
       const tok = await exchangeCode(code);
       const locationId = await saveTokens(tok);
+
+      // Instalación desde el link de agencia → volver al portal para entrar como usuario
+      if (selfserveKey) {
+        await logEvent('oauth_selfserve_conectado', { locationId });
+        return reply.redirect(`/ghl-app?key=${encodeURIComponent(selfserveKey)}&location_id=${encodeURIComponent(locationId)}`);
+      }
 
       // ¿la instalación se lanzó desde una cuenta concreta? → vincularla
       if (boundAccountId) {
