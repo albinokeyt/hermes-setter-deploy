@@ -7,6 +7,8 @@ import { PromptArchitect } from '../components/PromptArchitect.jsx';
 export default function Playground() {
   const [accounts, setAccounts] = useState([]);
   const [accountId, setAccountId] = useState('');
+  const [setters, setSetters] = useState([]);
+  const [setterId, setSetterId] = useState('');
   const [history, setHistory] = useState([]);
   const [memory, setMemory] = useState({});
   const [importOpen, setImportOpen] = useState(false);
@@ -25,13 +27,21 @@ export default function Playground() {
     api.get('/api/accounts').then((a) => { setAccounts(a); if (a[0]) setAccountId(String(a[0].id)); }).catch(() => {});
     return () => clearTimeout(timerRef.current);
   }, []);
+
+  // al cambiar de conexión, cargar sus setters y preseleccionar el principal
+  useEffect(() => {
+    if (!accountId) return;
+    api.get(`/api/accounts/${accountId}/setters`)
+      .then((list) => { setSetters(list); setSetterId(list.length ? String((list.find((s) => s.is_default) || list[0]).id) : ''); })
+      .catch(() => { setSetters([]); setSetterId(''); });
+  }, [accountId]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [history, thinking]);
 
   const askBot = async () => {
     setThinking(true);
     setError('');
     try {
-      const r = await api.post('/api/playground/reply', { account_id: Number(accountId), history: historyRef.current, memory: memoryRef.current });
+      const r = await api.post('/api/playground/reply', { account_id: Number(accountId), setter_id: setterId ? Number(setterId) : undefined, history: historyRef.current, memory: memoryRef.current });
       setMemory(r.memoria_final || {});
       setMeta({ etiqueta: r.etiqueta, motivo: r.motivo, handoff: r.handoff });
       for (let i = 0; i < r.mensajes.length; i++) {
@@ -73,9 +83,14 @@ export default function Playground() {
         subtitle="Escribe como si fueras el lead. El bot espera unos segundos (debounce real) y responde en varios mensajes."
         actions={
           <div className="flex items-center gap-2">
-            <Select value={accountId} onChange={(e) => { setAccountId(e.target.value); reset(); }} className="!w-56">
+            <Select value={accountId} onChange={(e) => { setAccountId(e.target.value); reset(); }} className="!w-48" title="Conexión">
               {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
+            {setters.length > 1 && (
+              <Select value={setterId} onChange={(e) => { setSetterId(e.target.value); reset(); }} className="!w-48" title="Setter a probar">
+                {setters.map((s) => <option key={s.id} value={s.id}>🤖 {s.name}</option>)}
+              </Select>
+            )}
             <Button variant="secondary" onClick={reset}><RotateCcw size={15} /> Reiniciar</Button>
           </div>
         }
@@ -168,7 +183,10 @@ export default function Playground() {
               <button onClick={() => setImportOpen(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
             </div>
             <div className="p-3">
-              <PromptArchitect accountId={accountId} mode="edit" compact onApplied={() => { /* prompts guardados en el setter */ }} />
+              <PromptArchitect
+                targetPath={setterId ? `/api/setters/${setterId}` : `/api/accounts/${accountId}`}
+                mode="edit" compact onApplied={() => { /* prompts guardados en el setter */ }}
+              />
             </div>
           </div>
         </div>

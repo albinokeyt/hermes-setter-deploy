@@ -121,30 +121,7 @@ export default function SetterEdit() {
               </Select>
             </div>
           </Card>
-          <Card className="space-y-4 p-6">
-            <Toggle checked={s.vision_enabled} onChange={(v) => set({ vision_enabled: v })} label="👁️ API de imagen (leer fotos)" description="El agente lee las imágenes que envía el lead" />
-            {s.vision_enabled && (
-              <div className="grid grid-cols-2 gap-4 pl-1">
-                <Select label="Proveedor de imagen" value={s.vision_provider_id || ''} onChange={(e) => set({ vision_provider_id: e.target.value ? Number(e.target.value) : null })}>
-                  <option value="">— Elige una API de imagen —</option>
-                  {providersFor('image').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </Select>
-                <ModelPicker label="Modelo de imagen" value={s.vision_model} onChange={(v) => set({ vision_model: v })} isOpenRouter={isOpenRouter(s.vision_provider_id)} kind="image" placeholder="google/gemini-2.5-flash" />
-              </div>
-            )}
-          </Card>
-          <Card className="space-y-4 p-6">
-            <Toggle checked={s.audio_enabled} onChange={(v) => set({ audio_enabled: v })} label="🎤 API de audio (transcribir notas de voz)" description="Convierte las notas de voz del lead en texto" />
-            {s.audio_enabled && (
-              <div className="grid grid-cols-2 gap-4 pl-1">
-                <Select label="Proveedor de audio" value={s.audio_provider_id || ''} onChange={(e) => set({ audio_provider_id: e.target.value ? Number(e.target.value) : null })}>
-                  <option value="">— Elige una API de audio —</option>
-                  {providersFor('audio').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </Select>
-                <ModelPicker label="Modelo de audio (Whisper)" value={s.audio_model} onChange={(v) => set({ audio_model: v })} isOpenRouter={isOpenRouter(s.audio_provider_id)} kind="audio" placeholder="openai/whisper-large-v3-turbo" />
-              </div>
-            )}
-          </Card>
+          <Banner tone="info">La lectura de imágenes y la transcripción de audios se configuran una vez por <b>conexión</b> (en Conexión → Ajustes), porque son compartidas por todos los setters de la subcuenta.</Banner>
         </div>
       )}
 
@@ -153,8 +130,9 @@ export default function SetterEdit() {
           <Input label={`Espera antes de responder (debounce): ${s.debounce_seconds} s`} type="range" min="10" max="120" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Number(e.target.value) })} className="!p-0 accent-violet-600" hint="El bot espera este silencio y responde a todo junto, como una persona." />
 
           {isAdmin && (
-            <div className="border-t border-slate-100 pt-5">
-              <Input label="Peso en el reparto (batalla de setters)" type="number" min="0" max="1000" value={s.weight ?? 100} onChange={(e) => set({ weight: Number(e.target.value) })} className="!w-40" hint="Si varios setters casan con el mismo lead, se reparten según su peso. Con un solo setter da igual." />
+            <div className="space-y-4 border-t border-slate-100 pt-5">
+              <Toggle checked={s.accepts_leads !== false} onChange={(v) => set({ accepts_leads: v })} label="Recibir leads nuevos" description="Si lo apagas, este setter deja de entrar al reparto de leads nuevos (sigue atendiendo los que ya lleva). Útil para retirar un setter de la batalla sin perder su historial." />
+              <Input label="Peso en el reparto (batalla de setters)" type="number" min="0" max="1000" value={s.weight ?? 100} onChange={(e) => set({ weight: Number(e.target.value) })} className="!w-40" hint="Si varios setters casan con el mismo lead, se reparten según su peso." />
             </div>
           )}
 

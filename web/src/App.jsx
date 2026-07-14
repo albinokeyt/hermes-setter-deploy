@@ -9,8 +9,6 @@ import Accounts from './pages/Accounts.jsx';
 import AccountEdit from './pages/AccountEdit.jsx';
 import SetterEdit from './pages/SetterEdit.jsx';
 import Providers from './pages/Providers.jsx';
-import Campaigns from './pages/Campaigns.jsx';
-import CampaignDetail from './pages/CampaignDetail.jsx';
 import Playground from './pages/Playground.jsx';
 import Archive from './pages/Archive.jsx';
 import SettingsPage from './pages/Settings.jsx';
@@ -31,8 +29,7 @@ export default function App() {
         <Route path="/cuentas/:id" element={<AccountEdit />} />
         <Route path="/setters/:id" element={<SetterEdit />} />
         <Route path="/apis" element={<Providers />} />
-        <Route path="/competencias" element={<Campaigns />} />
-        <Route path="/competencias/:id" element={<CampaignDetail />} />
+        <Route path="/competencias" element={<Navigate to="/cuentas" replace />} />
         <Route path="/prueba" element={<Playground />} />
         <Route path="/archivo" element={<Archive />} />
         <Route path="/configuracion" element={<SettingsPage />} />

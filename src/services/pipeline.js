@@ -125,12 +125,14 @@ async function pickVariant(account) {
 // ─── Setters: varios bots por conexión, enrutados por etiqueta ───────────────
 
 // Aplica el "cerebro" de un setter sobre la conexión (lo que el setter no defina, hereda).
-function mergeSetter(account, s) {
+export function mergeSetter(account, s) {
   if (!s) return account;
   return {
     ...account,
     setter_id: s.id,
     setter_name: s.name,
+    // el interruptor de la conexión manda a nivel global; el del setter es individual
+    bot_enabled: Boolean(account.bot_enabled && s.bot_enabled),
     prompt_identity: s.prompt_identity,
     prompt_business: s.prompt_business,
     prompt_flow: s.prompt_flow,
@@ -171,11 +173,15 @@ function pickByWeight(pool) {
 async function selectSetter(account, conv) {
   const all = await q(`SELECT * FROM setters WHERE account_id = $1 ORDER BY id`, [account.id]);
   if (!all.length) return { setter: null, hasSetters: false };
-  const setters = all.filter((s) => s.bot_enabled);
-  if (!setters.length) return { setter: null, hasSetters: true }; // hay setters pero todos apagados
+  // candidatos a leads NUEVOS: encendidos y que aceptan leads (accepts_leads)
+  const setters = all.filter((s) => s.bot_enabled && s.accepts_leads !== false);
+  if (!setters.length) return { setter: null, hasSetters: true };
   if (setters.length === 1) return { setter: setters[0], hasSetters: true };
   const tags = await getContactTags(account, conv);
   const hasReq = (s) => Array.isArray(s.required_tags) && s.required_tags.length > 0;
+  // si no pudimos leer las etiquetas y HAY setters que dependen de ellas, aplazamos:
+  // no fijamos una asignación permanente equivocada; se reintenta en el próximo mensaje.
+  if (tags === null && setters.some(hasReq)) return { setter: null, hasSetters: true, defer: true };
   let pool = setters.filter((s) => hasReq(s) && setterMatches(s, tags));
   if (!pool.length) pool = setters.filter((s) => !hasReq(s));
   if (!pool.length) pool = setters.filter((s) => s.is_default);
@@ -253,12 +259,14 @@ export async function handleInbound(account, evt) {
   // aplica a este lead, NO se responde (respetar el filtro de etiquetas del setter).
   let respond = true;
   if (!conv.setter_id) {
-    const { setter, hasSetters } = await selectSetter(account, conv);
+    const { setter, hasSetters, defer } = await selectSetter(account, conv);
     if (setter) {
       await q(`UPDATE conversations SET setter_id = $1 WHERE id = $2`, [setter.id, conv.id]);
       conv.setter_id = setter.id;
       account = mergeSetter(account, setter);
       await logEvent('lead_asignado_setter', { conv: conv.id, setter: setter.id, nombre: setter.name });
+    } else if (defer) {
+      respond = false; // no se pudieron leer etiquetas: no fijamos setter, se reintenta luego
     } else if (hasSetters) {
       respond = false;
       await logEvent('sin_setter_para_lead', { conv: conv.id, contacto: conv.ghl_contact_id });
@@ -513,9 +521,9 @@ async function getContactTags(account, conv) {
     tags = Array.isArray(contact?.tags) ? contact.tags.map((t) => String(t).trim().toLowerCase()) : [];
   } catch (err) {
     await logEvent('error_contact_tags', { conv: conv.id, error: err.message });
-    tags = null; // no se pudo consultar
+    return null; // error al consultar: NO cachear (evita envenenar 60s y misenrutar); se reintenta
   }
-  await redis.setex(cacheKey, 60, JSON.stringify(tags || []));
+  await redis.setex(cacheKey, 60, JSON.stringify(tags));
   return tags;
 }
 

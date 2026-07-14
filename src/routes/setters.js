@@ -2,19 +2,18 @@ import { q, one } from '../db.js';
 import { requireAdmin, scopedAccountId } from '../lib/session.js';
 
 // El admin edita todo; un usuario del portal solo el cerebro de su setter (no el proveedor/modelo de IA).
+// Visión/audio y calendarios son de la CONEXIÓN (se usan antes de saber el setter), no del setter.
 const ADMIN_EDITABLE = [
-  'name', 'bot_enabled', 'weight', 'required_tags', 'required_tags_mode',
+  'name', 'bot_enabled', 'accepts_leads', 'weight', 'required_tags', 'required_tags_mode',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups',
-  'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
-  'calendar_ids',
 ];
 const USER_EDITABLE = [
   'name', 'bot_enabled', 'required_tags', 'required_tags_mode',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups',
 ];
-const JSON_FIELDS = new Set(['required_tags', 'followups', 'calendar_ids']);
+const JSON_FIELDS = new Set(['required_tags', 'followups']);
 
 async function loadSetterScoped(req, setterId) {
   const setter = await one(`SELECT * FROM setters WHERE id = $1`, [setterId]);
@@ -25,17 +24,40 @@ async function loadSetterScoped(req, setterId) {
 }
 
 export default async function setterRoutes(app) {
-  // Setters de una conexión (=account). Admin ve todas; un usuario, solo la suya.
+  // Setters de una conexión (=account) con sus métricas de batalla.
+  // Admin ve todas; un usuario, solo la suya.
   app.get('/api/accounts/:id/setters', async (req, reply) => {
     const scope = scopedAccountId(req);
     if (scope && Number(req.params.id) !== scope) return reply.code(403).send({ error: 'Sin acceso' });
-    return q(
+    const rows = await q(
       `SELECT s.*, p.name AS provider_name,
-        (SELECT COUNT(*)::int FROM conversations c WHERE c.setter_id = s.id) AS conversations_count
-       FROM setters s LEFT JOIN providers p ON p.id = s.provider_id
-       WHERE s.account_id = $1 ORDER BY s.is_default DESC, s.id`,
+        COUNT(c.id)::int AS leads,
+        COUNT(c.id) FILTER (WHERE c.stage = 'calificado')::int AS calificados,
+        COUNT(c.id) FILTER (WHERE c.stage = 'en_conversion')::int AS en_conversion,
+        COUNT(c.id) FILTER (WHERE c.stage = 'agendado')::int AS agendados,
+        COUNT(c.id) FILTER (WHERE c.stage = 'descartado')::int AS descartados,
+        COALESCE((SELECT SUM(u.cost_usd) FROM llm_usage u WHERE u.setter_id = s.id), 0) AS gasto
+       FROM setters s
+       LEFT JOIN providers p ON p.id = s.provider_id
+       LEFT JOIN conversations c ON c.setter_id = s.id
+       WHERE s.account_id = $1
+       GROUP BY s.id, p.name
+       ORDER BY s.is_default DESC, s.id`,
       [req.params.id]
     );
+    return rows.map((r) => {
+      const leads = r.leads || 0;
+      const won = r.agendados || 0;
+      const conv = (r.en_conversion || 0) + won;
+      return {
+        ...r,
+        conversations_count: leads,
+        gasto: Number(r.gasto || 0),
+        tasa_agenda: leads ? Math.round((won / leads) * 100) : 0,
+        tasa_conversion: leads ? Math.round((conv / leads) * 100) : 0,
+        tasa_calificacion: leads ? Math.round(((r.calificados + conv) / leads) * 100) : 0,
+      };
+    });
   });
 
   // Crear un setter dentro de una conexión (admin).

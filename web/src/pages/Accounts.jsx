@@ -53,6 +53,14 @@ export default function Accounts() {
 
   const openSetterForm = (accId) => { setConnFor(accId); setName(''); setSetterForm(true); setConnForm(false); };
 
+  // 🏆 de la batalla: mejor tasa de agenda (o de conversión) entre setters con leads.
+  const winnerOf = (list) => {
+    const w = (list || []).filter((s) => s.leads > 0);
+    if (w.length < 2) return null;
+    const key = w.some((s) => s.tasa_agenda > 0) ? 'tasa_agenda' : w.some((s) => s.tasa_conversion > 0) ? 'tasa_conversion' : null;
+    return key ? w.reduce((b, s) => (s[key] > b[key] ? s : b)).id : null;
+  };
+
   return (
     <div>
       <SectionTitle
@@ -129,17 +137,23 @@ export default function Accounts() {
                       <div className="py-4 text-center text-xs text-slate-400">Cargando setters…</div>
                     ) : (
                       <div className="space-y-2">
-                        {list.map((st) => (
+                        {(() => { const winId = winnerOf(list); return list.map((st) => (
                           <Link key={st.id} to={`/setters/${st.id}`} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 transition hover:border-violet-300">
                             <span className={`h-2 w-2 rounded-full ${st.bot_enabled ? 'bg-emerald-500' : 'bg-slate-300'}`} />
                             <span className="flex-1">
-                              <span className="text-sm font-semibold text-slate-800">{st.name}{st.is_default && <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">principal</span>}</span>
+                              <span className="text-sm font-semibold text-slate-800">
+                                {st.id === winId && <span title="Va ganando la batalla">🏆 </span>}{st.name}
+                                {st.is_default && <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">principal</span>}
+                              </span>
                               <span className="ml-2 text-xs text-slate-400">{st.provider_name || 'sin IA'}{(st.required_tags || []).length ? ` · 🏷️ ${st.required_tags.join(', ')}` : ''}</span>
                             </span>
-                            <span className="text-xs text-slate-400">{st.conversations_count} conv.</span>
+                            <span className="hidden text-right text-xs text-slate-400 sm:block">
+                              <span className="font-semibold text-slate-600">{st.leads}</span> leads · <span className="font-semibold text-emerald-600">{st.agendados}</span> agendas ({st.tasa_agenda}%)
+                              {st.gasto > 0 && <span> · ${st.gasto.toFixed(2)}</span>}
+                            </span>
                             <ChevronRight size={15} className="text-slate-300" />
                           </Link>
-                        ))}
+                        )); })()}
                         <Button variant="ghost" className="!text-violet-600" onClick={() => openSetterForm(a.id)}><Plus size={15} /> Nuevo setter en esta conexión</Button>
                       </div>
                     )}

@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { CHANNELS, CHANNEL_LABEL } from '../stages.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
+import { ModelPicker } from '../components/ModelPicker.jsx';
 import { AccessManager } from '../components/AccessManager.jsx';
 
 const TABS = [
@@ -24,6 +25,7 @@ export default function AccountEdit() {
   const [tab, setTab] = useState(searchParams.get('conectada') !== null ? 'conexion' : 'setters');
   const [acc, setAcc] = useState(null);
   const [setters, setSetters] = useState(null);
+  const [providers, setProviders] = useState([]);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -31,7 +33,14 @@ export default function AccountEdit() {
   const [newSetter, setNewSetter] = useState('');
 
   const loadSetters = () => api.get(`/api/accounts/${id}/setters`).then(setSetters).catch(() => setSetters([]));
-  useEffect(() => { api.get(`/api/accounts/${id}`).then(setAcc).catch((e) => setError(e.message)); loadSetters(); }, [id]);
+  useEffect(() => {
+    api.get(`/api/accounts/${id}`).then(setAcc).catch((e) => setError(e.message));
+    loadSetters();
+    if (isAdmin) api.get('/api/providers').then(setProviders).catch(() => {});
+  }, [id, isAdmin]);
+
+  const providersFor = (kind) => providers.filter((p) => !Array.isArray(p.kinds) || p.kinds.includes(kind));
+  const isOpenRouter = (pid) => { const p = providers.find((x) => x.id === pid); return Boolean(p && /openrouter\.ai/.test(p.base_url || '')); };
 
   useEffect(() => {
     if (tab === 'conexion' && isAdmin && calendars === null) {
@@ -112,7 +121,10 @@ export default function AccountEdit() {
                   <span className="text-sm font-semibold text-slate-800">{st.name}{st.is_default && <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">principal</span>}</span>
                   <span className="ml-2 text-xs text-slate-400">{st.provider_name || 'sin IA'}{(st.required_tags || []).length ? ` · 🏷️ ${st.required_tags.join(', ')}` : ''}</span>
                 </span>
-                <span className="text-xs text-slate-400">{st.conversations_count} conv.</span>
+                <span className="text-right text-xs text-slate-400">
+                  <span className="font-semibold text-slate-600">{st.leads}</span> leads · <span className="font-semibold text-emerald-600">{st.agendados}</span> agendas ({st.tasa_agenda}%)
+                  {st.gasto > 0 && <span> · ${st.gasto.toFixed(2)}</span>}
+                </span>
                 <ChevronRight size={15} className="text-slate-300" />
               </Link>
             ))
@@ -167,6 +179,31 @@ export default function AccountEdit() {
               </div>
             )}
             <Toggle checked={acc.sync_tags} onChange={(v) => set({ sync_tags: v })} label="Sincronizar etiquetas con GHL" description='Añade tags "setter-calificado", etc. al contacto en GHL' />
+          </div>
+
+          <div className="space-y-4 border-t border-slate-100 pt-5">
+            <span className="block text-sm font-bold text-slate-800">Multimedia de la conexión</span>
+            <p className="-mt-2 text-xs text-slate-400">Compartido por todos los setters de esta subcuenta (se aplica al llegar el mensaje, antes de elegir el setter).</p>
+            <Toggle checked={acc.vision_enabled} onChange={(v) => set({ vision_enabled: v })} label="👁️ Leer imágenes (visión)" description="El agente lee las fotos/capturas que envía el lead" />
+            {acc.vision_enabled && (
+              <div className="grid grid-cols-2 gap-4 pl-1">
+                <Select label="Proveedor de imagen" value={acc.vision_provider_id || ''} onChange={(e) => set({ vision_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— Elige una API de imagen —</option>
+                  {providersFor('image').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <ModelPicker label="Modelo de imagen" value={acc.vision_model} onChange={(v) => set({ vision_model: v })} isOpenRouter={isOpenRouter(acc.vision_provider_id)} kind="image" placeholder="google/gemini-2.5-flash" />
+              </div>
+            )}
+            <Toggle checked={acc.audio_enabled} onChange={(v) => set({ audio_enabled: v })} label="🎤 Transcribir notas de voz" description="Convierte las notas de voz del lead en texto" />
+            {acc.audio_enabled && (
+              <div className="grid grid-cols-2 gap-4 pl-1">
+                <Select label="Proveedor de audio" value={acc.audio_provider_id || ''} onChange={(e) => set({ audio_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— Elige una API de audio —</option>
+                  {providersFor('audio').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <ModelPicker label="Modelo de audio (Whisper)" value={acc.audio_model} onChange={(v) => set({ audio_model: v })} isOpenRouter={isOpenRouter(acc.audio_provider_id)} kind="audio" placeholder="openai/whisper-large-v3-turbo" />
+              </div>
+            )}
           </div>
         </Card>
       )}
