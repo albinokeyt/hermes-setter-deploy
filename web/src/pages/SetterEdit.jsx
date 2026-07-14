@@ -121,7 +121,30 @@ export default function SetterEdit() {
               </Select>
             </div>
           </Card>
-          <Banner tone="info">La lectura de imágenes y la transcripción de audios se configuran una vez por <b>conexión</b> (en Conexión → Ajustes), porque son compartidas por todos los setters de la subcuenta.</Banner>
+          <Card className="space-y-4 p-6">
+            <Toggle checked={s.vision_enabled} onChange={(v) => set({ vision_enabled: v })} label="👁️ API de imagen (leer fotos)" description="Cuando el lead envía una imagen, este setter la lee y la usa en la conversación" />
+            {s.vision_enabled && (
+              <div className="grid grid-cols-2 gap-4 pl-1">
+                <Select label="Proveedor de imagen" value={s.vision_provider_id || ''} onChange={(e) => set({ vision_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— Elige una API de imagen —</option>
+                  {providersFor('image').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <ModelPicker label="Modelo de imagen" value={s.vision_model} onChange={(v) => set({ vision_model: v })} isOpenRouter={isOpenRouter(s.vision_provider_id)} kind="image" placeholder="google/gemini-2.5-flash" />
+              </div>
+            )}
+          </Card>
+          <Card className="space-y-4 p-6">
+            <Toggle checked={s.audio_enabled} onChange={(v) => set({ audio_enabled: v })} label="🎤 API de audio (transcribir notas de voz)" description="Convierte las notas de voz del lead en texto para este setter" />
+            {s.audio_enabled && (
+              <div className="grid grid-cols-2 gap-4 pl-1">
+                <Select label="Proveedor de audio" value={s.audio_provider_id || ''} onChange={(e) => set({ audio_provider_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— Elige una API de audio —</option>
+                  {providersFor('audio').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+                <ModelPicker label="Modelo de audio (Whisper)" value={s.audio_model} onChange={(v) => set({ audio_model: v })} isOpenRouter={isOpenRouter(s.audio_provider_id)} kind="audio" placeholder="openai/whisper-large-v3-turbo" />
+              </div>
+            )}
+          </Card>
         </div>
       )}
 

@@ -84,7 +84,7 @@ async function processAttachments(account, attachments, context) {
         if (provider) {
           const r = await describeImage({ provider, model: account.vision_model || provider.default_model, imageUrl: url, context });
           parts.push(`[imagen recibida — ${r.text}]`);
-          await recordUsage(account.id, null, provider, account.vision_model || provider.default_model, r.usage, 'vision');
+          await recordUsage(account.id, null, provider, account.vision_model || provider.default_model, r.usage, 'vision', null, account.setter_id || null);
           continue;
         }
       }
@@ -94,7 +94,7 @@ async function processAttachments(account, attachments, context) {
           const audioModel = account.audio_model || provider.default_model;
           const r = await transcribeAudio({ provider, model: audioModel, audioUrl: url });
           parts.push(`[nota de voz del lead, transcrita: "${r.text}"]`);
-          await recordUsage(account.id, null, provider, audioModel, r.usage, 'audio');
+          await recordUsage(account.id, null, provider, audioModel, r.usage, 'audio', null, account.setter_id || null);
           continue;
         }
       }
@@ -146,6 +146,13 @@ export function mergeSetter(account, s) {
     required_tags: s.required_tags,
     required_tags_mode: s.required_tags_mode,
     excluded_tags: s.excluded_tags, // filtro negativo del setter (exclude_tag sigue siendo de la conexión)
+    // visión/audio SON del setter: se aplican al procesar los adjuntos con su config
+    vision_enabled: s.vision_enabled,
+    vision_provider_id: s.vision_provider_id,
+    vision_model: s.vision_model,
+    audio_enabled: s.audio_enabled,
+    audio_provider_id: s.audio_provider_id,
+    audio_model: s.audio_model,
   };
 }
 
@@ -265,12 +272,7 @@ export async function handleInbound(account, evt) {
 
   const textBody = String(evt.body || '').trim();
   const attachments = Array.isArray(evt.attachments) ? evt.attachments : [];
-  let body = textBody;
-  if (attachments.length) {
-    const mediaText = await processAttachments(account, attachments, textBody);
-    body = [textBody, mediaText].filter(Boolean).join('\n');
-  }
-  if (!body) return null;
+  if (!textBody && !attachments.length) return null; // nada que procesar
 
   const conv = await one(
     `INSERT INTO conversations (account_id, ghl_contact_id, ghl_conversation_id, channel, lead_name, last_inbound_at, updated_at)
@@ -314,6 +316,26 @@ export async function handleInbound(account, evt) {
       }
     }
   }
+
+  // Conversación ya asignada (mensaje posterior): fusionar su setter para visión/audio/debounce.
+  if (conv.setter_id && account.setter_id !== conv.setter_id) {
+    const s = await one(`SELECT * FROM setters WHERE id = $1`, [conv.setter_id]);
+    if (s) account = mergeSetter(account, s);
+  }
+
+  // Procesar adjuntos (imágenes/audio) con la config del SETTER. Si aún no hay setter
+  // asignado (aplazado/legacy), se usa el setter principal de la conexión para leerlos.
+  let body = textBody;
+  if (attachments.length) {
+    let ma = account;
+    if (!ma.setter_id) {
+      const def = await one(`SELECT * FROM setters WHERE account_id = $1 ORDER BY is_default DESC, id LIMIT 1`, [conv.account_id]);
+      if (def) ma = mergeSetter(account, def);
+    }
+    const mediaText = await processAttachments(ma, attachments, textBody);
+    body = [textBody, mediaText].filter(Boolean).join('\n');
+  }
+  if (!body) body = '[adjunto]';
 
   if (evt.messageId) {
     const inserted = await one(
