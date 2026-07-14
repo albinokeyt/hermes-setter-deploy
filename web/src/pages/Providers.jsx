@@ -49,8 +49,13 @@ export default function Providers() {
     setPriceLookup({ loading: true, msg: '' });
     try {
       const r = await api.get(`/api/providers/price?model=${encodeURIComponent(form.default_model)}`);
-      setForm((f) => ({ ...f, price_in: String(r.price_in), price_out: String(r.price_out) }));
-      setPriceLookup({ loading: false, msg: `✓ ${r.name}: $${r.price_in} entrada / $${r.price_out} salida` });
+      if (r.unit && r.unit !== 'token') {
+        const suf = { minute: '/min', hour: '/hora', second: '/seg', audio: ' por audio' }[r.unit] || '';
+        setPriceLookup({ loading: false, msg: `✓ ${r.name}: $${r.price}${suf} — se cobra por audio, no por token (deja los campos de abajo vacíos)` });
+      } else {
+        setForm((f) => ({ ...f, price_in: String(r.price_in), price_out: String(r.price_out) }));
+        setPriceLookup({ loading: false, msg: `✓ ${r.name}: $${r.price_in} entrada / $${r.price_out} salida por 1M tokens` });
+      }
     } catch (err) {
       setPriceLookup({ loading: false, msg: `✗ ${err.message}` });
     }
@@ -125,17 +130,18 @@ export default function Providers() {
             </div>
             <KindPicker value={form.kinds} onChange={(kinds) => setForm({ ...form, kinds })} />
             <div>
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-sm font-medium text-slate-700">Precios ($ por 1M tokens)</span>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="text-sm font-medium text-slate-700">Precio del modelo de texto (opcional)</span>
                 <Button type="button" variant="secondary" className="!py-1.5 text-xs" onClick={buscarPrecio} loading={priceLookup.loading}>
                   <Search size={14} /> Buscar precio en OpenRouter
                 </Button>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
-                <Input label="Entrada" type="number" step="0.001" min="0" value={form.price_in} onChange={(e) => setForm({ ...form, price_in: e.target.value })} hint="Se rellena solo con el botón; puedes ajustarlo." />
-                <Input label="Salida" type="number" step="0.001" min="0" value={form.price_out} onChange={(e) => setForm({ ...form, price_out: e.target.value })} />
+                <Input label="Entrada ($/1M tokens)" type="number" step="0.001" min="0" value={form.price_in} onChange={(e) => setForm({ ...form, price_in: e.target.value })} />
+                <Input label="Salida ($/1M tokens)" type="number" step="0.001" min="0" value={form.price_out} onChange={(e) => setForm({ ...form, price_out: e.target.value })} />
               </div>
               {priceLookup.msg && <p className={`mt-1.5 text-xs font-medium ${priceLookup.msg.startsWith('✓') ? 'text-emerald-600' : 'text-red-500'}`}>{priceLookup.msg}</p>}
+              <p className="mt-1 text-xs text-slate-400">Solo sirve para estimar el gasto del CHAT. Con OpenRouter no hace falta: reporta el coste real solo. Los modelos de audio/imagen se cobran aparte (por minuto o por imagen), no aquí.</p>
             </div>
             <div className="flex gap-2">
               <Button type="submit" loading={saving}>{editingId ? 'Guardar cambios' : 'Añadir'}</Button>

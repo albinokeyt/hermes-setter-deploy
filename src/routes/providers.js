@@ -37,6 +37,44 @@ async function openRouterModels(query = '') {
   return models;
 }
 
+// Cada categoría del buscador mapea a un filtro real de OpenRouter (coincide con sus pestañas).
+const CATEGORY_QUERY = {
+  text: '?output_modalities=text',
+  vision: '?input_modalities=image',          // modelos que LEEN imágenes (visión)
+  transcription: '?output_modalities=transcription', // audio → texto
+  image: '?output_modalities=image',           // generar imagen
+  speech: '?output_modalities=speech',         // texto → voz
+  audio: '?output_modalities=audio',
+  video: '?output_modalities=video',
+};
+
+// Los modelos de transcripción NO se cobran por token sino por audio, y la unidad
+// (minuto / hora / segundo) varía por modelo — OpenRouter no la expone en su API,
+// así que la mapeamos según lo que muestra su web (verificado modelo a modelo).
+function audioUnit(id) {
+  const s = String(id).toLowerCase();
+  if (s.includes('whisper-large-v3-turbo')) return 'hour';
+  if (s.includes('mai-transcribe')) return 'hour';
+  if (s.includes('qwen3-asr') || s.includes('asr-flash')) return 'second';
+  if (s.includes('whisper') || s.includes('chirp') || s.includes('parakeet') || s.includes('voxtral')) return 'minute';
+  return 'audio'; // desconocido: mostramos el valor crudo sin afirmar la unidad
+}
+
+// Busca un modelo por id en varias categorías (chat no incluye audio/visión).
+async function findOpenRouterModel(model) {
+  const low = model.toLowerCase();
+  for (const cat of ['text', 'transcription', 'vision', 'image', 'speech', 'video']) {
+    const models = await openRouterModels(CATEGORY_QUERY[cat]);
+    const m =
+      models.find((x) => x.id === model) ||
+      models.find((x) => String(x.id).toLowerCase() === low) ||
+      models.find((x) => String(x.id).toLowerCase().endsWith('/' + low)) ||
+      models.find((x) => String(x.canonical_slug || '').toLowerCase() === low);
+    if (m) return { m, category: cat };
+  }
+  return null;
+}
+
 export default async function providerRoutes(app) {
   // las APIs de IA son solo de administración
   app.addHook('preHandler', async (req, reply) => {
@@ -44,29 +82,6 @@ export default async function providerRoutes(app) {
   });
 
   app.get('/api/providers/presets', async () => PRESETS);
-
-  // Cada categoría del buscador mapea a un filtro real de OpenRouter (coincide con sus pestañas).
-  const CATEGORY_QUERY = {
-    text: '?output_modalities=text',
-    vision: '?input_modalities=image',          // modelos que LEEN imágenes (visión)
-    transcription: '?output_modalities=transcription', // audio → texto
-    image: '?output_modalities=image',           // generar imagen
-    speech: '?output_modalities=speech',         // texto → voz
-    audio: '?output_modalities=audio',
-    video: '?output_modalities=video',
-  };
-
-  // Los modelos de transcripción NO se cobran por token sino por audio, y la unidad
-  // (minuto / hora / segundo) varía por modelo — OpenRouter no la expone en su API,
-  // así que la mapeamos según lo que muestra su web (verificado modelo a modelo).
-  function audioUnit(id) {
-    const s = String(id).toLowerCase();
-    if (s.includes('whisper-large-v3-turbo')) return 'hour';
-    if (s.includes('mai-transcribe')) return 'hour';
-    if (s.includes('qwen3-asr') || s.includes('asr-flash')) return 'second';
-    if (s.includes('whisper') || s.includes('chirp') || s.includes('parakeet') || s.includes('voxtral')) return 'minute';
-    return 'audio'; // desconocido: mostramos el valor crudo sin afirmar la unidad
-  }
 
   // Lista de modelos de OpenRouter en vivo (con precios), por categoría.
   app.get('/api/providers/models', async (req, reply) => {
@@ -92,23 +107,24 @@ export default async function providerRoutes(app) {
     }
   });
 
-  // Consulta el precio de un modelo en OpenRouter y lo devuelve en $ por 1M de tokens.
+  // Consulta el precio de un modelo en OpenRouter (busca en todas las categorías).
   app.get('/api/providers/price', async (req, reply) => {
     const model = String(req.query?.model || '').trim();
     if (!model) return reply.code(400).send({ error: 'Escribe primero el modelo' });
     try {
-      const models = await openRouterModels();
-      const low = model.toLowerCase();
-      const m =
-        models.find((x) => x.id === model) ||
-        models.find((x) => String(x.id).toLowerCase() === low) ||
-        models.find((x) => String(x.id).toLowerCase().endsWith('/' + low)) ||
-        models.find((x) => String(x.canonical_slug || '').toLowerCase() === low);
-      if (!m || !m.pricing) {
+      const found = await findOpenRouterModel(model);
+      if (!found || !found.m.pricing) {
         return reply.code(404).send({ error: `No encontré "${model}" en OpenRouter. Escríbelo como aparece allí (ej. openai/gpt-4o-mini).` });
       }
+      const { m, category } = found;
+      const prompt = m.pricing.prompt || '0';
+      const completion = m.pricing.completion || '0';
       const per1M = (v) => (v ? Math.round(Number(v) * 1_000_000 * 1000) / 1000 : 0);
-      return { found: true, name: m.name || m.id, price_in: per1M(m.pricing.prompt), price_out: per1M(m.pricing.completion) };
+      // audio/transcripción sin precio de salida → se cobra por tiempo, no por token
+      if (category === 'transcription' && Number(completion) === 0) {
+        return { found: true, name: m.name || m.id, unit: audioUnit(m.id), price: String(prompt) };
+      }
+      return { found: true, name: m.name || m.id, unit: 'token', price_in: per1M(prompt), price_out: per1M(completion) };
     } catch (err) {
       return reply.code(502).send({ error: `No pude consultar OpenRouter: ${err.message}` });
     }
