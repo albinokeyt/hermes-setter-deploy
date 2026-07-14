@@ -21,6 +21,7 @@ const TAG_PREFIX = 'setter-';
 // su token ya no es el vigente y mueren en silencio.
 const debKey = (id) => `debtoken:${id}`;
 const fuKey = (id) => `futoken:${id}`;
+const ctaKey = (id) => `ctawait:${id}`; // instante (ms) hasta el que el setter espera por un CTA
 
 export function normalizeChannel(raw) {
   const s = String(raw || '').toUpperCase();
@@ -188,6 +189,24 @@ async function selectSetter(account, conv) {
   return { setter: pool.length ? pickByWeight(pool) : null, hasSetters: true };
 }
 
+// CTAs: si el primer mensaje contiene una palabra/frase clave, el setter espera un
+// plazo antes de entrar. Devuelve la espera en SEGUNDOS o null si no aplica.
+// Casan primero las CTAs con keyword; una keyword vacía es el "cualquiera" (catch-all).
+function matchCtaWait(account, body) {
+  const ctas = Array.isArray(account.ctas) ? account.ctas : [];
+  if (!ctas.length) return null;
+  const text = String(body || '').toLowerCase();
+  let catchAll = null;
+  for (const c of ctas) {
+    const kw = String(c?.keyword || '').trim().toLowerCase();
+    const w = Number(c?.wait_seconds);
+    if (!Number.isFinite(w) || w < 0) continue;
+    if (!kw) { if (catchAll === null) catchAll = w; continue; }
+    if (text.includes(kw)) return w;
+  }
+  return catchAll;
+}
+
 export async function cancelBotJobs(conversationId) {
   await redis.del(debKey(conversationId));
   await redis.del(fuKey(conversationId));
@@ -322,7 +341,22 @@ export async function handleInbound(account, evt) {
       const s = await one(`SELECT * FROM setters WHERE id = $1`, [conv.setter_id]);
       if (s) account = mergeSetter(account, s);
     }
-    await scheduleDebounce(account, conv.id);
+    // CTA: si el inicio contiene la palabra clave, el setter espera ese plazo para entrar.
+    let delayMs = null;
+    if (conv.is_new) {
+      const wait = matchCtaWait(account, body);
+      if (wait != null) {
+        delayMs = wait * 1000;
+        await redis.set(ctaKey(conv.id), String(Date.now() + delayMs), 'EX', wait + 300);
+        await logEvent('cta_espera', { conv: conv.id, segundos: wait });
+      }
+    } else {
+      // mensajes posteriores durante la espera del CTA: respetar el mínimo que falta
+      const target = Number(await redis.get(ctaKey(conv.id)));
+      const remaining = target ? target - Date.now() : 0;
+      if (remaining > 0) delayMs = Math.max(remaining, Math.max(5, account.debounce_seconds || 35) * 1000);
+    }
+    await scheduleDebounce(account, conv.id, delayMs);
   }
   return conv;
 }

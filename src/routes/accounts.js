@@ -9,7 +9,7 @@ const ADMIN_EDITABLE = [
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'active_hours',
   'timezone', 'sync_tags', 'auto_handoff', 'bot_enabled', 'test_mode', 'test_tag',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
-  'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode',
+  'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode', 'ctas',
 ];
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
@@ -19,7 +19,7 @@ const USER_EDITABLE = [
   'required_tags', 'required_tags_mode',
 ];
 
-const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags']);
+const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags', 'ctas']);
 
 function stripSecrets(row, req) {
   if (req.auth?.role === 'admin') return row;

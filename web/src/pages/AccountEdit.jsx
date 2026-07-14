@@ -11,9 +11,17 @@ import { AccessManager } from '../components/AccessManager.jsx';
 const TABS = [
   { key: 'setters', label: '🤖 Setters' },
   { key: 'ajustes', label: 'Ajustes', adminOnly: true },
+  { key: 'ctas', label: '🎯 CTAs', adminOnly: true },
   { key: 'accesos', label: 'Accesos' },
   { key: 'conexion', label: 'Conexión GHL', adminOnly: true },
 ];
+
+const fmtWait = (s) => {
+  const n = Number(s) || 0;
+  if (n < 60) return `${n} s`;
+  const m = Math.floor(n / 60), r = n % 60;
+  return `${m} min${r ? ` ${r} s` : ''}`;
+};
 
 export default function AccountEdit() {
   const { id } = useParams();
@@ -207,6 +215,33 @@ export default function AccountEdit() {
           </div>
         </Card>
       )}
+
+      {tab === 'ctas' && (() => {
+        const ctas = Array.isArray(acc.ctas) ? acc.ctas : [];
+        const setCta = (i, patch) => set({ ctas: ctas.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+        return (
+          <div className="max-w-2xl space-y-4">
+            <Banner tone="info">
+              Para anuncios/citas de Instagram: si el <b>primer mensaje</b> del lead <b>contiene</b> una palabra o frase (pueden llevar emojis), el setter <b>espera</b> el tiempo que definas antes de entrar a responder — para no contestar de golpe. Deja la palabra <b>vacía</b> para aplicar la espera a <b>cualquier</b> conversación nueva.
+            </Banner>
+            <Card className="space-y-3 p-6">
+              {ctas.length === 0 && <p className="text-xs text-slate-400">Sin CTAs. El setter responde con su debounce normal.</p>}
+              {ctas.map((c, i) => (
+                <div key={i} className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <Input label={i === 0 ? 'Palabra o frase clave (vacío = cualquiera)' : ''} value={c.keyword || ''} onChange={(e) => setCta(i, { keyword: e.target.value })} placeholder="ej. quiero info 🔥" />
+                  </div>
+                  <div className="w-40">
+                    <Input label={i === 0 ? 'Espera (segundos)' : ''} type="number" min="0" max="3600" step="5" value={c.wait_seconds ?? 0} onChange={(e) => setCta(i, { wait_seconds: Number(e.target.value) })} hint={`= ${fmtWait(c.wait_seconds)}`} />
+                  </div>
+                  <button type="button" onClick={() => set({ ctas: ctas.filter((_, j) => j !== i) })} className="mb-2 text-slate-400 hover:text-red-500"><Trash2 size={16} /></button>
+                </div>
+              ))}
+              <Button variant="secondary" onClick={() => set({ ctas: [...ctas, { keyword: '', wait_seconds: 60 }] })}><Plus size={16} /> Añadir CTA</Button>
+            </Card>
+          </div>
+        );
+      })()}
 
       {tab === 'accesos' && <AccessManager accountId={id} />}
 
