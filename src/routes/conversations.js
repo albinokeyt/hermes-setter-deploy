@@ -57,8 +57,10 @@ export default async function conversationRoutes(app) {
     const base = await loadScopedConv(req, reply);
     if (!base) return;
     const conv = await one(
-      `SELECT c.*, a.name AS account_name, a.channels AS account_channels, a.location_id
-       FROM conversations c JOIN accounts a ON a.id = c.account_id WHERE c.id = $1`,
+      `SELECT c.*, a.name AS account_name, a.channels AS account_channels, a.location_id, st.name AS setter_name
+       FROM conversations c JOIN accounts a ON a.id = c.account_id
+       LEFT JOIN setters st ON st.id = c.setter_id
+       WHERE c.id = $1`,
       [base.id]
     );
     const messages = await q(`SELECT * FROM messages WHERE conversation_id = $1 ORDER BY id ASC LIMIT 500`, [conv.id]);

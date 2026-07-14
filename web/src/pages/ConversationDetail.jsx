@@ -7,14 +7,19 @@ import { Card, Button, StagePill, Toggle, Select, Banner } from '../components/u
 
 function Bubble({ m }) {
   const mine = m.direction === 'outbound';
-  const sourceLabel = { bot: 'Setter IA', humano: 'Humano', seguimiento: 'Seguimiento IA', lead: '' }[m.source] || '';
+  const human = m.source === 'humano';
+  const sourceLabel = { bot: '🤖 Setter IA', humano: '👤 Humano', seguimiento: '🤖 Seguimiento IA', lead: '' }[m.source] || '';
+  const bubble = !mine
+    ? 'bg-white border border-slate-200 text-slate-800 rounded-bl-md'
+    : human
+      ? 'bg-blue-600 text-white rounded-br-md'   // humano al mando
+      : 'bg-violet-600 text-white rounded-br-md'; // agente IA
+  const meta = !mine ? 'text-slate-400' : human ? 'text-blue-200' : 'text-violet-200';
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
-        mine ? 'bg-violet-600 text-white rounded-br-md' : 'bg-white border border-slate-200 text-slate-800 rounded-bl-md'
-      }`}>
+      <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${bubble}`}>
         {m.body}
-        <div className={`mt-1 flex items-center gap-1.5 text-[10px] ${mine ? 'text-violet-200' : 'text-slate-400'}`}>
+        <div className={`mt-1 flex items-center gap-1.5 text-[10px] ${meta}`}>
           {sourceLabel && <span>{sourceLabel} ·</span>}
           <span>{new Date(m.created_at).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
         </div>
@@ -70,6 +75,12 @@ export default function ConversationDetail() {
                 {conv.account_name} · {CHANNEL_LABEL[conv.channel] || conv.channel}
                 {conv.lead_email && ` · ${conv.lead_email}`}
               </div>
+              {conv.setter_name && (
+                <div className="mt-0.5 flex items-center gap-1.5 text-[11px]">
+                  <span className="inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 font-semibold text-violet-600">🤖 Atendida por {conv.setter_name}</span>
+                  {conv.messages?.some((m) => m.source === 'humano') && <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 font-semibold text-blue-600">👤 con intervención humana</span>}
+                </div>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {ghlContactUrl(conv.location_id, conv.ghl_contact_id) && (
