@@ -11,6 +11,7 @@ import Providers from './pages/Providers.jsx';
 import Campaigns from './pages/Campaigns.jsx';
 import CampaignDetail from './pages/CampaignDetail.jsx';
 import Playground from './pages/Playground.jsx';
+import Archive from './pages/Archive.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import UsersPage from './pages/Users.jsx';
 import PortalRegister from './pages/PortalRegister.jsx';
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="/competencias" element={<Campaigns />} />
         <Route path="/competencias/:id" element={<CampaignDetail />} />
         <Route path="/prueba" element={<Playground />} />
+        <Route path="/archivo" element={<Archive />} />
         <Route path="/configuracion" element={<SettingsPage />} />
         <Route path="/usuarios" element={<UsersPage />} />
         <Route path="/usuario" element={<Navigate to="/usuarios" replace />} />

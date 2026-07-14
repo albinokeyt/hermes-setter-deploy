@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { q, one } from '../db.js';
+import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { debounceQueue, sendQueue, followupQueue } from '../queues.js';
 import { generateReply } from './agent.js';
@@ -43,6 +43,23 @@ export async function logEvent(kind, payload) {
 
 export async function accountByLocation(locationId) {
   return one(`SELECT * FROM accounts WHERE location_id = $1`, [locationId]);
+}
+
+// Recaudación de mensajes: interruptor global, cacheado. Funciona esté el bot
+// activo o no. Si está apagada Y el bot también, no se guarda nada.
+let _archiveCache = { at: 0, val: true };
+export function invalidateArchiveCache() {
+  _archiveCache = { at: 0, val: _archiveCache.val };
+}
+async function archiveEnabled() {
+  if (Date.now() - _archiveCache.at < 30_000) return _archiveCache.val;
+  const s = await getSetting('archive', { enabled: true });
+  _archiveCache = { at: Date.now(), val: s?.enabled !== false };
+  return _archiveCache.val;
+}
+// ¿guardamos este mensaje? Sí si la recaudación está activa, o si el bot lo necesita.
+async function shouldCollect(account) {
+  return (await archiveEnabled()) || Boolean(account.bot_enabled);
 }
 
 // ─── Adjuntos: imágenes (visión) y audios (transcripción) ───────────────────
@@ -141,6 +158,9 @@ export async function handleInbound(account, evt) {
   const channels = Array.isArray(account.channels) ? account.channels : [];
   if (!channels.includes(channel)) return null;
 
+  // recaudación desactivada y bot apagado → no guardamos nada (ni procesamos adjuntos)
+  if (!(await shouldCollect(account))) return null;
+
   const textBody = String(evt.body || '').trim();
   const attachments = Array.isArray(evt.attachments) ? evt.attachments : [];
   let body = textBody;
@@ -216,6 +236,7 @@ export async function scheduleDebounce(account, conversationId, delayMs = null) 
 
 export async function handleOutboundEvent(account, evt) {
   if (evt.messageId && (await redis.get(`sent:${evt.messageId}`))) return; // lo enviamos nosotros
+  if (!(await shouldCollect(account))) return; // recaudación off + bot off
   const channel = normalizeChannel(evt.channel);
   if (!channel) return;
   const conv = await one(

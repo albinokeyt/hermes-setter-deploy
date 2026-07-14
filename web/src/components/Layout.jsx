@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Swords } from 'lucide-react';
+import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Swords, Database } from 'lucide-react';
 import { api } from '../api.js';
 import { ThemeToggle } from './ui.jsx';
 
@@ -53,6 +53,7 @@ export default function Layout() {
         ? [{ to: `/cuentas/${me.account_id}`, label: 'Mi agente', icon: Bot }]
         : []),
     { to: '/prueba', label: 'Probar agente', icon: FlaskConical },
+    ...(isAdmin ? [{ to: '/archivo', label: 'Archivo', icon: Database }] : []),
   ];
   const navBottom = [
     ...(isAdmin ? [{ to: '/configuracion', label: 'Configuración', icon: Settings }] : []),

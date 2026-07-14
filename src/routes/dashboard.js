@@ -18,9 +18,9 @@ export default async function dashboardRoutes(app) {
         (SELECT COUNT(*)::int FROM messages m WHERE m.direction = 'inbound' AND m.created_at > now() - interval '24 hours' ${condM}) AS recibidos_24h,
         (SELECT COUNT(*)::int FROM messages m WHERE m.direction = 'outbound' AND m.created_at > now() - interval '24 hours' ${condM}) AS enviados_24h,
         (SELECT COUNT(*)::int FROM conversations c WHERE c.last_outbound_at IS NOT NULL ${cond}) AS respondidas,
-        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.created_at > now() - interval '24 hours' ${accountFilter ? `AND u.account_id = ${accountFilter}` : ''}) AS gasto_24h,
-        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.created_at > now() - interval '30 days' ${accountFilter ? `AND u.account_id = ${accountFilter}` : ''}) AS gasto_30d,
-        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE true ${accountFilter ? `AND u.account_id = ${accountFilter}` : ''}) AS gasto_total,
+        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.source <> 'archivo' AND u.created_at > now() - interval '24 hours' ${accountFilter ? `AND u.account_id = ${accountFilter}` : ''}) AS gasto_24h,
+        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.source <> 'archivo' AND u.created_at > now() - interval '30 days' ${accountFilter ? `AND u.account_id = ${accountFilter}` : ''}) AS gasto_30d,
+        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.source <> 'archivo' ${accountFilter ? `AND u.account_id = ${accountFilter}` : ''}) AS gasto_total,
         (SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'agendado' AND ap.created_at > now() - interval '30 days' ${accountFilter ? `AND ap.account_id = ${accountFilter}` : ''}) AS agendas_30d,
         (SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'cancelado' AND ap.created_at > now() - interval '30 days' ${accountFilter ? `AND ap.account_id = ${accountFilter}` : ''}) AS canceladas_30d
     `);

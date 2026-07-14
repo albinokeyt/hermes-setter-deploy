@@ -20,6 +20,7 @@ import webhookRoutes from './routes/webhooks.js';
 import userRoutes from './routes/users.js';
 import portalRoutes from './routes/portal.js';
 import campaignRoutes from './routes/campaigns.js';
+import archiveRoutes from './routes/archive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +57,7 @@ async function main() {
   await app.register(userRoutes);
   await app.register(portalRoutes);
   await app.register(campaignRoutes);
+  await app.register(archiveRoutes);
 
   // frontend compilado (SPA)
   const webDist = path.join(__dirname, '..', 'web', 'dist');
