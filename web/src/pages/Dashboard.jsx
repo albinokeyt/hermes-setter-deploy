@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { MessagesSquare, Flame, ArrowDownToLine, ArrowUpFromLine, Wallet, CalendarCheck } from 'lucide-react';
+import { MessagesSquare, Flame, ArrowDownToLine, ArrowUpFromLine, Wallet, CalendarCheck, Info } from 'lucide-react';
 import { useMe } from '../components/Layout.jsx';
 import { ComposedChart, Area, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api, timeAgo } from '../api.js';
@@ -55,9 +55,12 @@ export default function Dashboard() {
         {STAGES.map((s) => (
           <Link key={s.key} to={`/etiquetas`} className="group">
             <Card className="p-4 transition group-hover:border-violet-300">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <span className={`h-2 w-2 rounded-full ${s.dot}`} />
                 <span className="truncate text-xs font-medium text-slate-500">{s.label}</span>
+                <span className="ml-auto shrink-0" title={s.desc} onClick={(e) => e.preventDefault()}>
+                  <Info size={13} className="text-slate-300 hover:text-slate-500" />
+                </span>
               </div>
               <div className="mt-1.5 text-2xl font-bold text-slate-900">{stageCount[s.key] || 0}</div>
             </Card>

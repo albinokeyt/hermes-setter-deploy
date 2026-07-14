@@ -602,7 +602,10 @@ export async function processFollowup(job) {
   await q(`UPDATE conversations SET followup_step = $1, followup_state = $2, updated_at = now() WHERE id = $3`, [
     newStep, `enviado_${newStep}`, conv.id,
   ]);
-  if (!['calificado', 'en_conversion', 'descartado'].includes(conv.stage)) {
+  if (conv.stage === 'calificado' || conv.stage === 'seguimiento_calificado') {
+    // estaba calificado pero no agendó → seguimiento específico de calificación
+    await applyStage(conv, account, 'seguimiento_calificado', `seguimiento #${newStep} (calificado sin agendar)`);
+  } else if (!['en_conversion', 'descartado', 'agendado', 'agenda_cancelada'].includes(conv.stage)) {
     await applyStage(conv, account, 'en_seguimiento', `seguimiento #${newStep} enviado`);
   }
   await scheduleNextFollowup(account, { ...conv, followup_step: newStep }, cursor);

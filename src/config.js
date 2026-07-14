@@ -35,18 +35,19 @@ T1hhTiaCeIY/OwwwNUY2yvcCAwEAAQ==
 export const GHL_API = 'https://services.leadconnectorhq.com';
 
 export const STAGES = [
-  { key: 'nuevo', label: 'Nuevo', color: '#64748b' },
-  { key: 'en_conversacion', label: 'En conversación', color: '#3b82f6' },
-  { key: 'en_seguimiento', label: 'En seguimiento', color: '#f59e0b' },
-  { key: 'calificado', label: 'Calificado', color: '#8b5cf6' },
-  { key: 'en_conversion', label: 'En conversión', color: '#10b981' },
-  { key: 'agendado', label: 'Agendado', color: '#14b8a6' },
-  { key: 'agenda_cancelada', label: 'Agenda cancelada', color: '#fb7185' },
-  { key: 'descartado', label: 'Descartado', color: '#ef4444' },
+  { key: 'nuevo', label: 'Nuevo', color: '#64748b', desc: 'El lead acaba de escribir; todavía no hay conversación real.' },
+  { key: 'en_conversacion', label: 'En conversación', color: '#3b82f6', desc: 'Diálogo activo: el setter está conociendo y cualificando al lead.' },
+  { key: 'en_seguimiento', label: 'En seguimiento', color: '#f59e0b', desc: 'El lead dejó de responder y el setter lo está retomando con mensajes de seguimiento.' },
+  { key: 'calificado', label: 'Calificado', color: '#8b5cf6', desc: 'Cumple el filtro y mostró interés real; listo para proponerle la cita.' },
+  { key: 'seguimiento_calificado', label: 'Seguimiento calificado', color: '#d946ef', desc: 'Estaba calificado pero aún no agendó; el setter le hace seguimiento para que reserve.' },
+  { key: 'en_conversion', label: 'En conversión', color: '#10b981', desc: 'Dio el paso clave: aceptó la propuesta o pidió el enlace de reserva.' },
+  { key: 'agendado', label: 'Agendado', color: '#14b8a6', desc: 'Reservó una cita en el calendario de GHL (lo detecta el sistema automáticamente).' },
+  { key: 'agenda_cancelada', label: 'Agenda cancelada', color: '#fb7185', desc: 'Su cita fue cancelada en el calendario de GHL.' },
+  { key: 'descartado', label: 'Descartado', color: '#ef4444', desc: 'No cumple el filtro, no le interesa o es spam; el setter deja de perseguirlo.' },
 ];
 
-// Etiquetas que pone el sistema con los webhooks del calendario, nunca la IA.
-export const SYSTEM_STAGES = ['agendado', 'agenda_cancelada'];
+// Etiquetas que pone el sistema (calendario o seguimientos), nunca la IA directamente.
+export const SYSTEM_STAGES = ['agendado', 'agenda_cancelada', 'seguimiento_calificado'];
 
 export const STAGE_KEYS = STAGES.map((s) => s.key);
 

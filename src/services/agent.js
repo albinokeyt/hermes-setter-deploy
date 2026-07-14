@@ -9,7 +9,7 @@ function stageGuide() {
 - "calificado": cumple el filtro definido en el FLUJO y mostró interés real.
 - "en_conversion": dio el paso clave (agendó, pidió el enlace, aceptó la propuesta).
 - "descartado": no cumple el filtro, no le interesa, o es spam.
-(Las etiquetas "agendado" y "agenda_cancelada" las pone el sistema automáticamente con el calendario: NO las uses tú; si el lead dice que ya reservó, usa "en_conversion".)`;
+(Las etiquetas "agendado", "agenda_cancelada" y "seguimiento_calificado" las pone el sistema automáticamente: NO las uses tú; si el lead dice que ya reservó, usa "en_conversion".)`;
 }
 
 function styleRules(account) {

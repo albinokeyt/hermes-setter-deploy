@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Info } from 'lucide-react';
 import { api, timeAgo } from '../api.js';
 import { STAGES, CHANNEL_LABEL } from '../stages.js';
 import { SectionTitle, Avatar } from '../components/ui.jsx';
@@ -23,9 +24,10 @@ export default function Kanban() {
       <div className="scroll-thin -mx-2 flex gap-4 overflow-x-auto px-2 pb-4">
         {STAGES.map((s) => (
           <div key={s.key} className="w-72 shrink-0">
-            <div className="mb-3 flex items-center gap-2 px-1">
+            <div className="mb-3 flex items-center gap-1.5 px-1">
               <span className={`h-2.5 w-2.5 rounded-full ${s.dot}`} />
               <span className="text-sm font-bold text-slate-800">{s.label}</span>
+              <span title={s.desc}><Info size={13} className="text-slate-300 hover:text-slate-500" /></span>
               <span className="ml-auto rounded-full bg-slate-200/70 px-2 py-0.5 text-xs font-bold text-slate-600">
                 {(board[s.key] || []).length}
               </span>
