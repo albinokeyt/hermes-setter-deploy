@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, MessagesSquare, Bot, PauseCircle, ExternalLink } from 'lucide-react';
+import { Search, MessagesSquare, Bot, PauseCircle, ExternalLink, User } from 'lucide-react';
 import { api, timeAgo, ghlContactUrl } from '../api.js';
 import { STAGES, CHANNEL_LABEL } from '../stages.js';
 import { Card, SectionTitle, StagePill, Avatar, Select, EmptyState } from '../components/ui.jsx';
@@ -8,15 +8,24 @@ import { Card, SectionTitle, StagePill, Avatar, Select, EmptyState } from '../co
 export default function Conversations() {
   const [rows, setRows] = useState([]);
   const [accounts, setAccounts] = useState([]);
-  const [filters, setFilters] = useState({ account_id: '', stage: '', search: '' });
+  const [setters, setSetters] = useState([]);
+  const [filters, setFilters] = useState({ account_id: '', setter_id: '', stage: '', human: '', search: '' });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => { api.get('/api/accounts').then(setAccounts).catch(() => {}); }, []);
 
+  // al elegir una conexión, cargar sus setters para el filtro de agente
+  useEffect(() => {
+    if (!filters.account_id) { setSetters([]); return; }
+    api.get(`/api/accounts/${filters.account_id}/setters`).then(setSetters).catch(() => setSetters([]));
+  }, [filters.account_id]);
+
   useEffect(() => {
     const params = new URLSearchParams();
     if (filters.account_id) params.set('account_id', filters.account_id);
+    if (filters.setter_id) params.set('setter_id', filters.setter_id);
     if (filters.stage) params.set('stage', filters.stage);
+    if (filters.human) params.set('human', filters.human);
     if (filters.search) params.set('search', filters.search);
     const t = setTimeout(() => {
       setLoading(true);
@@ -39,13 +48,24 @@ export default function Conversations() {
             className="w-64 rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3.5 text-sm outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
           />
         </div>
-        <Select value={filters.account_id} onChange={(e) => setFilters({ ...filters, account_id: e.target.value })} className="!w-48">
-          <option value="">Todos los setters</option>
+        <Select value={filters.account_id} onChange={(e) => setFilters({ ...filters, account_id: e.target.value, setter_id: '' })} className="!w-44">
+          <option value="">Todas las conexiones</option>
           {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
         </Select>
-        <Select value={filters.stage} onChange={(e) => setFilters({ ...filters, stage: e.target.value })} className="!w-48">
+        {filters.account_id && setters.length > 1 && (
+          <Select value={filters.setter_id} onChange={(e) => setFilters({ ...filters, setter_id: e.target.value })} className="!w-44">
+            <option value="">Todos los setters</option>
+            {setters.map((s) => <option key={s.id} value={s.id}>🤖 {s.name}</option>)}
+          </Select>
+        )}
+        <Select value={filters.stage} onChange={(e) => setFilters({ ...filters, stage: e.target.value })} className="!w-44">
           <option value="">Todas las etiquetas</option>
           {STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+        </Select>
+        <Select value={filters.human} onChange={(e) => setFilters({ ...filters, human: e.target.value })} className="!w-44" title="Quién ha hablado">
+          <option value="">IA y humano</option>
+          <option value="1">👤 Con humano</option>
+          <option value="ia">🤖 Solo IA</option>
         </Select>
       </div>
 
@@ -69,6 +89,7 @@ export default function Conversations() {
                       <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{CHANNEL_LABEL[c.channel] || c.channel}</span>
                       {c.lead_email && <span className="hidden truncate text-[11px] text-slate-400 md:inline">· {c.lead_email}</span>}
                       <span className="hidden text-[11px] text-slate-400 sm:inline">· {c.account_name}</span>
+                      {c.setter_name && <span className="hidden items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-600 sm:inline-flex" title="Setter (agente IA) asignado">🤖 {c.setter_name}</span>}
                     </div>
                     <p className="mt-0.5 truncate text-xs text-slate-500">
                       {c.last_direction === 'outbound' ? '↩ ' : ''}{c.last_message || '—'}
@@ -87,8 +108,9 @@ export default function Conversations() {
                       Ir a <ExternalLink size={12} />
                     </a>
                   )}
+                  {c.human_touched && <span title="Un humano ha intervenido en este chat"><User size={15} className="text-blue-500" /></span>}
                   {c.bot_paused
-                    ? <span title="Bot en pausa (humano al mando)"><PauseCircle size={16} className="text-amber-500" /></span>
+                    ? <span title={c.paused_by === 'humano' ? 'Bot en pausa (humano respondió en GHL)' : 'Bot en pausa (humano al mando)'}><PauseCircle size={16} className="text-amber-500" /></span>
                     : <span title="Bot activo"><Bot size={16} className="text-emerald-500" /></span>}
                   <StagePill stage={c.stage} />
                   <span className="w-16 text-right text-[11px] text-slate-400">{timeAgo(c.updated_at)}</span>

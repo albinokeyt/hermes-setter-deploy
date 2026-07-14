@@ -22,21 +22,30 @@ export default async function conversationRoutes(app) {
   app.get('/api/stages', async () => STAGES);
 
   app.get('/api/conversations', async (req) => {
-    const { stage, search, limit = 50, offset = 0 } = req.query || {};
+    const { stage, search, setter_id, human, limit = 50, offset = 0 } = req.query || {};
     const account_id = scopedAccountId(req) || req.query?.account_id;
     const where = [];
     const vals = [];
     if (account_id) { vals.push(account_id); where.push(`c.account_id = $${vals.length}`); }
+    if (setter_id) { vals.push(setter_id); where.push(`c.setter_id = $${vals.length}`); }
     if (stage) { vals.push(stage); where.push(`c.stage = $${vals.length}`); }
     if (search) { vals.push(`%${search}%`); where.push(`(c.lead_name ILIKE $${vals.length} OR c.lead_email ILIKE $${vals.length} OR c.ghl_contact_id ILIKE $${vals.length})`); }
+    // filtro por intervención humana: '1' = donde un humano ha escrito; 'ia' = solo IA
+    const humanExists = `EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.source = 'humano')`;
+    if (human === '1') where.push(humanExists);
+    else if (human === 'ia') where.push(`NOT ${humanExists}`);
     vals.push(Math.min(Number(limit) || 50, 200));
     vals.push(Number(offset) || 0);
     return q(
-      `SELECT c.id, c.account_id, c.channel, c.lead_name, c.lead_email, c.ghl_contact_id, c.stage, c.bot_paused,
+      `SELECT c.id, c.account_id, c.setter_id, c.channel, c.lead_name, c.lead_email, c.ghl_contact_id, c.stage, c.bot_paused, c.paused_by,
               c.followup_state, c.last_inbound_at, c.last_outbound_at, c.updated_at, a.name AS account_name, a.location_id,
+              st.name AS setter_name,
+              ${humanExists} AS human_touched,
               (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
               (SELECT m.direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_direction
-       FROM conversations c JOIN accounts a ON a.id = c.account_id
+       FROM conversations c
+       JOIN accounts a ON a.id = c.account_id
+       LEFT JOIN setters st ON st.id = c.setter_id
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY c.updated_at DESC
        LIMIT $${vals.length - 1} OFFSET $${vals.length}`,
