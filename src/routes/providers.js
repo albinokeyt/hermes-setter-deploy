@@ -45,23 +45,32 @@ export default async function providerRoutes(app) {
 
   app.get('/api/providers/presets', async () => PRESETS);
 
-  // Lista de modelos de OpenRouter (para el buscador desplegable), filtrable por tipo.
+  // Cada categoría del buscador mapea a un filtro real de OpenRouter (coincide con sus pestañas).
+  const CATEGORY_QUERY = {
+    text: '?output_modalities=text',
+    vision: '?input_modalities=image',          // modelos que LEEN imágenes (visión)
+    transcription: '?output_modalities=transcription', // audio → texto
+    image: '?output_modalities=image',           // generar imagen
+    speech: '?output_modalities=speech',         // texto → voz
+    audio: '?output_modalities=audio',
+    video: '?output_modalities=video',
+  };
+
+  // Lista de modelos de OpenRouter en vivo (con precios), por categoría.
   app.get('/api/providers/models', async (req, reply) => {
-    const kind = String(req.query?.kind || '').toLowerCase();
+    const category = String(req.query?.category || 'text').toLowerCase();
+    const query = CATEGORY_QUERY[category] || CATEGORY_QUERY.text;
     try {
-      // los modelos de transcripción van en una lista aparte de OpenRouter
-      const models = await openRouterModels(kind === 'audio' ? '?output_modalities=transcription' : '');
+      const models = await openRouterModels(query);
       const per1M = (v) => (v ? Math.round(Number(v) * 1_000_000 * 1000) / 1000 : 0);
-      let list = models.map((m) => ({
-        id: m.id,
-        name: m.name || m.id,
-        price_in: per1M(m.pricing?.prompt),
-        price_out: per1M(m.pricing?.completion),
-        inputs: Array.isArray(m.architecture?.input_modalities) ? m.architecture.input_modalities : [],
-      }));
-      if (kind === 'image') list = list.filter((m) => m.inputs.includes('image'));
-      // 'audio' ya viene filtrado por el endpoint; 'text'/vacío: todos los de chat
-      list.sort((a, b) => a.id.localeCompare(b.id));
+      const list = models
+        .map((m) => ({
+          id: m.id,
+          name: m.name || m.id,
+          price_in: per1M(m.pricing?.prompt),
+          price_out: per1M(m.pricing?.completion),
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
       return { models: list };
     } catch (err) {
       return reply.code(502).send({ error: `No pude consultar OpenRouter: ${err.message}` });
