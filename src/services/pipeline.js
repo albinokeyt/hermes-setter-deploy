@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { debounceQueue, sendQueue, followupQueue, reactivateQueue } from '../queues.js';
-import { generateReply } from './agent.js';
+import { generateReply, shouldFollowup } from './agent.js';
 import { describeImage, transcribeAudio } from './llm.js';
 import * as ghl from './ghl.js';
 import { typingDelayMs, delayToActiveWindow, metaWindowOpen } from './humanize.js';
@@ -143,6 +143,7 @@ export function mergeSetter(account, s) {
     max_msgs: s.max_msgs,
     debounce_seconds: s.debounce_seconds,
     followups: Array.isArray(s.followups) && s.followups.length ? s.followups : account.followups,
+    followup_ai_check: s.followup_ai_check !== false, // por defecto ON
     required_tags: s.required_tags,
     required_tags_mode: s.required_tags_mode,
     excluded_tags: s.excluded_tags, // filtro negativo del setter (exclude_tag sigue siendo de la conexión)
@@ -829,7 +830,11 @@ export async function processFollowup(job) {
   if (!conv || !account || !provider) return;
   if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) return;
 
-  if (conv.stage === 'descartado') return; // lead descartado: cortar la cadena
+  // Gate duro por estado: si el lead ya está fuera o el objetivo se cumplió, no perseguir.
+  if (['descartado', 'agendado', 'en_conversion'].includes(conv.stage)) {
+    await redis.del(fuKey(conv.id)); // cortar la cadena de seguimientos
+    return;
+  }
   const steps = Array.isArray(account.followups) ? account.followups : [];
   const step = conv.followup_step || 0;
   const stepConf = steps[step];
@@ -848,6 +853,24 @@ export async function processFollowup(job) {
   if (windowDelay > 0) {
     await rearmFollowup(conversationId, windowDelay);
     return;
+  }
+
+  // Chequeo con IA: mira los últimos mensajes y decide si aún conviene el seguimiento
+  // (p.ej. el lead ya agendó/compró, dijo que no, se despidió). Ante fallo, no bloquea.
+  if (account.followup_ai_check) {
+    let decision = { seguir: true };
+    try {
+      decision = await shouldFollowup({ account, provider, conversation: conv, history });
+    } catch (err) {
+      await logEvent('followup_check_error', { conv: conv.id, error: err.message });
+    }
+    if (decision.usage) await recordUsage(conv.account_id, conv.id, provider, decision.model, decision.usage, 'seguimiento', variantId, setterId);
+    if (!decision.seguir) {
+      await logEvent('followup_omitido_ia', { conv: conv.id, stage: conv.stage, motivo: decision.motivo || '' });
+      await q(`UPDATE conversations SET followup_state = 'detenido_ia', updated_at = now() WHERE id = $1`, [conv.id]);
+      await redis.del(fuKey(conv.id)); // parar la cadena (el ciclo normal la reanuda si el lead escribe)
+      return;
+    }
   }
 
   const snapshotId = await lastInboundId(conversationId);

@@ -229,6 +229,14 @@ export default function SetterEdit() {
       {tab === 'seguimientos' && (
         <div className="max-w-2xl space-y-4">
           <Banner tone="info">Si el lead deja de responder, el setter retoma la conversación solo. Cada paso se cancela si el lead contesta. Instagram/WhatsApp solo permiten responder dentro de las 24 h del último mensaje del lead.</Banner>
+          <Card className="p-5">
+            <Toggle
+              checked={s.followup_ai_check !== false}
+              onChange={(v) => set({ followup_ai_check: v })}
+              label="🧠 Revisar con IA antes de cada seguimiento"
+              description="Lee los últimos mensajes y decide si aún conviene: no persigue a quien ya agendó, ya compró, dijo que no le interesa o se despidió. (Los que ya agendaron o se descartaron se saltan siempre, sin coste.)"
+            />
+          </Card>
           {followups.map((f, i) => (
             <Card key={i} className="p-5">
               <div className="mb-3 flex items-center justify-between">

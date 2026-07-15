@@ -142,3 +142,36 @@ export async function generateReply({ account, provider, conversation, history, 
   if (!parsed.mensajes.length) throw new Error('el agente no generó mensajes');
   return { ...parsed, usage, model: modelUsed };
 }
+
+// Antes de enviar un seguimiento: mira los últimos mensajes y decide si aún tiene sentido.
+// Devuelve { seguir, motivo, usage, model }. Ante duda de formato, seguir=true (no bloquea).
+export async function shouldFollowup({ account, provider, conversation, history }) {
+  const model = account.model || provider.default_model;
+  const system =
+    `Eres el supervisor de un asistente comercial por chat. El lead dejó de responder y toca decidir ` +
+    `si conviene enviarle AHORA otro mensaje de SEGUIMIENTO.\n` +
+    `Responde seguir=false (NO enviar) si de la conversación se ve que YA NO PROCEDE: el lead ya agendó/reservó, ` +
+    `ya compró o completó el objetivo, dijo claramente que no le interesa, se despidió de forma definitiva, ` +
+    `pidió que no le escriban, o la charla está cerrada.\n` +
+    `Responde seguir=true si el lead solo se quedó callado a mitad y un recordatorio breve y amable puede ayudar.\n` +
+    `Responde SOLO con JSON: {"seguir": true|false, "motivo": "muy breve"}.`;
+  const messages = [
+    { role: 'system', content: system },
+    ...historyToMessages(history),
+    { role: 'user', content: '(el lead no ha respondido) ¿Enviamos otro seguimiento? Responde el JSON.' },
+  ];
+  const { content, usage } = await chatCompletion({ provider, model, temperature: 0, messages, maxTokens: 120, json: true });
+  let seguir = true;
+  let motivo = '';
+  try {
+    const j = JSON.parse(content);
+    const v = j.seguir;
+    seguir = !(v === false || v === 'false' || v === 'no' || v === 0);
+    motivo = String(j.motivo || '').slice(0, 200);
+  } catch {
+    // sin JSON válido: no bloquear por un fallo de formato (fail-open)
+    seguir = true;
+    motivo = 'sin_json';
+  }
+  return { seguir, motivo, usage, model };
+}

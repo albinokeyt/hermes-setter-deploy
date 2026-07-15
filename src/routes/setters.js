@@ -5,13 +5,13 @@ import { requireAdmin, requireManageAgents, canAccessAccount } from '../lib/sess
 const ADMIN_EDITABLE = [
   'name', 'bot_enabled', 'accepts_leads', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
-  'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups',
+  'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
 ];
 const USER_EDITABLE = [
   'name', 'bot_enabled', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
-  'temperature', 'debounce_seconds', 'max_msgs', 'followups',
+  'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
 ];
 const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags']);
 
