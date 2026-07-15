@@ -39,8 +39,10 @@ export default function Layout() {
   if (!me) return <div className="py-24 text-center text-sm text-slate-400">Cargando…</div>;
 
   const isAdmin = me.role === 'admin';
-  // Solo mensajes: si la IA de su conexión está apagada (SaaS) o su usuario está limitado.
-  const restricted = !isAdmin && (me.ai_enabled === false || me.can_manage_agents === false);
+  // Solo mensajes: únicamente si el usuario está limitado a mensajes (can_manage_agents=false).
+  // La IA apagada ya NO oculta la conexión: el dueño puede verla y configurarla; ese flag solo
+  // controla si el bot responde (lo activa la agencia).
+  const restricted = !isAdmin && me.can_manage_agents === false;
   const nav = [
     { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
     { to: '/conversaciones', label: 'Conversaciones', icon: MessagesSquare },

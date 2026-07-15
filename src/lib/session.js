@@ -99,15 +99,8 @@ export async function requireManageAgents(req, reply) {
     reply.code(403).send({ error: 'Tu usuario solo tiene acceso a los mensajes, no a configurar los agentes' });
     return false;
   }
-  // La IA debe estar activada en su conexión (modelo SaaS: el admin la habilita).
-  const accId = req.auth?.accountId;
-  if (accId) {
-    const acc = await one(`SELECT ai_enabled FROM accounts WHERE id = $1`, [accId]);
-    if (acc && acc.ai_enabled === false) {
-      reply.code(403).send({ error: 'La IA no está activada en esta conexión' });
-      return false;
-    }
-  }
+  // Nota: ai_enabled ya NO bloquea configurar la conexión (el dueño puede verla y montarla).
+  // Ese flag solo controla si el BOT RESPONDE (gate en el pipeline): la agencia lo activa.
   return true;
 }
 
@@ -123,22 +116,14 @@ export function accountScope(req) {
   return { all: false, accountId, denied: false };
 }
 
-// Conjunto de conexiones a las que un NO-admin tiene acceso: su cuenta de sesión MÁS
-// las conexiones que POSEE por correo (owner_email) — para clientes con varias subcuentas.
-// admin → null (todas). Devuelve array (vacío = sin acceso). Async.
+// Conexiones a las que un NO-admin tiene acceso. La subcuenta MANDA: el portal está ligado a la
+// subcuenta ACTIVA (la que certifica el SSO de GHL) y ve SOLO esa conexión. Cambiar de subcuenta
+// en GHL cambia la sesión → cambia la conexión. Así no se mezclan datos de varias subcuentas.
+// admin → null (todas). Devuelve array (vacío = sin acceso). Async (se mantiene por compatibilidad).
 export async function accessibleAccountIds(req) {
   if (req.auth?.role === 'admin') return null;
-  const ids = new Set();
-  if (req.auth?.accountId) ids.add(Number(req.auth.accountId));
-  if (req.auth?.portalUserId) {
-    const pu = await one(`SELECT email FROM portal_users WHERE id = $1`, [req.auth.portalUserId]);
-    const email = String(pu?.email || '').trim().toLowerCase();
-    if (email) {
-      const rows = await q(`SELECT id FROM accounts WHERE lower(owner_email) = $1`, [email]);
-      for (const r of rows) ids.add(Number(r.id));
-    }
-  }
-  return [...ids];
+  const accId = req.auth?.accountId ? Number(req.auth.accountId) : null;
+  return accId ? [accId] : [];
 }
 
 // ¿este no-admin puede acceder a esta cuenta? admin siempre. Async.
