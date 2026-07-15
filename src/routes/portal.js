@@ -110,6 +110,25 @@ async function startPortalSession(reply, account, name, email) {
   setSessionCookie(reply, token, { portal: true });
 }
 
+// Si la sesión actual pertenece a OTRA subcuenta que la que abre el menú (loc), la borra.
+// Evita mostrar la conexión equivocada al cambiar de subcuenta en GHL (la sesión "se queda pegada").
+// No toca sesiones de admin (accountId null) ni cuando coincide la subcuenta.
+async function clearStaleSession(req, reply, loc) {
+  const token = req.cookies?.hermes_session;
+  if (!token || !loc) return;
+  try {
+    const raw = await redis.get(`sess:${token}`);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (!s || !s.accountId) return; // admin u otra sesión sin cuenta: no tocar
+    const acc = await one(`SELECT location_id FROM accounts WHERE id = $1`, [s.accountId]);
+    if (acc && acc.location_id && String(acc.location_id) !== String(loc)) {
+      await redis.del(`sess:${token}`);
+      reply.clearCookie('hermes_session', { path: '/' });
+    }
+  } catch {}
+}
+
 // [Solo SSO] Se eliminaron sendToRegister() y resolveEntry(): creaban sesión a partir del correo
 // de la URL/formulario (falsificable). La ÚNICA vía de identidad es ahora /api/portal/sso, donde
 // GHL entrega el correo CIFRADO y no se puede suplantar. La sesión se emite solo en startPortalSession
@@ -127,7 +146,10 @@ export default async function portalRoutes(app) {
   // (era falsificable: cualquiera ponía email=owner). Mandamos a la app embebida, que verifica
   // al usuario con GHL por SSO cifrado. Los enlaces de menú antiguos siguen funcionando: acaban
   // en la misma verificación segura.
-  app.get('/ghl-portal', async (req, reply) => reply.redirect('/'));
+  app.get('/ghl-portal', async (req, reply) => {
+    await clearStaleSession(req, reply, String(req.query?.location_id || ''));
+    return reply.redirect('/');
+  });
 
   // Link de AGENCIA (uno para todas las subcuentas). GHL rellena location_id/email/name.
   // 1) subcuenta sin app conectada → la manda a instalar/conectar (OAuth).
@@ -148,6 +170,9 @@ export default async function portalRoutes(app) {
     if (!loc) {
       return reply.code(400).type('text/html; charset=utf-8').send('<h3 style="font-family:sans-serif">Falta la subcuenta. Abre este enlace desde el menú de GHL.</h3>');
     }
+
+    // Si venías con sesión de OTRA subcuenta, se borra para no mostrarte la conexión equivocada.
+    await clearStaleSession(req, reply, loc);
 
     let account = await one(`SELECT * FROM accounts WHERE location_id = $1`, [loc]);
 
