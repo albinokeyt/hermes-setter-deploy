@@ -36,6 +36,39 @@ export async function exchangeCode(code) {
   });
 }
 
+// Mintea un token de SUBCUENTA a partir de un token de AGENCIA. Necesario cuando la app se
+// instala a nivel agencia: el code se cambia por un token de agencia (companyId, sin locationId)
+// y con esto se obtiene el de la subcuenta concreta. La respuesta trae su propio refresh_token.
+export async function getLocationToken(agencyAccessToken, companyId, locationId) {
+  const res = await fetch(`${GHL_API}/oauth/locationToken`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${agencyAccessToken}`,
+      version: V_CONTACTS,
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'application/json',
+    },
+    body: new URLSearchParams({ companyId, locationId }).toString(),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new GhlError(`oauth/locationToken fallo (${res.status})`, res.status, body);
+  return body;
+}
+
+// Intercambia el code y garantiza un token de SUBCUENTA. Si GHL devuelve uno de agencia
+// (sin locationId) y sabemos qué subcuenta es (knownLocationId), lo convierte automáticamente.
+export async function exchangeCodeForLocation(code, knownLocationId = '') {
+  const tok = await exchangeCode(code);
+  if (tok.locationId) return tok;
+  const companyId = tok.companyId || tok.company_id;
+  if (companyId && knownLocationId && tok.access_token) {
+    const locTok = await getLocationToken(tok.access_token, companyId, String(knownLocationId));
+    if (locTok.locationId) return locTok;
+  }
+  return tok; // sigue sin locationId → saveTokens lanza el error explicativo
+}
+
 export async function saveTokens(tok) {
   if (!tok.locationId) throw new GhlError('el token recibido no trae locationId (instala la app en una subcuenta, no a nivel agencia)', 400, tok);
   const expiresAt = new Date(Date.now() + (tok.expires_in || 86400) * 1000 - 60_000);

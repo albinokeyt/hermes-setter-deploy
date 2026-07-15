@@ -168,12 +168,17 @@ export default async function portalRoutes(app) {
   // 2) app conectada pero sin setter → crea el setter y entra (pide nombre/correo si falta).
   // 3) setter ya existe → entra a su panel (solo correos autorizados).
   app.get('/ghl-app', async (req, reply) => {
-    const { key, location_id, email, name } = req.query || {};
-    const okKey = key && key === (await agencyKey());
+    const { key, location_id, email, name, entry } = req.query || {};
+    let loc = String(location_id || '');
+    let okKey = key && key === (await agencyKey());
+    // Vuelta tras OAuth: token de un solo uso (evita exponer la agencyKey en la URL).
+    if (!okKey && entry) {
+      const stored = await redis.get(`appentry:${String(entry)}`);
+      if (stored) { await redis.del(`appentry:${String(entry)}`); okKey = true; if (!loc) loc = stored; }
+    }
     if (!okKey) {
       return reply.code(403).type('text/html; charset=utf-8').send('<h3 style="font-family:sans-serif">Enlace no válido. Pide al administrador el enlace del menú.</h3>');
     }
-    const loc = String(location_id || '');
     if (!loc) {
       return reply.code(400).type('text/html; charset=utf-8').send('<h3 style="font-family:sans-serif">Falta la subcuenta. Abre este enlace desde el menú de GHL.</h3>');
     }
@@ -205,7 +210,8 @@ export default async function portalRoutes(app) {
       return reply.code(200).type('text/html; charset=utf-8').send('<h3 style="font-family:sans-serif">La app aún no está configurada. Contacta con la agencia para activarla.</h3>');
     }
     const nonce = crypto.randomBytes(16).toString('hex');
-    await redis.setex(`oauthstate:${nonce}`, 600, `selfserve:${await agencyKey()}`);
+    // El state lleva la subcuenta: si GHL devuelve token de agencia, el callback mintea el de esta subcuenta.
+    await redis.setex(`oauthstate:${nonce}`, 600, `selfserve:${await agencyKey()}:${loc}`);
     const redirect = `${config.appBaseUrl}/api/oauth/callback`;
     const url =
       'https://marketplace.gohighlevel.com/oauth/chooselocation' +
@@ -213,7 +219,23 @@ export default async function portalRoutes(app) {
       `&client_id=${encodeURIComponent(creds.client_id)}` +
       `&scope=${OAUTH_SCOPES.map(encodeURIComponent).join('%20')}` +
       `&state=${nonce}`;
-    return reply.redirect(url);
+    // OJO: este menú se abre DENTRO de un iframe de GHL, y marketplace.gohighlevel.com prohíbe
+    // cargarse en iframe. Por eso no redirigimos aquí: servimos nuestra página (sí carga en el
+    // iframe) con un botón que abre la conexión FUERA del iframe (pestaña nueva / ventana superior).
+    const hUrl = url.replace(/&/g, '&amp;');
+    return reply.type('text/html; charset=utf-8').send(
+      `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+       <div style="font-family:system-ui,sans-serif;max-width:460px;margin:10vh auto;padding:0 24px;text-align:center;color:#334155">
+         <div style="font-size:40px">🔌</div>
+         <h2 style="color:#0f172a;margin:.4em 0">Conecta tu subcuenta</h2>
+         <p style="line-height:1.6;color:#475569">Para activar el asistente, autoriza la app en GoHighLevel. Se abrirá en una pestaña nueva; al terminar, vuelve aquí y recarga.</p>
+         <a href="${hUrl}" target="_blank" rel="noopener"
+            style="display:inline-block;margin-top:1em;background:#7c3aed;color:#fff;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:12px">
+           Conectar con GoHighLevel →
+         </a>
+         <p style="font-size:12px;color:#94a3b8;margin-top:1.6em">¿No se abre? Copia y pega este enlace en tu navegador:<br><span style="word-break:break-all">${hUrl}</span></p>
+       </div>`
+    );
   });
 
   app.post('/api/portal/register', async (req, reply) => {
