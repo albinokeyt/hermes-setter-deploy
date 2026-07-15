@@ -140,6 +140,24 @@ export default function Dashboard() {
             </Card>
           </Link>
         ))}
+        {/* Comentarios de Instagram — rellenan la fila de etiquetas y enlazan al Archivo */}
+        {[
+          { key: 'comentarios', label: '💬 Comentarios', value: t.comentarios ?? 0, accent: 'text-violet-600', desc: 'Comentarios de Instagram recibidos por webhook en el rango.' },
+          { key: 'comentarios_nuevos', label: '✨ De nuevos usuarios', value: t.comentarios_nuevos ?? 0, accent: 'text-fuchsia-600', desc: 'Comentarios cuyo autor comenta por primera vez (su primer comentario).' },
+          { key: 'comentaristas', label: '👥 Comentaristas', value: t.comentaristas ?? 0, accent: 'text-blue-600', desc: 'Personas distintas que comentaron en el rango (nuevas + recurrentes).' },
+        ].map((cm) => (
+          <Link key={cm.key} to="/archivo" className="group">
+            <Card className="p-4 transition group-hover:border-violet-300">
+              <div className="flex items-center gap-1.5">
+                <span className="truncate text-xs font-medium text-slate-500">{cm.label}</span>
+                <span className="ml-auto shrink-0" title={cm.desc} onClick={(e) => e.preventDefault()}>
+                  <Info size={13} className="text-slate-300 hover:text-slate-500" />
+                </span>
+              </div>
+              <div className={`mt-1.5 text-2xl font-bold ${cm.accent}`}>{cm.value}</div>
+            </Card>
+          </Link>
+        ))}
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-5">
@@ -167,6 +185,8 @@ export default function Dashboard() {
                 <Area type="monotone" dataKey="enviados" name="Enviados" stroke="#10b981" strokeWidth={2} fill="url(#gOut)" />
                 <Line type="monotone" dataKey="agendas" name="Agendas" stroke="#0d9488" strokeWidth={2.5} dot={{ r: 2.5 }} />
                 <Line type="monotone" dataKey="leads_nuevos" name="Leads nuevos" stroke="#3b82f6" strokeWidth={2} strokeDasharray="5 3" dot={false} />
+                <Line type="monotone" dataKey="comentarios" name="Comentarios" stroke="#8b5cf6" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="comentarios_nuevos" name="Coment. nuevos" stroke="#d946ef" strokeWidth={2} strokeDasharray="4 3" dot={false} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>

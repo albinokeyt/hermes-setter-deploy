@@ -35,6 +35,9 @@ export default async function dashboardRoutes(app) {
       : '';
     const condA = inIds ? `AND ap.account_id IN (${inIds})` : '';
     const condU = inIds ? `AND u.account_id IN (${inIds})` : '';
+    const condCm = inIds ? `AND cm.account_id IN (${inIds})` : '';
+    // Identidad del comentarista: contacto de GHL → nombre → id de la fila (para "nuevos usuarios")
+    const CM_UID = `COALESCE(NULLIF(cm.author_id,''), NULLIF(cm.author,''), cm.id::text)`;
 
     const totals = await one(`
       SELECT
@@ -45,7 +48,13 @@ export default async function dashboardRoutes(app) {
         (SELECT COUNT(*)::int FROM messages m WHERE m.direction = 'outbound' AND m.created_at BETWEEN $1 AND $2 ${condM}) AS enviados,
         (SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'agendado' AND ap.created_at BETWEEN $1 AND $2 ${condA}) AS agendas,
         (SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'cancelado' AND ap.created_at BETWEEN $1 AND $2 ${condA}) AS canceladas,
-        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2 ${condU}) AS gasto
+        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2 ${condU}) AS gasto,
+        (SELECT COUNT(*)::int FROM comments cm WHERE cm.created_at BETWEEN $1 AND $2 ${condCm}) AS comentarios,
+        (SELECT COUNT(DISTINCT ${CM_UID})::int FROM comments cm WHERE cm.created_at BETWEEN $1 AND $2 ${condCm}) AS comentaristas,
+        (SELECT COUNT(*)::int FROM (
+            SELECT MIN(cm.created_at) AS first_at FROM comments cm WHERE true ${condCm}
+            GROUP BY cm.account_id, ${CM_UID}
+          ) f WHERE f.first_at BETWEEN $1 AND $2) AS comentarios_nuevos
     `, P);
 
     // Estado actual del pipeline (no depende del rango)
@@ -59,7 +68,12 @@ export default async function dashboardRoutes(app) {
         COALESCE((SELECT COUNT(*)::int FROM messages m WHERE m.direction='inbound' AND m.created_at::date = d ${condM}), 0) AS recibidos,
         COALESCE((SELECT COUNT(*)::int FROM messages m WHERE m.direction='outbound' AND m.created_at::date = d ${condM}), 0) AS enviados,
         COALESCE((SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'agendado' AND ap.created_at::date = d ${condA}), 0) AS agendas,
-        COALESCE((SELECT COUNT(*)::int FROM conversations c2 WHERE c2.created_at::date = d ${condC}), 0) AS leads_nuevos
+        COALESCE((SELECT COUNT(*)::int FROM conversations c2 WHERE c2.created_at::date = d ${condC}), 0) AS leads_nuevos,
+        COALESCE((SELECT COUNT(*)::int FROM comments cm WHERE cm.created_at::date = d ${condCm}), 0) AS comentarios,
+        COALESCE((SELECT COUNT(*)::int FROM (
+            SELECT MIN(cm.created_at)::date AS fd FROM comments cm WHERE true ${condCm}
+            GROUP BY cm.account_id, ${CM_UID}
+          ) f WHERE f.fd = d), 0) AS comentarios_nuevos
       FROM generate_series($1::date, $2::date, interval '1 day') AS d
       ORDER BY d
     `, P);
