@@ -7,13 +7,15 @@ const ADMIN_EDITABLE = [
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
+  'calendar_ids',
 ];
 const USER_EDITABLE = [
   'name', 'bot_enabled', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
+  'calendar_ids',
 ];
-const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags']);
+const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids']);
 
 async function loadSetterScoped(req, setterId) {
   const setter = await one(`SELECT * FROM setters WHERE id = $1`, [setterId]);

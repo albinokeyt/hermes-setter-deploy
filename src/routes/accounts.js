@@ -18,8 +18,6 @@ const USER_EDITABLE = [
   'prompt_identity', 'prompt_business', 'prompt_flow', 'followups', 'debounce_seconds', 'max_msgs',
   'active_hours', 'timezone', 'temperature', 'bot_enabled', 'test_mode', 'test_tag', 'auto_handoff_minutes',
   'required_tags', 'required_tags_mode',
-  // el dueño elige qué calendarios cuentan como "agenda" (las citas se detectan por webhook igual)
-  'calendar_id', 'calendar_ids',
 ];
 
 const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags', 'ctas']);

@@ -303,27 +303,7 @@ export default function AccountEdit() {
             </Select>
 
             <div className="border-t border-slate-100 pt-4">
-              <span className="mb-2 block text-sm font-medium text-slate-700">📅 Calendarios que cuentan como "agenda"</span>
-              {(() => {
-                const selected = Array.isArray(acc.calendar_ids) ? acc.calendar_ids : [];
-                const list = calendars?.calendars || [];
-                const toggleCal = (cid) => set({ calendar_ids: selected.includes(cid) ? selected.filter((x) => x !== cid) : [...selected, cid] });
-                return (
-                  <div className="flex flex-wrap gap-2">
-                    {list.length === 0 && <span className="text-xs text-slate-400">No hay calendarios que mostrar todavía.</span>}
-                    {list.map((c) => {
-                      const on = selected.includes(c.id);
-                      return (
-                        <button key={c.id} type="button" onClick={() => toggleCal(c.id)}
-                          className={`rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${on ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'}`}>
-                          {on ? '✓ ' : ''}{c.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-              <p className="mt-1.5 text-xs text-slate-400">Cuando alguien reserve (o cancele) en cualquiera de estos calendarios, el lead pasa a <b>Agendado</b> / <b>Agenda cancelada</b>. Si no marcas ninguno, cuenta cualquier cita de la subcuenta.</p>
+              <p className="text-xs text-slate-400">📅 <b>Calendarios «agenda»</b>: se eligen <b>por setter</b> (cada setter marca los suyos en su pestaña <b>Comportamiento</b>), para medir bien qué setter agenda. Un setter cuyo objetivo no sea agendar los deja vacíos. No hay ajuste de calendario a nivel de conexión.</p>
             </div>
 
             {acc.mode === 'oauth' ? (

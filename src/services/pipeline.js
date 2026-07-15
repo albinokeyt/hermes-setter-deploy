@@ -144,6 +144,8 @@ export function mergeSetter(account, s) {
     debounce_seconds: s.debounce_seconds,
     followups: Array.isArray(s.followups) && s.followups.length ? s.followups : account.followups,
     followup_ai_check: s.followup_ai_check !== false, // por defecto ON
+    // calendarios "agenda" del setter (sin respaldo: vacío = este setter no mide agendas)
+    calendar_ids: Array.isArray(s.calendar_ids) ? s.calendar_ids : [],
     required_tags: s.required_tags,
     required_tags_mode: s.required_tags_mode,
     excluded_tags: s.excluded_tags, // filtro negativo del setter (exclude_tag sigue siendo de la conexión)
@@ -526,44 +528,70 @@ export async function handleAppointmentEvent(account, type, p) {
   const status = cancelled ? 'cancelado' : 'agendado';
   const startTime = appt.startTime || appt.start_time || null;
 
-  // Si el setter tiene calendarios elegidos, solo cuentan las citas de ESOS calendarios.
-  const watched = Array.isArray(account.calendar_ids) ? account.calendar_ids.filter(Boolean) : [];
-  if (watched.length && calendarId && !watched.includes(calendarId)) {
-    await logEvent('cita_otro_calendario', { account: account.id, contactId, calendarId, vigilados: watched });
-    return;
-  }
-
-  const conv = contactId
-    ? await one(
-        `SELECT * FROM conversations WHERE account_id = $1 AND ghl_contact_id = $2 ORDER BY updated_at DESC LIMIT 1`,
-        [account.id, contactId]
-      )
+  // ¿Ya teníamos registrada esta cita? Entonces es un update/cancel: se reconcilia contra la
+  // conversación/setter con que se RECLAMÓ al crearla (sticky). NO se re-filtra por calendario ni se
+  // re-deriva por "más reciente" — así una cancelación siempre cierra y no marca a otro setter
+  // (contactos con varias conversaciones: IG + WhatsApp, etc.).
+  const existing = ghlId
+    ? await one(`SELECT id, conversation_id FROM appointments WHERE ghl_appointment_id = $1`, [String(ghlId)])
     : null;
 
-  if (ghlId) {
+  let convId = existing?.conversation_id || null;
+
+  if (existing) {
     await q(
-      `INSERT INTO appointments (account_id, conversation_id, setter_id, ghl_appointment_id, ghl_contact_id, calendar_id, title, status, start_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (ghl_appointment_id) WHERE ghl_appointment_id IS NOT NULL DO UPDATE SET
-         status = EXCLUDED.status,
-         start_time = COALESCE(EXCLUDED.start_time, appointments.start_time),
-         conversation_id = COALESCE(appointments.conversation_id, EXCLUDED.conversation_id),
-         setter_id = COALESCE(appointments.setter_id, EXCLUDED.setter_id),
-         updated_at = now()`,
-      [account.id, conv?.id || null, conv?.setter_id || null, String(ghlId), contactId, calendarId || null, appt.title || '', status, startTime]
+      `UPDATE appointments SET status = $2, start_time = COALESCE($3, start_time), updated_at = now() WHERE id = $1`,
+      [existing.id, status, startTime]
     );
   } else {
-    await q(
-      `INSERT INTO appointments (account_id, conversation_id, setter_id, ghl_contact_id, calendar_id, title, status, start_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [account.id, conv?.id || null, conv?.setter_id || null, contactId, calendarId || null, appt.title || '', status, startTime]
-    );
+    // Cita NUEVA: solo se registra si el setter que ATENDIÓ la reclama (su calendario). SIN respaldo:
+    // sin conversación, o setter sin calendarios (su objetivo NO es agendar), o calendario ajeno → NO cuenta.
+    const conv = contactId
+      ? await one(`SELECT id, setter_id FROM conversations WHERE account_id = $1 AND ghl_contact_id = $2 ORDER BY updated_at DESC LIMIT 1`, [account.id, contactId])
+      : null;
+    let setterCals = [];
+    if (conv?.setter_id) {
+      const st = await one(`SELECT calendar_ids FROM setters WHERE id = $1`, [conv.setter_id]);
+      setterCals = Array.isArray(st?.calendar_ids) ? st.calendar_ids.filter(Boolean) : [];
+    }
+    const cuenta = setterCals.length > 0 && calendarId && setterCals.includes(calendarId);
+    if (!cuenta) {
+      await logEvent('cita_no_cuenta', {
+        account: account.id, contactId, calendarId, setter: conv?.setter_id || null,
+        motivo: !conv ? 'sin_conversacion' : (!conv.setter_id ? 'sin_setter' : (!setterCals.length ? 'setter_no_agenda' : (!calendarId ? 'sin_calendario_en_evento' : 'otro_calendario'))),
+      });
+      return;
+    }
+    convId = conv.id;
+    if (ghlId) {
+      await q(
+        `INSERT INTO appointments (account_id, conversation_id, setter_id, ghl_appointment_id, ghl_contact_id, calendar_id, title, status, start_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (ghl_appointment_id) WHERE ghl_appointment_id IS NOT NULL DO UPDATE SET
+           status = EXCLUDED.status,
+           start_time = COALESCE(EXCLUDED.start_time, appointments.start_time),
+           conversation_id = COALESCE(appointments.conversation_id, EXCLUDED.conversation_id),
+           setter_id = COALESCE(appointments.setter_id, EXCLUDED.setter_id),
+           updated_at = now()`,
+        [account.id, conv.id, conv.setter_id, String(ghlId), contactId, calendarId || null, appt.title || '', status, startTime]
+      );
+    } else {
+      await q(
+        `INSERT INTO appointments (account_id, conversation_id, setter_id, ghl_contact_id, calendar_id, title, status, start_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [account.id, conv.id, conv.setter_id, contactId, calendarId || null, appt.title || '', status, startTime]
+      );
+    }
   }
 
-  if (conv) {
-    await applyStage(conv, account, cancelled ? 'agenda_cancelada' : 'agendado',
-      cancelled ? 'cita cancelada en el calendario de GHL' : 'cita agendada en el calendario de GHL');
-    if (!cancelled) await redis.del(fuKey(conv.id)); // ya agendó: fuera seguimientos pendientes
+  // Aplicar el estado a la conversación ACREDITADA (la que reclamó la cita), no a la más reciente.
+  if (convId) {
+    const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [convId]);
+    if (conv) {
+      await applyStage(conv, account, cancelled ? 'agenda_cancelada' : 'agendado',
+        cancelled ? 'cita cancelada en el calendario de GHL' : 'cita agendada en el calendario de GHL');
+      if (!cancelled) await redis.del(fuKey(conv.id)); // ya agendó: fuera seguimientos pendientes
+    }
   }
   await logEvent(cancelled ? 'cita_cancelada' : 'cita_agendada', {
     account: account.id, contactId, appointmentId: ghlId, startTime, statusRaw, tipo: type,

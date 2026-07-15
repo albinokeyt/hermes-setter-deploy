@@ -28,6 +28,7 @@ export default function SetterEdit() {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [showTags, setShowTags] = useState(false);
+  const [calendars, setCalendars] = useState(null);
 
   const load = () => api.get(`/api/setters/${id}`).then((r) => { setS(r); setShowTags((r.required_tags || []).length > 0 || (r.excluded_tags || []).length > 0); }).catch((e) => setError(e.message));
   useEffect(() => {
@@ -35,6 +36,10 @@ export default function SetterEdit() {
     // admin ve todas las APIs; un usuario solo las habilitadas para usuarios (sin claves).
     api.get(isAdmin ? '/api/providers' : '/api/user-providers').then(setProviders).catch(() => {});
   }, [id, isAdmin]);
+  // Calendarios de la conexión del setter (para elegir cuáles cuentan como agenda).
+  useEffect(() => {
+    if (s?.account_id) api.get(`/api/accounts/${s.account_id}/calendars`).then(setCalendars).catch(() => setCalendars({ calendars: [] }));
+  }, [s?.account_id]);
 
   if (!s) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 
@@ -155,6 +160,30 @@ export default function SetterEdit() {
       {tab === 'comportamiento' && (
         <Card className="max-w-2xl space-y-6 p-6">
           <Input label={`Espera antes de responder (debounce): ${s.debounce_seconds} s`} type="range" min="10" max="120" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Number(e.target.value) })} className="!p-0 accent-violet-600" hint="El bot espera este silencio y responde a todo junto, como una persona." />
+
+          <div className="border-t border-slate-100 pt-5">
+            <span className="mb-1 block text-sm font-medium text-slate-700">📅 Calendarios que cuentan como «agenda» de este setter</span>
+            <p className="mb-2 text-xs text-slate-400">Si el objetivo de este setter es <b>agendar</b>, marca SUS calendarios: solo esas reservas cuentan como agenda para él. Si su objetivo es otro (enviar un link, etc.), déjalo <b>vacío</b> → este setter no mide agendas. La agenda la reclama el setter que atendió la conversación, solo si la reserva cae en un calendario suyo.</p>
+            {(() => {
+              const selected = Array.isArray(s.calendar_ids) ? s.calendar_ids : [];
+              const list = calendars?.calendars || [];
+              const toggleCal = (cid) => set({ calendar_ids: selected.includes(cid) ? selected.filter((x) => x !== cid) : [...selected, cid] });
+              return (
+                <div className="flex flex-wrap gap-2">
+                  {list.length === 0 && <span className="text-xs text-slate-400">{calendars === null ? 'Cargando calendarios…' : 'No hay calendarios que mostrar (conecta la subcuenta y revisa el scope de calendarios).'}</span>}
+                  {list.map((c) => {
+                    const on = selected.includes(c.id);
+                    return (
+                      <button key={c.id} type="button" onClick={() => toggleCal(c.id)}
+                        className={`rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${on ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'}`}>
+                        {on ? '✓ ' : ''}{c.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
 
           {isAdmin && (
             <div className="border-t border-slate-100 pt-5">
