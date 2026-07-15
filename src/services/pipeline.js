@@ -830,8 +830,10 @@ export async function processFollowup(job) {
   if (!conv || !account || !provider) return;
   if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) return;
 
-  // Gate duro por estado: si el lead ya está fuera o el objetivo se cumplió, no perseguir.
-  if (['descartado', 'agendado', 'en_conversion'].includes(conv.stage)) {
+  // Gate duro por estado (sin coste): descartado (fuera) o agendado (objetivo cumplido) → nunca.
+  // El resto (en_conversion, calificado, etc.) lo decide el chequeo IA leyendo los mensajes,
+  // porque un lead que pidió el enlace pero se quedó callado sí conviene retomarlo.
+  if (['descartado', 'agendado'].includes(conv.stage)) {
     await redis.del(fuKey(conv.id)); // cortar la cadena de seguimientos
     return;
   }
