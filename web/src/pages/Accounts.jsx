@@ -107,7 +107,7 @@ export default function Accounts() {
           <form onSubmit={createSetter} className="flex items-end gap-3">
             <div className="w-64">
               <Select label="Conexión" value={connFor || accounts[0]?.id || ''} onChange={(e) => setConnFor(Number(e.target.value))}>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.alias || a.name}</option>)}
               </Select>
             </div>
             <div className="flex-1"><Input label="Nombre del setter" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Ventas high-ticket" autoFocus /></div>
@@ -132,7 +132,7 @@ export default function Accounts() {
                     <ChevronRight size={18} className={`shrink-0 text-slate-400 transition ${isOpen ? 'rotate-90' : ''}`} />
                     <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50 text-violet-600"><Building2 size={17} /></span>
                     <span>
-                      <span className="block text-sm font-bold text-slate-900">{a.name}</span>
+                      <span className="block text-sm font-bold text-slate-900">{a.alias || a.name}</span>
                       <span className="flex items-center gap-1.5 text-xs text-slate-400">
                         {connected ? <Link2 size={12} className="text-emerald-500" /> : <Link2Off size={12} className="text-amber-500" />}
                         {connected ? `GHL conectado${a.location_id ? ` · ${a.location_id.slice(0, 8)}…` : ''}` : 'Sin conectar a GHL'}

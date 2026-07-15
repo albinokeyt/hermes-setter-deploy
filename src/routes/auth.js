@@ -33,8 +33,8 @@ export default async function authRoutes(app) {
       ai_enabled: true, // admin siempre; para el resto se resuelve por su conexión
     };
     if (base.account_id) {
-      const acc = await one(`SELECT name, ai_enabled FROM accounts WHERE id = $1`, [base.account_id]);
-      base.account_name = acc?.name || null;
+      const acc = await one(`SELECT name, alias, ai_enabled FROM accounts WHERE id = $1`, [base.account_id]);
+      base.account_name = (acc?.alias || acc?.name) || null;
       if (base.role !== 'admin') base.ai_enabled = acc?.ai_enabled !== false;
     }
     if (req.auth?.portal) {

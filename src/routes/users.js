@@ -8,10 +8,10 @@ export default async function userRoutes(app) {
 
   app.get('/api/users', async () => {
     const panel = await q(`
-      SELECT u.id, u.username, u.role, u.account_id, u.can_manage_agents, u.created_at, a.name AS account_name
+      SELECT u.id, u.username, u.role, u.account_id, u.can_manage_agents, u.created_at, COALESCE(NULLIF(a.alias,''), a.name) AS account_name
       FROM users u LEFT JOIN accounts a ON a.id = u.account_id ORDER BY u.id`);
     const portal = await q(`
-      SELECT p.id, p.name, p.email, p.account_id, p.last_seen_at, a.name AS account_name
+      SELECT p.id, p.name, p.email, p.account_id, p.last_seen_at, COALESCE(NULLIF(a.alias,''), a.name) AS account_name
       FROM portal_users p JOIN accounts a ON a.id = p.account_id
       ORDER BY p.last_seen_at DESC LIMIT 100`);
     return { panel, portal };

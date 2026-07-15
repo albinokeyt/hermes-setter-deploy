@@ -5,7 +5,7 @@ import { requireAdmin, scopedAccountId, requireManageAgents, accessibleAccountId
 import * as ghl from '../services/ghl.js';
 
 const ADMIN_EDITABLE = [
-  'name', 'mode', 'pit_token', 'location_id', 'channels', 'prompt_identity', 'prompt_business', 'prompt_flow',
+  'name', 'alias', 'mode', 'pit_token', 'location_id', 'channels', 'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'active_hours',
   'timezone', 'sync_tags', 'auto_handoff', 'bot_enabled', 'ai_enabled', 'test_mode', 'test_tag', 'exclude_tag',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
@@ -14,6 +14,7 @@ const ADMIN_EDITABLE = [
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
 const USER_EDITABLE = [
+  'alias',
   'prompt_identity', 'prompt_business', 'prompt_flow', 'followups', 'debounce_seconds', 'max_msgs',
   'active_hours', 'timezone', 'temperature', 'bot_enabled', 'test_mode', 'test_tag', 'auto_handoff_minutes',
   'required_tags', 'required_tags_mode',

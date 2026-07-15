@@ -26,7 +26,7 @@ const STATUSES = ['active', 'paused', 'finished'];
 
 async function results(versusId) {
   const rows = await q(
-    `SELECT s.id, s.name AS setter_name, a.name AS account_name, vs.weight,
+    `SELECT s.id, s.name AS setter_name, COALESCE(NULLIF(a.alias,''), a.name) AS account_name, vs.weight,
       COUNT(c.id)::int AS leads,
       COUNT(c.id) FILTER (WHERE c.stage IN ('calificado', 'seguimiento_calificado'))::int AS calificados,
       COUNT(c.id) FILTER (WHERE c.stage = 'en_conversion')::int AS en_conversion,
@@ -39,7 +39,7 @@ async function results(versusId) {
      JOIN accounts a ON a.id = s.account_id
      LEFT JOIN conversations c ON c.setter_id = s.id AND c.versus_id = $1
      WHERE vs.versus_id = $1
-     GROUP BY s.id, s.name, a.name, vs.weight
+     GROUP BY s.id, s.name, a.name, a.alias, vs.weight
      ORDER BY s.id`,
     [versusId]
   );

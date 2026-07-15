@@ -31,7 +31,7 @@ function csvCell(v) {
 
 const BASE_SELECT = `
   SELECT m.id, m.created_at, m.direction, m.source, m.body,
-         c.lead_name, c.channel, c.ghl_contact_id, a.name AS account_name
+         c.lead_name, c.channel, c.ghl_contact_id, COALESCE(NULLIF(a.alias,''), a.name) AS account_name
   FROM messages m
   JOIN conversations c ON c.id = m.conversation_id
   JOIN accounts a ON a.id = c.account_id`;
@@ -84,7 +84,7 @@ export default async function archiveRoutes(app) {
     const offset = Number(req.query?.offset) || 0;
     const total = await one(`SELECT COUNT(*)::int AS n FROM comments co ${clause}`, vals);
     const rows = await q(
-      `SELECT co.id, co.created_at, co.author, co.author_id, co.text, co.post_ref, co.channel, a.name AS account_name
+      `SELECT co.id, co.created_at, co.author, co.author_id, co.text, co.post_ref, co.channel, COALESCE(NULLIF(a.alias,''), a.name) AS account_name
        FROM comments co LEFT JOIN accounts a ON a.id = co.account_id
        ${clause} ORDER BY co.id DESC LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}`,
       [...vals, limit, offset]

@@ -79,7 +79,7 @@ export default async function dashboardRoutes(app) {
     `, P);
 
     const perAccount = await q(`
-      SELECT a.id, a.name, a.bot_enabled,
+      SELECT a.id, COALESCE(NULLIF(a.alias,''), a.name) AS name, a.bot_enabled,
         COUNT(c.id)::int AS conversaciones,
         COUNT(c.id) FILTER (WHERE c.stage = 'calificado')::int AS calificados,
         COUNT(c.id) FILTER (WHERE c.stage = 'en_conversion')::int AS en_conversion,
@@ -92,7 +92,7 @@ export default async function dashboardRoutes(app) {
     `, P);
 
     const recientes = await q(`
-      SELECT c.id, c.lead_name, c.channel, c.stage, c.updated_at, a.name AS account_name,
+      SELECT c.id, c.lead_name, c.channel, c.stage, c.updated_at, COALESCE(NULLIF(a.alias,''), a.name) AS account_name,
         (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message
       FROM conversations c JOIN accounts a ON a.id = c.account_id
       WHERE true ${cond}

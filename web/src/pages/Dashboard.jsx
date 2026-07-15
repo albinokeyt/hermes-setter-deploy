@@ -59,7 +59,7 @@ export default function Dashboard() {
           me?.account_id ? null : (
             <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} className="!w-52">
               <option value="">Todos los setters</option>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.alias || a.name}</option>)}
             </Select>
           )
         }

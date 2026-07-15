@@ -152,7 +152,7 @@ export default function Archive() {
             </div>
             <Select value={filters.account_id} onChange={(e) => setFilters({ ...filters, account_id: e.target.value })} className="!w-40">
               <option value="">Todas las conexiones</option>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.alias || a.name}</option>)}
             </Select>
             <Select value={filters.kind} onChange={(e) => setFilters({ ...filters, kind: e.target.value })} className="!w-44">
               <option value="messages">Mensajes (DM)</option>

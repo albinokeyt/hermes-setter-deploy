@@ -38,7 +38,7 @@ export default async function conversationRoutes(app) {
     vals.push(Number(offset) || 0);
     return q(
       `SELECT c.id, c.account_id, c.setter_id, c.channel, c.lead_name, c.lead_email, c.ghl_contact_id, c.stage, c.bot_paused, c.paused_by,
-              c.followup_state, c.last_inbound_at, c.last_outbound_at, c.updated_at, a.name AS account_name, a.location_id,
+              c.followup_state, c.last_inbound_at, c.last_outbound_at, c.updated_at, COALESCE(NULLIF(a.alias,''), a.name) AS account_name, a.location_id,
               st.name AS setter_name,
               ${humanExists} AS human_touched,
               (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
@@ -57,7 +57,7 @@ export default async function conversationRoutes(app) {
     const base = await loadScopedConv(req, reply);
     if (!base) return;
     const conv = await one(
-      `SELECT c.*, a.name AS account_name, a.channels AS account_channels, a.location_id, st.name AS setter_name
+      `SELECT c.*, COALESCE(NULLIF(a.alias,''), a.name) AS account_name, a.channels AS account_channels, a.location_id, st.name AS setter_name
        FROM conversations c JOIN accounts a ON a.id = c.account_id
        LEFT JOIN setters st ON st.id = c.setter_id
        WHERE c.id = $1`,
@@ -176,7 +176,7 @@ export default async function conversationRoutes(app) {
     const ids = await accessibleAccountIds(req);
     const rows = await q(
       `SELECT c.id, c.lead_name, c.ghl_contact_id, c.channel, c.stage, c.updated_at, c.bot_paused,
-              a.name AS account_name,
+              COALESCE(NULLIF(a.alias,''), a.name) AS account_name,
               (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message
        FROM conversations c JOIN accounts a ON a.id = c.account_id
        ${ids ? 'WHERE c.account_id = ANY($1::int[])' : ''}

@@ -38,11 +38,12 @@ export default function AccountEdit() {
   const [calendars, setCalendars] = useState(null);
   const [newSetter, setNewSetter] = useState('');
   const [commentLog, setCommentLog] = useState(null);
+  const [aliasDraft, setAliasDraft] = useState('');
   const loadCommentLog = () => api.get(`/api/accounts/${id}/comment-log`).then(setCommentLog).catch(() => setCommentLog({ received: [], issues: [] }));
 
   const loadSetters = () => api.get(`/api/accounts/${id}/setters`).then(setSetters).catch(() => setSetters([]));
   useEffect(() => {
-    api.get(`/api/accounts/${id}`).then(setAcc).catch((e) => setError(e.message));
+    api.get(`/api/accounts/${id}`).then((a) => { setAcc(a); setAliasDraft(a.alias || ''); }).catch((e) => setError(e.message));
     loadSetters();
   }, [id]);
 
@@ -67,6 +68,21 @@ export default function AccountEdit() {
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   };
 
+  // Alias (nombre visible), con doble confirmación antes de aplicarlo.
+  const saveAlias = async () => {
+    const v = aliasDraft.trim();
+    const label = v || acc.name;
+    if (!window.confirm(`¿Poner «${label}» como nombre visible de esta conexión?`)) return;
+    if (!window.confirm(`Confírmalo de nuevo: se mostrará «${label}» en tu panel.`)) return;
+    setError('');
+    try {
+      const updated = await api.put(`/api/accounts/${id}`, { alias: v });
+      setAcc({ ...acc, ...updated });
+      setAliasDraft(updated.alias || '');
+      setSaved(true); setTimeout(() => setSaved(false), 2000);
+    } catch (err) { setError(err.message); }
+  };
+
   const connectOauth = async () => {
     try { const { url } = await api.get(`/api/oauth/url?account_id=${id}`); window.location.href = url; }
     catch (err) { setError(err.message); }
@@ -88,7 +104,7 @@ export default function AccountEdit() {
         </Link>
       )}
       <SectionTitle
-        title={isAdmin ? acc.name : `Mi panel · ${acc.name}`}
+        title={isAdmin ? (acc.alias || acc.name) : `Mi panel · ${acc.alias || acc.name}`}
         subtitle={acc.location_id ? `Subcuenta GHL: ${acc.location_id}` : 'Todavía sin subcuenta de GHL conectada'}
         actions={
           <div className="flex items-center gap-3">
@@ -144,7 +160,17 @@ export default function AccountEdit() {
 
       {tab === 'ajustes' && (
         <Card className="max-w-2xl space-y-6 p-6">
-          <Input label="Nombre de la conexión" value={acc.name} onChange={(e) => set({ name: e.target.value })} />
+          {isAdmin && (
+            <Input label="Nombre de la conexión (técnico)" value={acc.name} onChange={(e) => set({ name: e.target.value })} hint="Nombre base. Si pones un alias abajo, se muestra el alias en todo el panel." />
+          )}
+          <div className="space-y-2">
+            <span className="block text-sm font-medium text-slate-700">🏷️ Nombre visible (alias)</span>
+            <p className="-mt-1 text-xs text-slate-400">Es el nombre que se ve en tu panel. Ponle uno que reconozcas (por ejemplo el nombre real de la subcuenta). Déjalo vacío para usar el nombre técnico.</p>
+            <div className="flex items-end gap-2">
+              <div className="flex-1"><Input value={aliasDraft} onChange={(e) => setAliasDraft(e.target.value)} placeholder={acc.name} /></div>
+              <Button variant="secondary" onClick={saveAlias} disabled={aliasDraft.trim() === (acc.alias || '')}>Guardar alias</Button>
+            </div>
+          </div>
           <div>
             <span className="mb-2 block text-sm font-medium text-slate-700">Canales activos</span>
             <div className="flex flex-wrap gap-2">
