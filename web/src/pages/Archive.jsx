@@ -3,7 +3,7 @@ import { Search, Download, Send, Sparkles, ArrowDownToLine, ArrowUpFromLine } fr
 import { api } from '../api.js';
 import { CHANNEL_LABEL } from '../stages.js';
 import { useMe } from '../components/Layout.jsx';
-import { Card, SectionTitle, Button, Select, Toggle, Banner } from '../components/ui.jsx';
+import { Card, SectionTitle, Button, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 
 const fmtUsd = (v) => `$${Number(v || 0).toFixed(4)}`;
 
@@ -32,6 +32,7 @@ export default function Archive() {
   const [filters, setFilters] = useState({ account_id: '', direction: '', search: '', kind: 'messages' });
   const [data, setData] = useState({ total: 0, messages: [], kind: 'messages' });
   const [loading, setLoading] = useState(true);
+  const [commentActive, setCommentActive] = useState(false);
 
   const [chat, setChat] = useState([]);
   const [question, setQuestion] = useState('');
@@ -67,6 +68,14 @@ export default function Archive() {
   }, [filters]);
 
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [chat, asking]);
+
+  // Conexión objetivo para el webhook de comentarios: la del filtro, o la única que tenga el usuario.
+  const targetId = filters.account_id || (accounts.length === 1 ? String(accounts[0].id) : '');
+  const checkComments = () => {
+    if (!targetId) { setCommentActive(false); return; }
+    api.get(`/api/accounts/${targetId}/comment-log`).then((r) => setCommentActive((r.received?.length || 0) > 0)).catch(() => {});
+  };
+  useEffect(() => { checkComments(); }, [targetId]);
 
   const saveSettings = async (patch) => {
     const next = { ...settings, ...patch };
@@ -115,6 +124,7 @@ export default function Archive() {
   };
 
   const textProviders = providers.filter((p) => !Array.isArray(p.kinds) || p.kinds.includes('text'));
+  const targetAcc = accounts.find((a) => String(a.id) === String(targetId));
 
   return (
     <div>
@@ -135,6 +145,24 @@ export default function Archive() {
 
       {settings && settings.enabled === false && (
         <div className="mb-4"><Banner tone="warn">La recaudación está en pausa: no se guardan mensajes nuevos de cuentas con el bot apagado. Las cuentas con bot activo se siguen guardando porque el bot necesita el historial para responder.</Banner></div>
+      )}
+
+      {/* Conectar comentarios entrantes de Instagram (webhook a pegar en GHL) */}
+      {targetAcc?.comment_webhook_url && (
+        <Card className="mb-4 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm font-bold text-slate-800">🔌 Conectar comentarios de Instagram</span>
+            <span className={`inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold ${commentActive ? 'text-emerald-600' : 'text-slate-400'}`}>
+              <span className={`h-2 w-2 rounded-full ${commentActive ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+              {commentActive ? 'Activo · recibiendo' : 'Aún sin comentarios'}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-400">
+            En GHL: automatización con el <b>trigger de comentario de Instagram</b> → nodo <b>Webhook (POST)</b> a esta URL. No hay que configurar campos: GHL ya manda el comentario. Aparecen abajo en <b>💬 Comentarios entrantes</b>.
+          </p>
+          <div className="mt-2"><CopyField label="URL del webhook de comentarios (pégala en tu automatización de GHL)" value={targetAcc.comment_webhook_url} /></div>
+          <button onClick={checkComments} className="mt-2 text-xs font-semibold text-violet-600 hover:underline">Comprobar recepción</button>
+        </Card>
       )}
 
       <div className={restricted ? '' : 'grid gap-4 lg:grid-cols-3'}>

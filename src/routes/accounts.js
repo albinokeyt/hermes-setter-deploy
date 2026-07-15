@@ -40,7 +40,11 @@ export default async function accountRoutes(app) {
       FROM accounts a LEFT JOIN providers p ON p.id = a.provider_id
       ${ids ? 'WHERE a.id = ANY($1::int[])' : ''}
       ORDER BY a.id`, ids ? [ids] : []);
-    return rows.map((r) => stripSecrets(r, req));
+    return rows.map((r) => {
+      // URL del webhook de comentarios (para pegar en GHL); el token crudo se elimina en stripSecrets.
+      r.comment_webhook_url = `${config.appBaseUrl}/api/webhooks/comment/${r.comment_token}`;
+      return stripSecrets(r, req);
+    });
   });
 
   app.get('/api/accounts/:id', async (req, reply) => {
