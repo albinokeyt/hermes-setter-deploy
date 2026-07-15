@@ -106,36 +106,51 @@ export default async function webhookRoutes(app) {
     try {
       const h = req.headers || {};
       const p = (req.body && typeof req.body === 'object') ? req.body : {};
-      const c = p.customData || p.custom_data || p;
+      const c = p.customData || p.custom_data || {};
       const qy = req.query || {};
-      const dec = (v) => { try { return decodeURIComponent(String(v)); } catch { return String(v); } };
-      // toma el valor del HEADER (x-…), del body (customData) o de la query, lo primero que exista
-      const pick = (...keys) => {
-        for (const k of keys) {
-          if (h[k] != null && String(h[k]).trim()) return dec(h[k]);
-          if (c && c[k] != null && String(c[k]).trim()) return String(c[k]);
-          if (qy[k] != null && String(qy[k]).trim()) return dec(qy[k]);
+      const dec = (v) => { if (v == null) return ''; try { return decodeURIComponent(String(v)); } catch { return String(v); } };
+      // Trigger nativo de GHL para comentarios de Instagram (igCommentOnPost): ya trae todo.
+      const ig = (p.triggerData && p.triggerData.igCommentOnPost && p.triggerData.igCommentOnPost.ig) || {};
+      // solo acepta primitivos: un objeto/array daría "[object Object]" o "1,2" (basura truthy)
+      const first = (...vals) => {
+        for (const v of vals) {
+          if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'bigint') continue;
+          const s = String(v).trim();
+          if (s) return s;
         }
         return '';
       };
-      const text = pick('x-comment', 'comment', 'text', 'message') || String(p.body || '');
-      const author = pick('x-author', 'author', 'username', 'from', 'contact_name', 'full_name');
-      const authorId = pick('x-author-id', 'author_id', 'user_id', 'contact_id', 'contactid');
-      const post = pick('x-post', 'post', 'post_id', 'media_id', 'permalink', 'post_url');
-      const channel = pick('x-channel', 'channel') || 'IG';
-      // registro para depurar cómo llega (headers x-* + body); útil en la primera prueba
-      const xh = Object.fromEntries(Object.entries(h).filter(([k]) => k.startsWith('x-') && k !== 'x-forwarded-for' && k !== 'x-real-ip'));
+      // texto: nativo (ig.body) → customData/header/query → body plano
+      const text = first(ig.body, ig.body_exact_match, dec(h['x-comment']), c['x-comment'], c.comment, c.text, c.message, dec(qy['x-comment']), p.body);
+      // autor visible
+      const author = first(p.full_name, [p.first_name, p.last_name].filter(Boolean).join(' '), dec(h['x-author']), c['x-author'], c.author, c.username, c.from);
+      // id del autor: contacto de GHL (para poder responderle) o, si no, su igSid de Instagram
+      const igSid = first(p.contact?.attributionSource?.igSid, p.contact?.lastAttributionSource?.igSid);
+      const authorId = first(p.contact_id, p.contactId, dec(h['x-author-id']), c['x-author-id'], c.author_id) || igSid;
+      // post (enlace o id)
+      const post = first(ig.permalinkUrl, ig.postId, dec(h['x-post']), c['x-post'], c.post, c.permalink, c.post_url);
+      // referencia única del comentario para deduplicar reenvíos del webhook
+      const commentRef = first(ig.commentId, p.triggerData?.igCommentOnPost?.messageId);
+      const channel = first(dec(h['x-channel']), c['x-channel'], c.channel) || 'IG';
+      // registro para depurar cómo llega (headers propios x-* + body); se omiten los de infraestructura
+      const xh = Object.fromEntries(Object.entries(h).filter(([k]) => k.startsWith('x-') && !k.startsWith('x-forwarded') && k !== 'x-real-ip'));
       const meta = { headers: xh, body: p };
-      if (!String(text).trim()) {
+      if (!text) {
         await logEvent('comentario_incompleto', { account: account.id, ...meta });
         return;
       }
-      await q(
-        `INSERT INTO comments (account_id, author, author_id, text, post_ref, channel, raw)
-         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
-        [account.id, String(author), String(authorId), String(text), String(post), String(channel), JSON.stringify(meta)]
+      const res = await q(
+        `INSERT INTO comments (account_id, author, author_id, text, post_ref, channel, comment_ref, raw)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+         ON CONFLICT (account_id, comment_ref) WHERE comment_ref <> '' DO NOTHING
+         RETURNING id`,
+        [account.id, author, authorId, text, post, channel, commentRef, JSON.stringify(meta)]
       );
-      await logEvent('comentario_recibido', { account: account.id, autor: String(author), texto: String(text).slice(0, 200), ...meta });
+      if (!res.length) {
+        await logEvent('comentario_duplicado', { account: account.id, comment_ref: commentRef, texto: text.slice(0, 200) });
+        return;
+      }
+      await logEvent('comentario_recibido', { account: account.id, autor: author, texto: text.slice(0, 200), post, contact_id: authorId, comment_ref: commentRef, ...meta });
     } catch (err) {
       console.error('[webhook comment]', err);
       await logEvent('error_webhook', { error: err.message }).catch(() => {});

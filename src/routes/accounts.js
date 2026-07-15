@@ -99,14 +99,22 @@ export default async function accountRoutes(app) {
   });
 
   // Registro reciente del webhook de comentarios de ESTA conexión (para probar que llega).
+  // Los recibidos salen de la tabla comments (durable, no se purga); los intentos sin texto o
+  // duplicados salen de webhook_log (traza efímera, con tope global de ~2000 filas) solo como ayuda.
   app.get('/api/accounts/:id/comment-log', async (req, reply) => {
     if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso' });
-    return q(
+    const received = await q(
+      `SELECT id, author, author_id, text, post_ref, channel, raw, created_at
+       FROM comments WHERE account_id = $1 ORDER BY id DESC LIMIT 20`,
+      [req.params.id]
+    );
+    const issues = await q(
       `SELECT id, kind, payload, created_at FROM webhook_log
-       WHERE kind IN ('comentario_recibido', 'comentario_incompleto') AND payload->>'account' = $1
-       ORDER BY id DESC LIMIT 20`,
+       WHERE kind IN ('comentario_incompleto', 'comentario_duplicado') AND payload->>'account' = $1
+       ORDER BY id DESC LIMIT 10`,
       [String(req.params.id)]
     );
+    return { received, issues };
   });
 
   // Lista de calendarios de la subcuenta (desde GHL; si falta el scope, usa los vistos en citas).
