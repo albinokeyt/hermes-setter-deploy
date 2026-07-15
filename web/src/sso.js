@@ -31,22 +31,27 @@ function requestGhlUserData(timeoutMs = 5000) {
 // Devuelve 'ok' si dejó sesión iniciada, 'skip' si no aplica, 'fail' si lo intentó y falló.
 export async function bootstrapSso() {
   if (!isEmbedded()) return 'skip';
-  // ¿ya hay sesión? entonces no hace falta SSO
+  // Pedimos SIEMPRE la identidad a GHL para ligar la sesión a la subcuenta ACTUAL del iframe.
+  // (Una cuenta agency abre varias subcuentas en el MISMO navegador: si reutilizáramos la sesión
+  //  existente sin comprobar la subcuenta, se mostrarían los datos de otra subcuenta.)
+  const encrypted = await requestGhlUserData();
+  if (encrypted) {
+    try {
+      const res = await fetch('/api/portal/sso', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ encrypted }),
+      });
+      return res.ok ? 'ok' : 'fail'; // el backend reemite la cookie ligada a esta subcuenta
+    } catch {
+      return 'fail';
+    }
+  }
+  // GHL no entregó identidad (timeout / no embebido como app): usar sesión existente si la hay.
   try {
     const me = await fetch('/api/auth/me', { credentials: 'same-origin' });
     if (me.ok) return 'skip';
   } catch {}
-  const encrypted = await requestGhlUserData();
-  if (!encrypted) return 'fail';
-  try {
-    const res = await fetch('/api/portal/sso', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ encrypted }),
-    });
-    return res.ok ? 'ok' : 'fail';
-  } catch {
-    return 'fail';
-  }
+  return 'fail';
 }

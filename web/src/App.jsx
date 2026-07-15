@@ -15,13 +15,11 @@ import Playground from './pages/Playground.jsx';
 import Archive from './pages/Archive.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import UsersPage from './pages/Users.jsx';
-import PortalRegister from './pages/PortalRegister.jsx';
 
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route path="/registro-portal" element={<PortalRegister />} />
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/conversaciones" element={<Conversations />} />

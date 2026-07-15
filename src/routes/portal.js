@@ -110,34 +110,10 @@ async function startPortalSession(reply, account, name, email) {
   setSessionCookie(reply, token, { portal: true });
 }
 
-// Envía una cookie de registro y manda al formulario (nombre+correo).
-// allowBootstrap viaja con el token: solo así el registro podrá reclamar un setter sin lista.
-async function sendToRegister(reply, accountId, allowBootstrap) {
-  const regToken = crypto.randomBytes(24).toString('hex');
-  await redis.setex(`portalreg:${regToken}`, 900, JSON.stringify({ accountId: Number(accountId), allowBootstrap: Boolean(allowBootstrap) }));
-  reply.setCookie('hermes_portal_reg', regToken, { path: '/', httpOnly: true, sameSite: 'none', secure: true, maxAge: 900 });
-  return reply.redirect('/registro-portal');
-}
-
-// Decide la entrada según la lista blanca de correos del setter.
-// allowBootstrap = true solo cuando el origen prueba control de la subcuenta:
-//   enlace único por-setter, o setter recién creado en esta misma instalación.
-// En el enlace global de agencia sobre un setter YA existente es false: si no tiene
-// lista, no se puede reclamar (evita apropiárselo conociendo el location_id).
-async function resolveEntry(reply, account, email, name, allowBootstrap) {
-  const st = await authState(account, email);
-  if (st.authorized) {
-    // Fijar responsable la primera vez, solo desde orígenes de confianza.
-    if (!normEmail(account.owner_email) && allowBootstrap) await claimOwner(account.id, st.email);
-    await startPortalSession(reply, account, name, st.email);
-    return reply.redirect('/');
-  }
-  if (st.reason === 'not_authorized') {
-    await logEvent('portal_acceso_denegado', { account: account.id, email: st.email });
-    return reply.code(403).type('text/html; charset=utf-8').send(deniedHtml(account));
-  }
-  return sendToRegister(reply, account.id, allowBootstrap); // no_email → pedir correo
-}
+// [Solo SSO] Se eliminaron sendToRegister() y resolveEntry(): creaban sesión a partir del correo
+// de la URL/formulario (falsificable). La ÚNICA vía de identidad es ahora /api/portal/sso, donde
+// GHL entrega el correo CIFRADO y no se puede suplantar. La sesión se emite solo en startPortalSession
+// llamado desde el SSO.
 
 async function currentPortalEmail(req) {
   const pid = req.auth?.portalUserId;
@@ -147,21 +123,11 @@ async function currentPortalEmail(req) {
 }
 
 export default async function portalRoutes(app) {
-  // Entrada desde el Custom Menu Link POR SETTER:
-  // https://TU-APP/ghl-portal?key=CLAVE_DE_LA_CUENTA&location_id={{location.id}}&email={{user.email}}&name={{user.name}}
-  app.get('/ghl-portal', async (req, reply) => {
-    const { key, location_id, email, name } = req.query || {};
-    const account = key ? await one(`SELECT * FROM accounts WHERE portal_key = $1`, [String(key)]) : null;
-    if (!account) {
-      return reply.code(403).type('text/html; charset=utf-8').send('<h3 style="font-family:sans-serif">Enlace de portal no válido. Pide al administrador el enlace de tu cuenta.</h3>');
-    }
-    // Defensa extra: si el enlace trae location_id, debe coincidir con el de la cuenta.
-    if (location_id && account.location_id && String(location_id) !== account.location_id) {
-      return reply.code(403).type('text/html; charset=utf-8').send('<h3 style="font-family:sans-serif">Este enlace no corresponde a tu subcuenta.</h3>');
-    }
-    // Enlace único por-setter: poseer la clave autoriza a reclamar (bootstrap ok).
-    return resolveEntry(reply, account, email, name, true);
-  });
+  // Entrada antigua (Custom Menu Link). SOLO SSO: la identidad ya NO se toma de la URL
+  // (era falsificable: cualquiera ponía email=owner). Mandamos a la app embebida, que verifica
+  // al usuario con GHL por SSO cifrado. Los enlaces de menú antiguos siguen funcionando: acaban
+  // en la misma verificación segura.
+  app.get('/ghl-portal', async (req, reply) => reply.redirect('/'));
 
   // Link de AGENCIA (uno para todas las subcuentas). GHL rellena location_id/email/name.
   // 1) subcuenta sin app conectada → la manda a instalar/conectar (OAuth).
@@ -185,10 +151,8 @@ export default async function portalRoutes(app) {
 
     let account = await one(`SELECT * FROM accounts WHERE location_id = $1`, [loc]);
 
-    // Caso 3: setter ya existe → entrar solo si el correo está autorizado.
-    // Reclamar responsable SOLO si aún no lo tiene (un setter con responsable NO se
-    // puede reclamar por el enlace global; uno huérfano lo reclama el 1er autorizado).
-    if (account) return resolveEntry(reply, account, email, name, !normEmail(account.owner_email));
+    // Caso 3: setter ya existe → a la app embebida; GHL certifica la identidad por SSO.
+    if (account) return reply.redirect('/');
 
     // ¿La app está conectada en esta subcuenta (hay token OAuth)?
     const token = await one(`SELECT location_id FROM ghl_tokens WHERE location_id = $1`, [loc]);
@@ -200,8 +164,8 @@ export default async function portalRoutes(app) {
         [nm, loc, crypto.randomBytes(16).toString('hex'), crypto.randomBytes(24).toString('hex')]
       );
       await q(`INSERT INTO setters (account_id, name, is_default) VALUES ($1, 'Setter principal', true)`, [account.id]);
-      // Setter recién creado en ESTA instalación (control probado por OAuth) → puede reclamar.
-      return resolveEntry(reply, account, email, name, true);
+      // Recién conectada → a la app embebida; el 1er usuario que entre por SSO queda como responsable.
+      return reply.redirect('/');
     }
 
     // Caso 1: app no conectada → mandar a instalar/conectar por OAuth
@@ -238,29 +202,10 @@ export default async function portalRoutes(app) {
     );
   });
 
+  // [Solo SSO] Registro por correo escrito DESHABILITADO: era falsificable (cualquiera escribía
+  // el correo del dueño). El acceso de clientes se verifica ahora solo por SSO cifrado de GHL.
   app.post('/api/portal/register', async (req, reply) => {
-    const regToken = req.cookies?.hermes_portal_reg;
-    const raw = regToken ? await redis.get(`portalreg:${regToken}`) : null;
-    if (!raw) return reply.code(403).send({ error: 'Registro caducado. Vuelve a abrir el enlace desde GHL.' });
-    let accountId = null, allowBootstrap = false;
-    try { const p = JSON.parse(raw); accountId = p.accountId; allowBootstrap = Boolean(p.allowBootstrap); }
-    catch { accountId = Number(raw); } // compat con tokens antiguos (solo id)
-    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [Number(accountId)]);
-    if (!account) return reply.code(404).send({ error: 'Cuenta no encontrada' });
-    const cleanName = String(req.body?.name || '').trim();
-    const cleanEmail = normEmail(req.body?.email);
-    if (!cleanName || !cleanEmail.includes('@')) return reply.code(400).send({ error: 'Nombre y correo válidos son obligatorios' });
-
-    // Autorizado = usuario real de la subcuenta en GHL O correo en la lista manual.
-    const st = await authState(account, cleanEmail);
-    if (!st.authorized) return reply.code(403).send({ error: 'Tu correo no tiene acceso a este panel. Debes ser usuario de la subcuenta en GHL, o pedirle al responsable que te añada desde su pestaña «Accesos».' });
-    // Fijar responsable la primera vez, solo desde orígenes de confianza.
-    if (!normEmail(account.owner_email) && allowBootstrap) await claimOwner(account.id, cleanEmail);
-
-    await redis.del(`portalreg:${regToken}`);
-    reply.clearCookie('hermes_portal_reg', { path: '/' });
-    await startPortalSession(reply, account, cleanName, cleanEmail);
-    return { ok: true };
+    return reply.code(410).send({ error: 'El acceso se verifica automáticamente con GoHighLevel (SSO). Abre el panel desde GHL.' });
   });
 
   // --- SSO de GHL (Custom Page) -------------------------------------------
