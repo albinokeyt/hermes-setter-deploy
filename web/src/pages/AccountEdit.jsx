@@ -76,7 +76,7 @@ export default function AccountEdit() {
     if (!window.confirm(`Confírmalo de nuevo: se mostrará «${label}» en tu panel.`)) return;
     setError('');
     try {
-      const updated = await api.put(`/api/accounts/${id}`, { alias: v });
+      const updated = await api.put(`/api/accounts/${id}/alias`, { alias: v });
       setAcc({ ...acc, ...updated });
       setAliasDraft(updated.alias || '');
       setSaved(true); setTimeout(() => setSaved(false), 2000);

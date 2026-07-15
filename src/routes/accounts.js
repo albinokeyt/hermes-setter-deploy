@@ -103,6 +103,16 @@ export default async function accountRoutes(app) {
     return { ok: true };
   });
 
+  // Alias (nombre visible): lo cambia el DUEÑO aunque la IA esté apagada — renombrar NO es función
+  // de IA, así que NO pasa por requireManageAgents, solo por canAccessAccount.
+  app.put('/api/accounts/:id/alias', async (req, reply) => {
+    if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });
+    const alias = String(req.body?.alias ?? '').trim().slice(0, 80);
+    const row = await one(`UPDATE accounts SET alias = $1 WHERE id = $2 RETURNING *`, [alias, req.params.id]);
+    if (!row) return reply.code(404).send({ error: 'No existe' });
+    return stripSecrets(row, req);
+  });
+
   // Registro reciente del webhook de comentarios de ESTA conexión (para probar que llega).
   // Los recibidos salen de la tabla comments (durable, no se purga); los intentos sin texto o
   // duplicados salen de webhook_log (traza efímera, con tope global de ~2000 filas) solo como ayuda.
