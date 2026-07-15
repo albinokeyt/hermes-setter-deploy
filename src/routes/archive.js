@@ -37,10 +37,8 @@ const BASE_SELECT = `
   JOIN accounts a ON a.id = c.account_id`;
 
 export default async function archiveRoutes(app) {
-  // Bloquea a usuarios restringidos (solo-mensajes / IA apagada). Admin y usuarios con IA entran.
-  app.addHook('preHandler', async (req, reply) => {
-    if (!(await requireManageAgents(req, reply))) return reply;
-  });
+  // Los mensajes/comentarios/export NO dependen de la IA: cualquier usuario ve LO SUYO (scope por
+  // conexión). Solo la IA de la sección (/ask) y los ajustes/gasto están gateados más abajo.
 
   app.get('/api/archive/settings', async () => {
     return (await getSetting('archive', { enabled: true, provider_id: null, model: '' })) || { enabled: true };
@@ -129,8 +127,10 @@ export default async function archiveRoutes(app) {
     return row || { d24: 0, d30: 0, total: 0, preguntas: 0 };
   });
 
-  // La IA de la sección: responde preguntas SOBRE los mensajes filtrados.
+  // La IA de la sección: responde preguntas SOBRE los mensajes filtrados. Es función de IA →
+  // gateada: usuarios restringidos (IA apagada / solo-mensajes) no la usan.
   app.post('/api/archive/ask', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
     const b = req.body || {};
     const question = String(b.question || '').trim();
     if (!question) return reply.code(400).send({ error: 'Escribe una pregunta' });

@@ -22,6 +22,9 @@ const QUIEN_CLS = {
 export default function Archive() {
   const me = useMe();
   const isAdmin = me?.role === 'admin';
+  // Con IA apagada / usuario solo-mensajes: se ven los mensajes/comentarios/descargar, pero NO la
+  // columna de "hablar con la IA" (eso sí es IA).
+  const restricted = !isAdmin && (me?.ai_enabled === false || me?.can_manage_agents === false);
   const [accounts, setAccounts] = useState([]);
   const [providers, setProviders] = useState([]);
   const [settings, setSettings] = useState(null);
@@ -117,7 +120,7 @@ export default function Archive() {
     <div>
       <SectionTitle
         title="Archivo de mensajes"
-        subtitle="Todo lo que entra y sale (IA o humano), con fecha, quién y contenido — y una IA para preguntar sobre ello"
+        subtitle={`Todo lo que entra y sale (IA o humano), con fecha, quién y contenido${restricted ? '' : ' — y una IA para preguntar sobre ello'}`}
         actions={
           isAdmin && settings && (
             <Toggle
@@ -134,9 +137,9 @@ export default function Archive() {
         <div className="mb-4"><Banner tone="warn">La recaudación está en pausa: no se guardan mensajes nuevos de cuentas con el bot apagado. Las cuentas con bot activo se siguen guardando porque el bot necesita el historial para responder.</Banner></div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className={restricted ? '' : 'grid gap-4 lg:grid-cols-3'}>
         {/* Columna mensajes */}
-        <div className="lg:col-span-2">
+        <div className={restricted ? '' : 'lg:col-span-2'}>
           <div className="mb-4 flex flex-wrap items-center gap-3">
             <div className="relative">
               <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -208,7 +211,8 @@ export default function Archive() {
           </Card>
         </div>
 
-        {/* Columna IA */}
+        {/* Columna IA — solo si no está restringido (la IA se oculta cuando está apagada) */}
+        {!restricted && (
         <div className="lg:col-span-1">
           <Card className="sticky top-6 flex h-[76vh] flex-col">
             <div className="border-b border-slate-100 px-4 py-3">
@@ -275,6 +279,7 @@ export default function Archive() {
             </div>
           </Card>
         </div>
+        )}
       </div>
     </div>
   );

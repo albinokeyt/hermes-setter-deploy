@@ -39,10 +39,10 @@ export default function Layout() {
   if (!me) return <div className="py-24 text-center text-sm text-slate-400">Cargando…</div>;
 
   const isAdmin = me.role === 'admin';
-  // Solo mensajes: únicamente si el usuario está limitado a mensajes (can_manage_agents=false).
-  // La IA apagada ya NO oculta la conexión: el dueño puede verla y configurarla; ese flag solo
-  // controla si el bot responde (lo activa la agencia).
-  const restricted = !isAdmin && me.can_manage_agents === false;
+  // Vista "solo mensajes": IA apagada en la conexión (SaaS) o usuario limitado. Oculta TODO lo de
+  // IA (Mis agentes, Versus, Probar agente, y el "hablar con la IA" del Archivo). Los mensajes,
+  // conversaciones, etiquetas y el Archivo (entrantes/salientes/comentarios/descargar) SÍ se ven.
+  const restricted = !isAdmin && (me.ai_enabled === false || me.can_manage_agents === false);
   const nav = [
     { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
     { to: '/conversaciones', label: 'Conversaciones', icon: MessagesSquare },
@@ -60,7 +60,8 @@ export default function Layout() {
           ]
         : []),
     ...(restricted ? [] : [{ to: '/prueba', label: 'Probar agente', icon: FlaskConical }]),
-    ...(isAdmin || !restricted ? [{ to: '/archivo', label: 'Archivo', icon: Database }] : []),
+    // Archivo (mensajes entrantes/salientes + comentarios + descargar) NO depende de la IA → siempre visible.
+    { to: '/archivo', label: 'Archivo', icon: Database },
   ];
   const navBottom = [
     ...(isAdmin ? [{ to: '/configuracion', label: 'Configuración', icon: Settings }] : []),
