@@ -103,6 +103,27 @@ async function ingestComment(account, req) {
   }
 }
 
+// Enruta un comentario a su conexión por el location.id del payload y lo ingiere.
+async function handleGlobalComment(req) {
+  try {
+    const p = (req.body && typeof req.body === 'object') ? req.body : {};
+    const loc = String(p.location?.id || p.locationId || p.location_id || '').trim();
+    if (!loc) {
+      await logEvent('comentario_sin_subcuenta', { nota: 'el payload no trae location.id', keys: Object.keys(p) });
+      return;
+    }
+    const account = await one(`SELECT id FROM accounts WHERE location_id = $1`, [loc]);
+    if (!account) {
+      await logEvent('comentario_subcuenta_desconocida', { locationId: loc });
+      return;
+    }
+    await ingestComment(account, req);
+  } catch (err) {
+    console.error('[webhook comentarios]', err);
+    await logEvent('error_webhook', { error: err.message }).catch(() => {});
+  }
+}
+
 function normalizeMarketplaceEvent(p) {
   return {
     contactId: p.contactId,
@@ -168,28 +189,18 @@ export default async function webhookRoutes(app) {
   app.post('/api/webhooks/inbox', marketplaceHandler);
   app.post('/api/webhooks/ghl', marketplaceHandler);
 
-  // Webhook GLOBAL de comentarios: la MISMA URL para TODOS los clientes. El sistema detecta a qué
-  // conexión pertenece por el location.id que GHL manda en el payload del trigger de comentarios.
+  // Webhook GLOBAL de comentarios: la MISMA URL LIMPIA para TODOS los clientes (sin token).
+  // El sistema detecta a qué conexión pertenece por el location.id del payload del trigger de GHL.
+  app.post('/api/webhooks/comentarios', async (req, reply) => {
+    reply.send({ ok: true });
+    await handleGlobalComment(req);
+  });
+
+  // Variante con clave (compat con URLs ya copiadas antes de la versión limpia).
   app.post('/api/webhooks/comments/:key', async (req, reply) => {
     if (String(req.params.key) !== (await commentKey())) return reply.code(404).send({ error: 'clave desconocida' });
     reply.send({ ok: true });
-    try {
-      const p = (req.body && typeof req.body === 'object') ? req.body : {};
-      const loc = String(p.location?.id || p.locationId || p.location_id || '').trim();
-      if (!loc) {
-        await logEvent('comentario_sin_subcuenta', { nota: 'el payload no trae location.id', keys: Object.keys(p) });
-        return;
-      }
-      const account = await one(`SELECT id FROM accounts WHERE location_id = $1`, [loc]);
-      if (!account) {
-        await logEvent('comentario_subcuenta_desconocida', { locationId: loc });
-        return;
-      }
-      await ingestComment(account, req);
-    } catch (err) {
-      console.error('[webhook comments]', err);
-      await logEvent('error_webhook', { error: err.message }).catch(() => {});
-    }
+    await handleGlobalComment(req);
   });
 
   // Webhook de comentarios POR CONEXIÓN (legado): sigue funcionando para automatizaciones ya montadas.

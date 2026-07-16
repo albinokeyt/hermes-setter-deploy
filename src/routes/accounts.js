@@ -3,7 +3,9 @@ import { q, one } from '../db.js';
 import { config } from '../config.js';
 import { requireAdmin, scopedAccountId, requireManageAgents, accessibleAccountIds, canAccessAccount } from '../lib/session.js';
 import * as ghl from '../services/ghl.js';
-import { commentKey } from './webhooks.js';
+
+// URL de comentarios: FIJA y LIMPIA, la misma para todas las conexiones (enruta por location.id).
+const COMMENT_WEBHOOK_URL = `${config.appBaseUrl}/api/webhooks/comentarios`;
 
 const ADMIN_EDITABLE = [
   'name', 'alias', 'mode', 'pit_token', 'location_id', 'channels', 'prompt_identity', 'prompt_business', 'prompt_flow',
@@ -41,11 +43,8 @@ export default async function accountRoutes(app) {
       FROM accounts a LEFT JOIN providers p ON p.id = a.provider_id
       ${ids ? 'WHERE a.id = ANY($1::int[])' : ''}
       ORDER BY a.id`, ids ? [ids] : []);
-    // Webhook de comentarios GLOBAL: la MISMA URL para todas las conexiones (el sistema
-    // detecta la subcuenta por el location.id del payload). El token crudo se quita en stripSecrets.
-    const commentUrl = `${config.appBaseUrl}/api/webhooks/comments/${await commentKey()}`;
     return rows.map((r) => {
-      r.comment_webhook_url = commentUrl;
+      r.comment_webhook_url = COMMENT_WEBHOOK_URL; // misma URL fija para todas
       return stripSecrets(r, req);
     });
   });
@@ -58,7 +57,7 @@ export default async function accountRoutes(app) {
       FROM accounts a LEFT JOIN providers p ON p.id = a.provider_id WHERE a.id = $1`, [req.params.id]);
     if (!row) return reply.code(404).send({ error: 'No existe' });
     row.webhook_url = `${config.appBaseUrl}/api/webhooks/workflow/${row.webhook_token}`;
-    row.comment_webhook_url = `${config.appBaseUrl}/api/webhooks/comments/${await commentKey()}`;
+    row.comment_webhook_url = COMMENT_WEBHOOK_URL;
     if (req.auth?.role === 'admin') {
       row.portal_url = `${config.appBaseUrl}/ghl-portal?key=${row.portal_key}&location_id={{location.id}}&email={{user.email}}&name={{user.name}}`;
     }
