@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { one, q } from '../db.js';
+import { one, q, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
 import { handleInbound, handleOutboundEvent, handleAppointmentEvent, accountByLocation, logEvent } from '../services/pipeline.js';
@@ -29,6 +29,78 @@ function freshTimestamp(p) {
   const ts = new Date(p.timestamp).getTime();
   if (Number.isNaN(ts)) return true;
   return Math.abs(Date.now() - ts) < 5 * 60_000;
+}
+
+// Clave GLOBAL del webhook de comentarios: la MISMA URL para todos los clientes.
+// El sistema detecta la conexión por el location.id que viene en el payload de GHL.
+// Generación ATÓMICA: INSERT ... ON CONFLICT DO NOTHING y RE-LEER, para que dos peticiones
+// concurrentes en frío no generen claves distintas (una quedaría sin persistir → URL 404).
+export async function commentKey() {
+  const existing = await getSetting('comment_webhook', null);
+  if (existing?.key) return existing.key;
+  await q(
+    `INSERT INTO settings (key, value, updated_at) VALUES ('comment_webhook', $1, now())
+     ON CONFLICT (key) DO NOTHING`,
+    [JSON.stringify({ key: crypto.randomBytes(20).toString('hex') })]
+  );
+  const persisted = await getSetting('comment_webhook', null);
+  return persisted?.key || '';
+}
+
+// Ingesta de un comentario de Instagram para una conexión concreta (parseo + dedupe + guardado).
+async function ingestComment(account, req) {
+  try {
+    const h = req.headers || {};
+    const p = (req.body && typeof req.body === 'object') ? req.body : {};
+    const c = p.customData || p.custom_data || {};
+    const qy = req.query || {};
+    const dec = (v) => { if (v == null) return ''; try { return decodeURIComponent(String(v)); } catch { return String(v); } };
+    // Trigger nativo de GHL para comentarios de Instagram (igCommentOnPost): ya trae todo.
+    const ig = (p.triggerData && p.triggerData.igCommentOnPost && p.triggerData.igCommentOnPost.ig) || {};
+    // solo acepta primitivos: un objeto/array daría "[object Object]" o "1,2" (basura truthy)
+    const first = (...vals) => {
+      for (const v of vals) {
+        if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'bigint') continue;
+        const s = String(v).trim();
+        if (s) return s;
+      }
+      return '';
+    };
+    // texto: nativo (ig.body) → customData/header/query → body plano
+    const text = first(ig.body, ig.body_exact_match, dec(h['x-comment']), c['x-comment'], c.comment, c.text, c.message, dec(qy['x-comment']), p.body);
+    // autor visible
+    const author = first(p.full_name, [p.first_name, p.last_name].filter(Boolean).join(' '), dec(h['x-author']), c['x-author'], c.author, c.username, c.from);
+    // id del autor: contacto de GHL (para poder responderle) o, si no, su igSid de Instagram
+    const igSid = first(p.contact?.attributionSource?.igSid, p.contact?.lastAttributionSource?.igSid);
+    const authorId = first(p.contact_id, p.contactId, dec(h['x-author-id']), c['x-author-id'], c.author_id) || igSid;
+    // post (enlace o id)
+    const post = first(ig.permalinkUrl, ig.postId, dec(h['x-post']), c['x-post'], c.post, c.permalink, c.post_url);
+    // referencia única del comentario para deduplicar reenvíos del webhook
+    const commentRef = first(ig.commentId, p.triggerData?.igCommentOnPost?.messageId);
+    const channel = first(dec(h['x-channel']), c['x-channel'], c.channel) || 'IG';
+    // registro para depurar cómo llega (headers propios x-* + body); se omiten los de infraestructura
+    const xh = Object.fromEntries(Object.entries(h).filter(([k]) => k.startsWith('x-') && !k.startsWith('x-forwarded') && k !== 'x-real-ip'));
+    const meta = { headers: xh, body: p };
+    if (!text) {
+      await logEvent('comentario_incompleto', { account: account.id, ...meta });
+      return;
+    }
+    const res = await q(
+      `INSERT INTO comments (account_id, author, author_id, text, post_ref, channel, comment_ref, raw)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+       ON CONFLICT (account_id, comment_ref) WHERE comment_ref <> '' DO NOTHING
+       RETURNING id`,
+      [account.id, author, authorId, text, post, channel, commentRef, JSON.stringify(meta)]
+    );
+    if (!res.length) {
+      await logEvent('comentario_duplicado', { account: account.id, comment_ref: commentRef, texto: text.slice(0, 200) });
+      return;
+    }
+    await logEvent('comentario_recibido', { account: account.id, autor: author, texto: text.slice(0, 200), post, contact_id: authorId, comment_ref: commentRef, ...meta });
+  } catch (err) {
+    console.error('[webhook comment]', err);
+    await logEvent('error_webhook', { error: err.message }).catch(() => {});
+  }
 }
 
 function normalizeMarketplaceEvent(p) {
@@ -96,65 +168,36 @@ export default async function webhookRoutes(app) {
   app.post('/api/webhooks/inbox', marketplaceHandler);
   app.post('/api/webhooks/ghl', marketplaceHandler);
 
-  // Webhook alternativo por cuenta (workflow "Customer Replied" → Custom Webhook), modo sin app de marketplace
-  // Comentarios entrantes de Instagram: automatización de GHL → este webhook (por conexión).
-  // Acepta campos flexibles (customData o top-level). Se guardan para el Archivo.
+  // Webhook GLOBAL de comentarios: la MISMA URL para TODOS los clientes. El sistema detecta a qué
+  // conexión pertenece por el location.id que GHL manda en el payload del trigger de comentarios.
+  app.post('/api/webhooks/comments/:key', async (req, reply) => {
+    if (String(req.params.key) !== (await commentKey())) return reply.code(404).send({ error: 'clave desconocida' });
+    reply.send({ ok: true });
+    try {
+      const p = (req.body && typeof req.body === 'object') ? req.body : {};
+      const loc = String(p.location?.id || p.locationId || p.location_id || '').trim();
+      if (!loc) {
+        await logEvent('comentario_sin_subcuenta', { nota: 'el payload no trae location.id', keys: Object.keys(p) });
+        return;
+      }
+      const account = await one(`SELECT id FROM accounts WHERE location_id = $1`, [loc]);
+      if (!account) {
+        await logEvent('comentario_subcuenta_desconocida', { locationId: loc });
+        return;
+      }
+      await ingestComment(account, req);
+    } catch (err) {
+      console.error('[webhook comments]', err);
+      await logEvent('error_webhook', { error: err.message }).catch(() => {});
+    }
+  });
+
+  // Webhook de comentarios POR CONEXIÓN (legado): sigue funcionando para automatizaciones ya montadas.
   app.post('/api/webhooks/comment/:token', async (req, reply) => {
     const account = await one(`SELECT id FROM accounts WHERE comment_token = $1`, [req.params.token]);
     if (!account) return reply.code(404).send({ error: 'token desconocido' });
     reply.send({ ok: true });
-    try {
-      const h = req.headers || {};
-      const p = (req.body && typeof req.body === 'object') ? req.body : {};
-      const c = p.customData || p.custom_data || {};
-      const qy = req.query || {};
-      const dec = (v) => { if (v == null) return ''; try { return decodeURIComponent(String(v)); } catch { return String(v); } };
-      // Trigger nativo de GHL para comentarios de Instagram (igCommentOnPost): ya trae todo.
-      const ig = (p.triggerData && p.triggerData.igCommentOnPost && p.triggerData.igCommentOnPost.ig) || {};
-      // solo acepta primitivos: un objeto/array daría "[object Object]" o "1,2" (basura truthy)
-      const first = (...vals) => {
-        for (const v of vals) {
-          if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'bigint') continue;
-          const s = String(v).trim();
-          if (s) return s;
-        }
-        return '';
-      };
-      // texto: nativo (ig.body) → customData/header/query → body plano
-      const text = first(ig.body, ig.body_exact_match, dec(h['x-comment']), c['x-comment'], c.comment, c.text, c.message, dec(qy['x-comment']), p.body);
-      // autor visible
-      const author = first(p.full_name, [p.first_name, p.last_name].filter(Boolean).join(' '), dec(h['x-author']), c['x-author'], c.author, c.username, c.from);
-      // id del autor: contacto de GHL (para poder responderle) o, si no, su igSid de Instagram
-      const igSid = first(p.contact?.attributionSource?.igSid, p.contact?.lastAttributionSource?.igSid);
-      const authorId = first(p.contact_id, p.contactId, dec(h['x-author-id']), c['x-author-id'], c.author_id) || igSid;
-      // post (enlace o id)
-      const post = first(ig.permalinkUrl, ig.postId, dec(h['x-post']), c['x-post'], c.post, c.permalink, c.post_url);
-      // referencia única del comentario para deduplicar reenvíos del webhook
-      const commentRef = first(ig.commentId, p.triggerData?.igCommentOnPost?.messageId);
-      const channel = first(dec(h['x-channel']), c['x-channel'], c.channel) || 'IG';
-      // registro para depurar cómo llega (headers propios x-* + body); se omiten los de infraestructura
-      const xh = Object.fromEntries(Object.entries(h).filter(([k]) => k.startsWith('x-') && !k.startsWith('x-forwarded') && k !== 'x-real-ip'));
-      const meta = { headers: xh, body: p };
-      if (!text) {
-        await logEvent('comentario_incompleto', { account: account.id, ...meta });
-        return;
-      }
-      const res = await q(
-        `INSERT INTO comments (account_id, author, author_id, text, post_ref, channel, comment_ref, raw)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
-         ON CONFLICT (account_id, comment_ref) WHERE comment_ref <> '' DO NOTHING
-         RETURNING id`,
-        [account.id, author, authorId, text, post, channel, commentRef, JSON.stringify(meta)]
-      );
-      if (!res.length) {
-        await logEvent('comentario_duplicado', { account: account.id, comment_ref: commentRef, texto: text.slice(0, 200) });
-        return;
-      }
-      await logEvent('comentario_recibido', { account: account.id, autor: author, texto: text.slice(0, 200), post, contact_id: authorId, comment_ref: commentRef, ...meta });
-    } catch (err) {
-      console.error('[webhook comment]', err);
-      await logEvent('error_webhook', { error: err.message }).catch(() => {});
-    }
+    await ingestComment(account, req);
   });
 
   app.post('/api/webhooks/workflow/:token', async (req, reply) => {

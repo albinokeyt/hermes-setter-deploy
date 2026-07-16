@@ -158,7 +158,7 @@ export default function Archive() {
             </span>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            En GHL: automatización con el <b>trigger de comentario de Instagram</b> → nodo <b>Webhook (POST)</b> a esta URL. No hay que configurar campos: GHL ya manda el comentario. Aparecen abajo en <b>💬 Comentarios entrantes</b>.
+            En GHL: automatización con el <b>trigger de comentario de Instagram</b> → nodo <b>Webhook (POST)</b> a esta URL. No hay que configurar campos: GHL ya manda el comentario y el sistema detecta tu subcuenta solo. Es la <b>misma URL para todas las subcuentas</b>. Aparecen abajo en <b>💬 Comentarios entrantes</b>.
           </p>
           <div className="mt-2"><CopyField label="URL del webhook de comentarios (pégala en tu automatización de GHL)" value={targetAcc.comment_webhook_url} /></div>
           <button onClick={checkComments} className="mt-2 text-xs font-semibold text-violet-600 hover:underline">Comprobar recepción</button>

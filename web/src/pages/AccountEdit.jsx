@@ -224,7 +224,7 @@ export default function AccountEdit() {
           <div className="space-y-2 border-t border-slate-100 pt-5">
             <span className="block text-sm font-bold text-slate-800">💬 Comentarios de Instagram</span>
             <p className="-mt-1 text-xs text-slate-400">
-              En esta subcuenta de GHL crea una automatización con el <b>trigger de comentario de Instagram</b> y un nodo <b>Webhook (POST)</b> a esta URL (no el «Custom Webhook» de pago). <b>No tienes que configurar campos</b>: GHL ya manda el comentario, el autor y el post. Aparecen en <b>Archivo → 💬 Comentarios entrantes</b>.
+              En esta subcuenta de GHL crea una automatización con el <b>trigger de comentario de Instagram</b> y un nodo <b>Webhook (POST)</b> a esta URL (no el «Custom Webhook» de pago). <b>No tienes que configurar campos</b>: GHL ya manda el comentario, el autor y el post, y el sistema detecta la subcuenta solo. Es la <b>misma URL para todas las conexiones</b>. Aparecen en <b>Archivo → 💬 Comentarios entrantes</b>.
             </p>
             <CopyField label="Tu webhook de comentarios (cópialo en la automatización de GHL)" value={acc.comment_webhook_url || ''} />
             <p className="text-[11px] text-slate-400">Opcional (avanzado): puedes forzar valores con <code>customData</code> o headers <code>x-comment</code>, <code>x-author</code>, <code>x-post</code>.</p>
