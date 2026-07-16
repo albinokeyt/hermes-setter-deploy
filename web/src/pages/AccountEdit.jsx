@@ -138,7 +138,7 @@ export default function AccountEdit() {
               <Link key={st.id} to={`/setters/${st.id}`} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 transition hover:border-violet-300">
                 <span className={`h-2 w-2 rounded-full ${st.bot_enabled ? 'bg-emerald-500' : 'bg-slate-300'}`} />
                 <span className="flex-1">
-                  <span className="text-sm font-semibold text-slate-800">{st.name}{st.is_default && <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">principal</span>}</span>
+                  <span className="text-sm font-semibold text-slate-800">{st.name}{st.is_default && <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">principal</span>}{st.test_mode && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-600" title="Este setter está en modo test: solo responde a contactos con la etiqueta de prueba">🧪 test</span>}</span>
                   <span className="ml-2 text-xs text-slate-400">{st.provider_name || 'sin IA'}{(st.required_tags || []).length ? ` · 🏷️ ${st.required_tags.join(', ')}` : ''}</span>
                 </span>
                 <span className="text-right text-xs text-slate-400">

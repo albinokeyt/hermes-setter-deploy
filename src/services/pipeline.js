@@ -144,6 +144,8 @@ export function mergeSetter(account, s) {
     debounce_seconds: s.debounce_seconds,
     followups: Array.isArray(s.followups) && s.followups.length ? s.followups : account.followups,
     followup_ai_check: s.followup_ai_check !== false, // por defecto ON
+    // modo test: el de la CONEXIÓN aplica a todos; el del setter solo a él (misma test_tag de la conexión)
+    test_mode: Boolean(account.test_mode || s.test_mode),
     // calendarios "agenda" del setter (sin respaldo: vacío = este setter no mide agendas)
     calendar_ids: Array.isArray(s.calendar_ids) ? s.calendar_ids : [],
     required_tags: s.required_tags,
@@ -209,10 +211,10 @@ async function activeVersusFor(account, conv) {
     if (!matches) continue;
     const cands = await q(
       `SELECT s.*, vs.weight AS vweight FROM versus_setters vs JOIN setters s ON s.id = vs.setter_id
-       WHERE vs.versus_id = $1 AND s.account_id = $2 AND s.bot_enabled ORDER BY s.id`,
+       WHERE vs.versus_id = $1 AND s.account_id = $2 AND s.bot_enabled AND s.test_mode = false ORDER BY s.id`,
       [v.id, account.id]
     );
-    if (!cands.length) continue;
+    if (!cands.length) continue; // (si todos sus setters están en test, el versus no aplica → ruta normal)
     return { versusId: v.id, setter: pickByWeight(cands.map((c) => ({ ...c, weight: c.vweight }))) };
   }
   // ninguno casó, pero había un versus por etiqueta que no pudimos evaluar → aplazar
@@ -230,18 +232,26 @@ async function selectSetter(account, conv) {
   // candidatos a leads NUEVOS: encendidos y que aceptan leads (accepts_leads)
   const setters = all.filter((s) => s.bot_enabled && s.accepts_leads !== false);
   if (!setters.length) return { setter: null, hasSetters: true };
-  if (setters.length === 1) return { setter: setters[0], hasSetters: true };
+  // Atajo de un solo setter SOLO si no está en test; si lo está, pasa por el filtro de test de abajo
+  // (para no asignarle un lead real y dejarlo mudo).
+  if (setters.length === 1 && !setters[0].test_mode) return { setter: setters[0], hasSetters: true };
   const tags = await getContactTags(account, conv);
   const norm = (a) => (Array.isArray(a) ? a.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : []);
   const hasReq = (s) => norm(s.required_tags).length > 0;
   const hasExcl = (s) => norm(s.excluded_tags).length > 0;
   const generalExclude = String(account.exclude_tag || '').trim().toLowerCase();
+  const anyTest = setters.some((s) => s.test_mode);
   // si dependemos de etiquetas y no se pudieron leer, aplazamos (no fijar asignación equivocada).
-  if (tags === null && (generalExclude || setters.some((s) => hasReq(s) || hasExcl(s)))) return { setter: null, hasSetters: true, defer: true };
+  if (tags === null && (generalExclude || anyTest || setters.some((s) => hasReq(s) || hasExcl(s)))) return { setter: null, hasSetters: true, defer: true };
   // exclusión general de la conexión → ningún setter responde
   if (generalExclude && tags && tags.includes(generalExclude)) return { setter: null, hasSetters: true };
-  // fuera los setters que excluyen a este lead por sus propias etiquetas
-  const cands = setters.filter((s) => !(hasExcl(s) && tags && norm(s.excluded_tags).some((t) => tags.includes(t))));
+  // Un setter en test SOLO capta leads de PRUEBA (con la etiqueta de test de la conexión). Los leads
+  // reales NO se le asignan (irían a los setters vivos) para no quedarse mudos durante la prueba.
+  const testTag = String(account.test_tag || 'hermes-test').trim().toLowerCase();
+  const leadIsTest = Boolean(tags && testTag && tags.includes(testTag));
+  const passesTest = (s) => !s.test_mode || leadIsTest;
+  // fuera los que excluyen a este lead por sus etiquetas, y los setters en test para leads reales
+  const cands = setters.filter((s) => passesTest(s) && !(hasExcl(s) && tags && norm(s.excluded_tags).some((t) => tags.includes(t))));
   if (!cands.length) return { setter: null, hasSetters: true };
   let pool = cands.filter((s) => hasReq(s) && setterMatches(s, tags));
   if (!pool.length) pool = cands.filter((s) => !hasReq(s));

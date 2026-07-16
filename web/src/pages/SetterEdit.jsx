@@ -185,6 +185,15 @@ export default function SetterEdit() {
             })()}
           </div>
 
+          <div className="space-y-4 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+            <Toggle
+              checked={Boolean(s.test_mode)}
+              onChange={(v) => set({ test_mode: v })}
+              label="🧪 Modo test (solo este setter)"
+              description="Este setter SOLO responde a contactos con la etiqueta de prueba de la conexión (los demás setters siguen normal). Para poner TODA la conexión en test, usa el modo test de la conexión."
+            />
+          </div>
+
           {isAdmin && (
             <div className="border-t border-slate-100 pt-5">
               <Toggle checked={s.accepts_leads !== false} onChange={(v) => set({ accepts_leads: v })} label="Recibir leads nuevos" description="Si lo apagas, este setter deja de recibir leads nuevos (sigue atendiendo los que ya lleva). Para repartir leads por proporción entre setters, usa un ⚔️ Versus." />
