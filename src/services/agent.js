@@ -106,10 +106,13 @@ Genera 1 o 2 mensajes como máximo. Etiqueta sugerida: "en_seguimiento".`);
 }
 
 export function historyToMessages(history) {
-  return history.map((m) => ({
-    role: m.direction === 'inbound' ? 'user' : 'assistant',
-    content: m.body,
-  }));
+  return history.map((m) => {
+    if (m.direction === 'inbound') return { role: 'user', content: m.body };
+    // Saliente: si lo escribió un HUMANO u otra herramienta (source distinto de 'bot'/'seguimiento'),
+    // se marca para que el bot lo tenga en cuenta y no repita ni contradiga lo ya dicho al lead.
+    const noEsElBot = m.source && m.source !== 'bot' && m.source !== 'seguimiento';
+    return { role: 'assistant', content: noEsElBot ? `[ya enviado al lead por un humano u otra herramienta] ${m.body}` : m.body };
+  });
 }
 
 // Sanea un mensaje saliente. Clave: sin espacio tras el punto ("atacado.Si quieres"), Instagram

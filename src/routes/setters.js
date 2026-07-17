@@ -1,5 +1,7 @@
 import { q, one } from '../db.js';
+import { config } from '../config.js';
 import { requireAdmin, requireManageAgents, canAccessAccount } from '../lib/session.js';
+import * as ghl from '../services/ghl.js';
 
 // El admin edita todo; un usuario del portal solo el cerebro de su setter (no el proveedor/modelo de IA).
 const ADMIN_EDITABLE = [
@@ -7,13 +9,13 @@ const ADMIN_EDITABLE = [
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
-  'calendar_ids',
+  'calendar_ids', 'entry_wait_seconds', 'activation_enabled', 'activation_tag', 'activation_wait_seconds', 'sync_history',
 ];
 const USER_EDITABLE = [
   'name', 'bot_enabled', 'test_mode', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
-  'calendar_ids',
+  'calendar_ids', 'entry_wait_seconds', 'activation_enabled', 'activation_tag', 'activation_wait_seconds', 'sync_history',
 ];
 const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids', 'channels']);
 
@@ -93,7 +95,28 @@ export default async function setterRoutes(app) {
     const provider_name = setter.provider_id
       ? (await one(`SELECT name FROM providers WHERE id = $1`, [setter.provider_id]))?.name || null
       : null;
-    return { ...setter, provider_name };
+    return {
+      ...setter,
+      provider_name,
+      // URL DEDICADA para ContactTagUpdate (misma para todos; se pega en el «Custom webhook URL» de esa fila).
+      tag_webhook_url: `${config.appBaseUrl}/api/webhooks/etiquetas`,
+      // Alternativa avanzada: webhook por setter con token (nodo Webhook dentro de un workflow de GHL).
+      activation_webhook_url: `${config.appBaseUrl}/api/webhooks/activar/${setter.activation_token}`,
+    };
+  });
+
+  // 🧪 Traza reciente del webhook de etiquetas para ESTE setter (probar que ContactTagUpdate llega).
+  app.get('/api/setters/:id/tag-log', async (req, reply) => {
+    const { setter, code, error } = await loadSetterScoped(req, req.params.id);
+    if (code) return reply.code(code).send({ error });
+    const events = await q(
+      `SELECT id, kind, payload, created_at FROM webhook_log
+       WHERE kind IN ('etiqueta_recibida', 'activador_etiqueta')
+         AND (payload->>'account' = $1 OR payload->>'setter' = $2)
+       ORDER BY id DESC LIMIT 20`,
+      [String(setter.account_id), String(setter.id)]
+    );
+    return { events };
   });
 
   // Guarda la versión ANTERIOR de los 3 prompts antes de sobrescribirlos (historial para volver atrás).
@@ -138,6 +161,32 @@ export default async function setterRoutes(app) {
       await savePromptVersion(setter, source).catch(() => {});
     }
     return row;
+  });
+
+  // Crea en GHL la etiqueta activadora (para que exista exacta y el workflow la use sin diferencias).
+  app.post('/api/setters/:id/create-tag', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
+    const { setter, code, error } = await loadSetterScoped(req, req.params.id);
+    if (code) return reply.code(code).send({ error });
+    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [setter.account_id]);
+    if (!account?.location_id) return reply.code(400).send({ error: 'Primero conecta esta subcuenta a GHL (pestaña Conexión).' });
+    const name = String(req.body?.name || setter.activation_tag || '').trim().slice(0, 100);
+    if (!name) return reply.code(400).send({ error: 'Escribe primero el nombre de la etiqueta.' });
+    // guarda la etiqueta en el setter en cualquier caso (aunque ya existiera en GHL)
+    await q(`UPDATE setters SET activation_tag = $1 WHERE id = $2`, [name, setter.id]);
+    try {
+      await ghl.createLocationTag(account, name);
+      return { ok: true, tag: name };
+    } catch (err) {
+      // Solo tratamos como éxito el caso real "ya existe" (400 duplicado); el resto
+      // (token caducado, sin permiso, red) es un fallo genuino que el operador debe ver.
+      const txt = `${err?.message || ''} ${JSON.stringify(err?.body || '')}`.toLowerCase();
+      const yaExiste = err?.status === 400 && /(exist|duplicat|already|ya existe)/.test(txt);
+      if (yaExiste) return { ok: true, tag: name, nota: 'La etiqueta ya existía en GHL.' };
+      return reply.code(502).send({
+        error: `La etiqueta se guardó aquí, pero GHL no la pudo crear (${err?.status || 'sin conexión'}). Revisa la conexión de la subcuenta.`,
+      });
+    }
   });
 
   // Historial de versiones de los prompts (admin y dueño): listar y restaurar.

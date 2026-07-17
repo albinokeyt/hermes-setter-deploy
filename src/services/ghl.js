@@ -158,9 +158,43 @@ export async function sendMessage(account, { channel, contactId, message }) {
   });
 }
 
+// Historial de mensajes de un contacto (para el ACTIVADOR EXTERNO: el setter lee lo hablado
+// antes de escribir). Busca su conversación más reciente en GHL y trae los últimos mensajes.
+export async function listContactMessages(account, contactId, limit = 20) {
+  const search = await ghlApi(
+    account, 'GET',
+    `/conversations/search?locationId=${encodeURIComponent(account.location_id)}&contactId=${encodeURIComponent(contactId)}`,
+    { version: V_CONVERSATIONS }
+  );
+  const convs = Array.isArray(search?.conversations) ? search.conversations : [];
+  if (!convs.length) return { conversationId: null, messages: [] };
+  const convId = convs[0].id;
+  const data = await ghlApi(account, 'GET', `/conversations/${encodeURIComponent(convId)}/messages?limit=${limit}`, { version: V_CONVERSATIONS });
+  const raw = Array.isArray(data?.messages?.messages) ? data.messages.messages : (Array.isArray(data?.messages) ? data.messages : []);
+  const messages = raw
+    .filter((m) => m && String(m.body || '').trim())
+    .map((m) => ({
+      id: m.id || null,
+      direction: m.direction === 'inbound' ? 'inbound' : 'outbound',
+      body: String(m.body || ''),
+      type: m.messageType || m.type || '',
+      // hora REAL del mensaje en GHL, para ordenar cronológicamente al importar (no por id de inserción)
+      dateAdded: m.dateAdded || m.dateUpdated || null,
+    }))
+    .reverse(); // GHL devuelve recientes primero → cronológico
+  return { conversationId: convId, messages };
+}
+
 export async function getContact(account, contactId) {
   const data = await ghlApi(account, 'GET', `/contacts/${contactId}`, { version: V_CONTACTS });
   return data.contact || data;
+}
+
+// Crea una etiqueta en la subcuenta (para que exista EXACTA y el workflow la use sin diferencias).
+export async function createLocationTag(account, name) {
+  return ghlApi(account, 'POST', `/locations/${encodeURIComponent(account.location_id)}/tags`, {
+    body: { name: String(name).trim() }, version: V_CONTACTS,
+  });
 }
 
 export async function addTags(account, contactId, tags) {

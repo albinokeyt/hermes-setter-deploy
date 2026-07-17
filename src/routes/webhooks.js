@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { one, q, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
-import { handleInbound, handleOutboundEvent, handleAppointmentEvent, accountByLocation, logEvent } from '../services/pipeline.js';
+import { handleInbound, handleOutboundEvent, handleAppointmentEvent, accountByLocation, logEvent, activateSetterForContact } from '../services/pipeline.js';
 
 const APPOINTMENT_TYPES = ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'];
 
@@ -124,6 +124,59 @@ async function handleGlobalComment(req) {
   }
 }
 
+// ContactTagUpdate del marketplace: si el contacto tiene la etiqueta activadora de algún setter,
+// ese setter lee el historial y escribe él solo. Dedupe por setter+contacto: dispara UNA vez por
+// «añadido» de la etiqueta (al quitarse la etiqueta se resetea, así un re-añadido vuelve a disparar).
+async function handleTagActivation(account, p) {
+  const contactId = String(p.id || p.contact_id || p.contactId || p.contact?.id || '');
+  // ¿el payload trae DE VERDAD la lista de etiquetas? (para no confundir "sin lista" con "sin la etiqueta")
+  const tagsArray = Array.isArray(p.tags) ? p.tags : (Array.isArray(p.contact?.tags) ? p.contact.tags : null);
+  const tags = (tagsArray || []).map((t) => String(t).trim().toLowerCase()).filter(Boolean);
+  const setters = await q(
+    `SELECT * FROM setters WHERE account_id = $1 AND activation_enabled = true AND COALESCE(activation_tag,'') <> ''`,
+    [account.id]
+  );
+  // Sin ningún setter con activación por etiqueta → no hay nada que hacer. No registramos nada para
+  // no inundar la traza (ContactTagUpdate se dispara con CADA cambio de etiqueta de la subcuenta).
+  if (!setters.length) return;
+  const evaluados = [];
+  if (contactId) {
+    for (const s of setters) {
+      const tag = String(s.activation_tag || '').trim().toLowerCase();
+      if (!tag) continue;
+      const dedupe = `tagact:${s.id}:${contactId}`;
+      if (tags.includes(tag)) {
+        const fresh = await redis.set(dedupe, '1', 'EX', 86400, 'NX');
+        if (!fresh) { evaluados.push({ setter: s.id, nombre: s.name, etiqueta: tag, estado: 'ya_activado' }); continue; }
+        await logEvent('activador_etiqueta', { account: account.id, setter: s.id, contactId, etiqueta: tag });
+        try {
+          await activateSetterForContact(account, s, contactId, Number(s.activation_wait_seconds) || 0);
+          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: tag, estado: 'activado' });
+        } catch (err) {
+          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: tag, estado: 'error', error: String(err.message).slice(0, 120) });
+        }
+      } else {
+        // SOLO si el payload trae la lista real y la etiqueta no está → resetear (re-añadido re-dispara).
+        // Si el payload venía sin lista (parcial), NO tocamos el dedupe (evita doble activación).
+        if (tagsArray) await redis.del(dedupe);
+        evaluados.push({ setter: s.id, nombre: s.name, etiqueta: tag, estado: 'sin_coincidir' });
+      }
+    }
+  }
+  // Traza para el panel «🧪 Probar». ContactTagUpdate se dispara con CADA cambio de etiqueta de la
+  // subcuenta, así que no podemos loguear siempre (inundaría el webhook_log global, cap 2000).
+  //  · Si CASÓ una etiqueta de activación → registramos siempre (volumen bajo, acotado por el dedupe).
+  //  · Si NO casó (típico typo al montar) → registramos ACOTADO a máx 1/min por cuenta, para que el
+  //    panel confirme «el webhook llega» durante el setup sin saturar la traza compartida.
+  const huboMatch = evaluados.some((e) => e.estado !== 'sin_coincidir');
+  if (huboMatch) {
+    await logEvent('etiqueta_recibida', { account: account.id, contactId: contactId || null, tags, evaluados });
+  } else {
+    const fresh = await redis.set(`etlog:${account.id}`, '1', 'EX', 60, 'NX');
+    if (fresh) await logEvent('etiqueta_recibida', { account: account.id, contactId: contactId || null, tags, evaluados, sin_match: true });
+  }
+}
+
 function normalizeMarketplaceEvent(p) {
   return {
     contactId: p.contactId,
@@ -162,13 +215,17 @@ export default async function webhookRoutes(app) {
       }
 
       const type = p.type;
-      if (type !== 'InboundMessage' && type !== 'OutboundMessage' && !APPOINTMENT_TYPES.includes(type)) {
+      if (type !== 'InboundMessage' && type !== 'OutboundMessage' && type !== 'ContactTagUpdate' && !APPOINTMENT_TYPES.includes(type)) {
         await logEvent('evento_otro', { type, locationId: p.locationId });
         return;
       }
       const account = await accountByLocation(p.locationId);
       if (!account) {
         await logEvent('subcuenta_desconocida', { type, locationId: p.locationId, messageType: p.messageType });
+        return;
+      }
+      if (type === 'ContactTagUpdate') {
+        await handleTagActivation(account, p);
         return;
       }
       if (APPOINTMENT_TYPES.includes(type)) {
@@ -188,6 +245,42 @@ export default async function webhookRoutes(app) {
   };
   app.post('/api/webhooks/inbox', marketplaceHandler);
   app.post('/api/webhooks/ghl', marketplaceHandler);
+
+  // ⚡ Webhook DEDICADO para ContactTagUpdate: URL APARTE del inbox de mensajes/citas, para no
+  // mezclar el activador por etiqueta con el resto del pipeline. Se pega en Marketplace →
+  // Advanced Settings → Webhooks → fila «ContactTagUpdate» → «Custom webhook URL». La MISMA URL
+  // para todas las subcuentas (se detecta por el locationId del payload). Va firmado igual que el
+  // resto de webhooks del marketplace, así que verificamos la firma.
+  const tagWebhookHandler = async (req, reply) => {
+    const p = req.body || {};
+    if (!verifySignature(req)) {
+      await logEvent('etiqueta_firma_invalida', { locationId: p.locationId });
+      return reply.code(401).send({ error: 'firma inválida' });
+    }
+    reply.send({ ok: true });
+    try {
+      if (!freshTimestamp(p)) return;
+      if (p.webhookId) {
+        const fresh = await redis.set(`wh:${p.webhookId}`, '1', 'EX', 172800, 'NX');
+        if (!fresh) return; // reintento duplicado de GHL
+      }
+      // La URL es dedicada a etiquetas; si por error pegan otro evento aquí, lo ignoramos.
+      if (p.type && p.type !== 'ContactTagUpdate') {
+        await logEvent('etiqueta_evento_otro', { type: p.type, locationId: p.locationId });
+        return;
+      }
+      const account = await accountByLocation(p.locationId);
+      if (!account) {
+        await logEvent('etiqueta_subcuenta_desconocida', { locationId: p.locationId });
+        return;
+      }
+      await handleTagActivation(account, p);
+    } catch (err) {
+      console.error('[webhook etiquetas]', err);
+      await logEvent('error_webhook', { error: err.message }).catch(() => {});
+    }
+  };
+  app.post('/api/webhooks/etiquetas', tagWebhookHandler);
 
   // Webhook GLOBAL de comentarios: la MISMA URL LIMPIA para TODOS los clientes (sin token).
   // El sistema detecta a qué conexión pertenece por el location.id del payload del trigger de GHL.
@@ -209,6 +302,33 @@ export default async function webhookRoutes(app) {
     if (!account) return reply.code(404).send({ error: 'token desconocido' });
     reply.send({ ok: true });
     await ingestComment(account, req);
+  });
+
+  // ⚡ ACTIVADOR EXTERNO por setter: workflow de GHL (p. ej. "etiqueta asignada") → nodo Webhook
+  // (POST) a esta URL → el setter lee el historial del contacto y escribe él solo.
+  app.post('/api/webhooks/activar/:token', async (req, reply) => {
+    const setter = await one(`SELECT * FROM setters WHERE activation_token = $1`, [req.params.token]);
+    if (!setter) return reply.code(404).send({ error: 'activador desconocido' });
+    reply.send({ ok: true });
+    try {
+      if (!setter.activation_enabled) {
+        await logEvent('activador_deshabilitado', { setter: setter.id });
+        return;
+      }
+      const p = (req.body && typeof req.body === 'object') ? req.body : {};
+      const c = p.customData || p.custom_data || {};
+      const contactId = p.contact_id || p.contactId || c.contact_id || p.contact?.id;
+      if (!contactId) {
+        await logEvent('activador_sin_contacto', { setter: setter.id, keys: Object.keys(p) });
+        return;
+      }
+      const account = await one(`SELECT * FROM accounts WHERE id = $1`, [setter.account_id]);
+      if (!account) return;
+      await activateSetterForContact(account, setter, String(contactId), Number(setter.activation_wait_seconds) || 0);
+    } catch (err) {
+      console.error('[webhook activar]', err);
+      await logEvent('error_webhook', { error: err.message }).catch(() => {});
+    }
   });
 
   app.post('/api/webhooks/workflow/:token', async (req, reply) => {

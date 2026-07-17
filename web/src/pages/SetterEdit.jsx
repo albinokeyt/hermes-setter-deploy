@@ -4,7 +4,7 @@ import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
 import { CHANNELS, CHANNEL_LABEL } from '../stages.js';
 import { useMe } from '../components/Layout.jsx';
-import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner } from '../components/ui.jsx';
+import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 import { ModelPicker } from '../components/ModelPicker.jsx';
 import { PromptArchitect } from '../components/PromptArchitect.jsx';
 
@@ -32,6 +32,20 @@ export default function SetterEdit() {
   const [calendars, setCalendars] = useState(null);
   const [versions, setVersions] = useState(null); // null = modal cerrado
   const [restoring, setRestoring] = useState(false);
+  const [creatingTag, setCreatingTag] = useState(false);
+  const [tagMsg, setTagMsg] = useState(null);
+  const [tagLog, setTagLog] = useState(null); // null = aún no consultado
+
+  const createTag = async () => {
+    setCreatingTag(true); setTagMsg(null);
+    try {
+      const r = await api.post(`/api/setters/${id}/create-tag`, { name: s.activation_tag });
+      setTagMsg({ ok: true, text: `✓ Etiqueta «${r.tag}» lista en GHL. Úsala en tu workflow.` });
+    } catch (e) { setTagMsg({ ok: false, text: `✗ ${e.message}` }); }
+    finally { setCreatingTag(false); }
+  };
+
+  const loadTagLog = () => api.get(`/api/setters/${id}/tag-log`).then((r) => setTagLog(r.events || [])).catch(() => setTagLog([]));
 
   const openHistory = () => api.get(`/api/setters/${id}/prompt-versions`).then(setVersions).catch((e) => setError(e.message));
   const restoreVersion = async (v) => {
@@ -198,7 +212,93 @@ export default function SetterEdit() {
             <p className="mt-1.5 text-xs text-slate-400">Este setter SOLO responde en los canales marcados (debe tener al menos uno; los mensajes de otros canales se archivan igual). Cada setter tiene los suyos. Para apagarlo del todo, usa el interruptor del setter.</p>
           </div>
 
-          <Input label={`Espera antes de responder (debounce): ${s.debounce_seconds} s`} type="range" min="10" max="120" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Number(e.target.value) })} className="!p-0 accent-violet-600" hint="El bot espera este silencio y responde a todo junto, como una persona." />
+          <Input label="Espera antes de responder (debounce, segundos)" type="number" min="5" max="3600" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Math.min(3600, Math.max(5, Number(e.target.value) || 5)) })} className="!w-48" hint="El bot espera este silencio tras el último mensaje del lead y responde a todo junto, como una persona. Puedes poner desde 5 s hasta 1 h (3600 s)." />
+
+          <div className="border-t border-slate-100 pt-5">
+            <Toggle
+              checked={Boolean(s.sync_history)}
+              onChange={(v) => set({ sync_history: v })}
+              label="🔄 Leer el historial de GHL antes de responder"
+              description="Antes de escribir, re-lee toda la conversación en GHL (entrantes y salientes: humano, CTAs, u otra herramienta como ManyChat en el mismo Instagram) para no responder sin contexto. Cuesta una llamada extra a GHL por respuesta; útil si comparten el canal con otras herramientas."
+            />
+          </div>
+
+          <div className="border-t border-slate-100 pt-5">
+            <Input
+              label="⏱️ Tiempo de entrada (segundos)"
+              type="number" min="0" max="3600" step="5"
+              value={s.entry_wait_seconds ?? 0}
+              onChange={(e) => set({ entry_wait_seconds: Number(e.target.value) })}
+              className="!w-48"
+              hint="Espera antes de responder al PRIMER mensaje de un lead nuevo (0 = debounce normal). Si un 🎯 CTA de la conexión casa con el mensaje, la espera del CTA manda sobre esta."
+            />
+          </div>
+
+          <div className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/40 p-4">
+            <Toggle
+              checked={Boolean(s.activation_enabled)}
+              onChange={(v) => set({ activation_enabled: v })}
+              label="⚡ Activación externa por etiqueta"
+              description="Cuando en GHL se le añade una etiqueta al contacto, este setter lee el historial de su conversación y le escribe él solo, siguiendo su flujo. Ideal para meterlo al final de un workflow."
+            />
+            {Boolean(s.activation_enabled) && (
+              <div className="space-y-3">
+                <div className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <Input label="Etiqueta que activa al setter" value={s.activation_tag || ''} onChange={(e) => set({ activation_tag: e.target.value })} placeholder="ej. activar-setter" hint="La MISMA que añadirá tu workflow de GHL. Pulsa «Crear en GHL» para que exista exacta (sin diferencias por un espacio)." />
+                  </div>
+                  <Button variant="secondary" loading={creatingTag} disabled={!s.activation_tag?.trim()} onClick={createTag}>Crear en GHL</Button>
+                </div>
+                {tagMsg && <p className={`text-xs font-medium ${tagMsg.ok ? 'text-emerald-600' : 'text-red-500'}`}>{tagMsg.text}</p>}
+                <Input label="⏳ Espera tras la etiqueta (segundos)" type="number" min="0" max="3600" step="5" value={s.activation_wait_seconds ?? 0} onChange={(e) => set({ activation_wait_seconds: Number(e.target.value) })} className="!w-48" hint="Cuánto espera el setter tras recibir la etiqueta antes de escribir (0 = casi inmediato)." />
+
+                {/* URL DEDICADA para el evento ContactTagUpdate (aparte del webhook de mensajes) */}
+                <div className="rounded-xl border border-violet-200 bg-white p-3">
+                  <span className="block text-sm font-bold text-slate-800">🔗 Webhook de la etiqueta (ContactTagUpdate)</span>
+                  <p className="mt-1 text-xs text-slate-400">
+                    En <b>marketplace.gohighlevel.com → tu app → Advanced Settings → Webhooks</b>, busca la fila <b>ContactTagUpdate</b>, actívala y pega esta URL en su campo <b>«Custom webhook URL»</b> (así va por una URL <b>aparte</b> de tus mensajes y no se mezcla). Es la <b>misma URL para todas las subcuentas</b>: el sistema detecta a quién pertenece por el <code>locationId</code> del evento.
+                  </p>
+                  <div className="mt-2"><CopyField label="Custom webhook URL para la fila ContactTagUpdate" value={s.tag_webhook_url || ''} /></div>
+                  <p className="mt-2 text-[11px] text-slate-400">En tu workflow de GHL solo añade la acción <b>«Añadir etiqueta»</b> con la etiqueta de arriba. Ojo IG/WhatsApp: el contacto debe tener chat previo (ventana de 24 h) para poder escribirle.</p>
+                </div>
+
+                {/* 🧪 Probar recepción del webhook de etiqueta (igual que el de comentarios) */}
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-600">🧪 Probar: últimas etiquetas recibidas</span>
+                    <Button variant="secondary" className="!py-1 text-xs" onClick={loadTagLog}>Actualizar</Button>
+                  </div>
+                  {tagLog === null ? (
+                    <p className="text-xs text-slate-400">Guarda primero (interruptor + etiqueta), añade la etiqueta a un contacto de prueba en GHL y pulsa «Actualizar».</p>
+                  ) : tagLog.length === 0 ? (
+                    <p className="text-xs text-slate-400">Aún no ha llegado ningún evento de etiqueta a este webhook. Revisa que ContactTagUpdate esté activado y la URL pegada.</p>
+                  ) : (
+                    <div className="scroll-thin max-h-52 space-y-1.5 overflow-y-auto">
+                      {tagLog.map((ev) => {
+                        const activado = ev.kind === 'activador_etiqueta' || (ev.payload?.evaluados || []).some((x) => x.estado === 'activado');
+                        return (
+                          <details key={ev.id} className="rounded-lg bg-slate-50 px-2.5 py-1.5">
+                            <summary className="cursor-pointer text-[11px]">
+                              <span className={`font-bold ${activado ? 'text-emerald-600' : 'text-slate-500'}`}>{activado ? '✓ activó' : '• recibido'}</span>
+                              <span className="ml-2 text-slate-500">{(ev.payload?.tags || []).join(', ') || (ev.payload?.etiqueta ?? '—')}</span>
+                              <span className="ml-2 text-slate-400">{new Date(ev.created_at).toLocaleTimeString('es-ES')}</span>
+                            </summary>
+                            <pre className="scroll-thin mt-1 max-h-40 overflow-auto rounded bg-white p-2 text-[10px] leading-relaxed text-slate-600">{JSON.stringify(ev.payload, null, 2)}</pre>
+                          </details>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <details className="text-xs text-slate-400">
+                  <summary className="cursor-pointer">Alternativa avanzada: webhook por-setter (nodo Webhook en el workflow)</summary>
+                  <div className="mt-2"><CopyField label="Webhook del activador (nodo Webhook de GHL)" value={s.activation_webhook_url || ''} /></div>
+                  <p className="mt-1">Úsalo solo si prefieres un nodo «Webhook» dentro del workflow en vez del evento ContactTagUpdate. Esta URL sí es única por setter.</p>
+                </details>
+              </div>
+            )}
+          </div>
 
           <div className="border-t border-slate-100 pt-5">
             <span className="mb-1 block text-sm font-medium text-slate-700">📅 Calendarios que cuentan como «agenda» de este setter</span>

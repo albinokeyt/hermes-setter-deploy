@@ -64,7 +64,7 @@ export default async function archiveRoutes(app) {
     const offset = Number(req.query?.offset) || 0;
     const total = await one(`SELECT COUNT(*)::int AS n FROM messages m JOIN conversations c ON c.id = m.conversation_id ${clause}`, vals);
     const rows = await q(
-      `${BASE_SELECT} ${clause} ORDER BY m.id DESC LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}`,
+      `${BASE_SELECT} ${clause} ORDER BY m.created_at DESC, m.id DESC LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}`,
       [...vals, limit, offset]
     );
     return { total: total?.n || 0, messages: rows.map((m) => ({ ...m, quien: quien(m) })) };
@@ -94,7 +94,7 @@ export default async function archiveRoutes(app) {
 
   app.get('/api/archive/export', async (req, reply) => {
     const { clause, vals } = buildFilter(req.query || {}, await accessibleAccountIds(req));
-    const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.id DESC LIMIT 50000`, vals);
+    const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.created_at DESC, m.id DESC LIMIT 50000`, vals);
     const header = ['Fecha', 'Hora', 'Cuenta', 'Canal', 'Lead', 'Direccion', 'Quien', 'Mensaje'];
     const lines = [header.map(csvCell).join(',')];
     for (const m of rows) {
@@ -140,7 +140,7 @@ export default async function archiveRoutes(app) {
     const { clause, vals } = buildFilter(b, await accessibleAccountIds(req));
     // newest-first; recortamos por presupuesto quedándonos con los MÁS RECIENTES,
     // luego los ordenamos cronológicamente para el prompt.
-    const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.id DESC LIMIT 500`, vals);
+    const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.created_at DESC, m.id DESC LIMIT 500`, vals);
     const fmt = (m) => {
       const d = new Date(m.created_at);
       return `[${d.toISOString().slice(0, 16).replace('T', ' ')}] ${m.account_name} · ${m.lead_name || m.ghl_contact_id} (${m.channel}) ${quien(m)}: ${String(m.body).replace(/\s+/g, ' ')}\n`;

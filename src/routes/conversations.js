@@ -41,8 +41,8 @@ export default async function conversationRoutes(app) {
               c.followup_state, c.last_inbound_at, c.last_outbound_at, c.updated_at, COALESCE(NULLIF(a.alias,''), a.name) AS account_name, a.location_id,
               st.name AS setter_name,
               ${humanExists} AS human_touched,
-              (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
-              (SELECT m.direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_direction
+              (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message,
+              (SELECT m.direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_direction
        FROM conversations c
        JOIN accounts a ON a.id = c.account_id
        LEFT JOIN setters st ON st.id = c.setter_id
@@ -63,7 +63,13 @@ export default async function conversationRoutes(app) {
        WHERE c.id = $1`,
       [base.id]
     );
-    const messages = await q(`SELECT * FROM messages WHERE conversation_id = $1 ORDER BY id ASC LIMIT 500`, [conv.id]);
+    // Los 500 MÁS RECIENTES (no los más antiguos), luego en orden cronológico ascendente para pintar.
+    const messages = await q(
+      `SELECT * FROM (
+         SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC, id DESC LIMIT 500
+       ) t ORDER BY created_at ASC, id ASC`,
+      [conv.id]
+    );
     const history = await q(`SELECT * FROM stage_history WHERE conversation_id = $1 ORDER BY id DESC LIMIT 20`, [conv.id]);
     return { ...conv, messages, stage_history: history };
   });
@@ -181,7 +187,7 @@ export default async function conversationRoutes(app) {
     const rows = await q(
       `SELECT c.id, c.lead_name, c.ghl_contact_id, c.channel, c.stage, c.updated_at, c.bot_paused,
               COALESCE(NULLIF(a.alias,''), a.name) AS account_name,
-              (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message
+              (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message
        FROM conversations c JOIN accounts a ON a.id = c.account_id
        ${ids ? 'WHERE c.account_id = ANY($1::int[])' : ''}
        ORDER BY c.updated_at DESC LIMIT 400`,
