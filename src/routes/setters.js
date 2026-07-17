@@ -3,19 +3,19 @@ import { requireAdmin, requireManageAgents, canAccessAccount } from '../lib/sess
 
 // El admin edita todo; un usuario del portal solo el cerebro de su setter (no el proveedor/modelo de IA).
 const ADMIN_EDITABLE = [
-  'name', 'bot_enabled', 'accepts_leads', 'test_mode', 'required_tags', 'required_tags_mode', 'excluded_tags',
+  'name', 'bot_enabled', 'accepts_leads', 'test_mode', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
   'calendar_ids',
 ];
 const USER_EDITABLE = [
-  'name', 'bot_enabled', 'test_mode', 'required_tags', 'required_tags_mode', 'excluded_tags',
+  'name', 'bot_enabled', 'test_mode', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   'calendar_ids',
 ];
-const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids']);
+const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids', 'channels']);
 
 async function loadSetterScoped(req, setterId) {
   const setter = await one(`SELECT * FROM setters WHERE id = $1`, [setterId]);
@@ -73,8 +73,11 @@ export default async function setterRoutes(app) {
     if (!acc) return reply.code(404).send({ error: 'Conexión no encontrada' });
     const name = String(req.body?.name || '').trim() || 'Nuevo setter';
     const hasDefault = await one(`SELECT 1 FROM setters WHERE account_id = $1 AND is_default LIMIT 1`, [req.params.id]);
+    // Hereda los canales de la conexión (no el default): respeta lo que el cliente ya desactivó.
     return one(
-      `INSERT INTO setters (account_id, name, is_default) VALUES ($1, $2, $3) RETURNING *`,
+      `INSERT INTO setters (account_id, name, is_default, channels)
+       SELECT $1, $2, $3, CASE WHEN jsonb_typeof(a.channels) = 'array' THEN a.channels ELSE '["IG","WhatsApp"]'::jsonb END
+       FROM accounts a WHERE a.id = $1 RETURNING *`,
       [req.params.id, name, !hasDefault]
     );
   });
@@ -98,6 +101,8 @@ export default async function setterRoutes(app) {
     const vals = [];
     for (const f of editable) {
       if (!(f in b)) continue;
+      // No dejar el setter sin canales (estado ambiguo): si llega vacío/invalido, se ignora el cambio.
+      if (f === 'channels' && !(Array.isArray(b[f]) && b[f].length)) continue;
       vals.push(JSON_FIELDS.has(f) ? JSON.stringify(b[f]) : b[f]);
       sets.push(`${f} = $${vals.length}${JSON_FIELDS.has(f) ? '::jsonb' : ''}`);
     }

@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Plus, Trash2, Sparkles, ChevronRight, Bot } from 'lucide-react';
 import { api } from '../api.js';
-import { CHANNELS, CHANNEL_LABEL } from '../stages.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 import { AccessManager } from '../components/AccessManager.jsx';
@@ -171,20 +170,7 @@ export default function AccountEdit() {
               <Button variant="secondary" onClick={saveAlias} disabled={aliasDraft.trim() === (acc.alias || '')}>Guardar alias</Button>
             </div>
           </div>
-          <div>
-            <span className="mb-2 block text-sm font-medium text-slate-700">Canales activos</span>
-            <div className="flex flex-wrap gap-2">
-              {CHANNELS.map((ch) => {
-                const active = (acc.channels || []).includes(ch);
-                return (
-                  <button key={ch} type="button" onClick={() => set({ channels: active ? acc.channels.filter((c) => c !== ch) : [...(acc.channels || []), ch] })}
-                    className={`rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${active ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'}`}>
-                    {CHANNEL_LABEL[ch]}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <p className="text-xs text-slate-400">📡 <b>Canales de atención</b>: se eligen <b>por setter</b> (cada setter marca los suyos en su pestaña <b>Comportamiento</b>). Los mensajes de todos los canales se archivan igual; el canal solo decide qué setter responde dónde.</p>
           <div className="space-y-4 border-t border-slate-100 pt-5">
             <Toggle checked={!(activeHours.always !== false)} onChange={(v) => set({ active_hours: { ...activeHours, always: !v } })} label="Limitar horario de respuesta" description="Fuera del horario, el bot espera a la próxima apertura" />
             {activeHours.always === false && (

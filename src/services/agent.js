@@ -68,13 +68,17 @@ function leadNameForPrompt(raw) {
 
 function leadNameBlock(conversation) {
   const name = leadNameForPrompt(conversation?.lead_name);
+  const cierre = 'Esta regla del nombre es FIJA y prevalece: se combina con tu flujo (si el negocio te pide pedir el nombre, hazlo tal cual dice aquí). Jamás inventes ni adivines un nombre; en cuanto el lead te diga cómo se llama, guárdalo en "memoria" y úsalo.';
   if (!name) {
-    return `=== NOMBRE DEL LEAD ===\nNo conocemos su nombre. NO lo llames por ningún nombre hasta que él te lo diga (y cuando lo diga, guárdalo en "memoria").`;
+    return `=== NOMBRE DEL LEAD (regla fija) ===
+No sabemos su nombre. En un momento natural y temprano de la conversación, pregúntaselo con amabilidad (sin sonar a formulario). Mientras no lo sepas, no le pongas ningún nombre.
+${cierre}`;
   }
-  return `=== NOMBRE DEL LEAD ===
+  return `=== NOMBRE DEL LEAD (regla fija) ===
 Su perfil/usuario dice: «${name}».
-- Si ahí se reconoce un nombre de persona real, úsalo con naturalidad (solo el nombre de pila, p. ej. «Lucía García» → "Lucía"; corrige mayúsculas si hace falta).
-- Si NO parece un nombre humano (números o rarezas tipo "user345", "wanderlust_92", apodos o nombres claramente falsos), el nombre NO se reconoce: NO lo llames así ni lo saludes por ese nombre; trátalo sin nombre hasta que él te diga cómo se llama. Jamás inventes ni adivines un nombre.`;
+- Si ahí se reconoce un nombre de persona real, ese ES su nombre: úsalo con naturalidad (solo el nombre de pila, p. ej. «Lucía García» → "Lucía"; corrige mayúsculas). No necesitas preguntárselo.
+- Si NO parece un nombre humano (números o rarezas tipo "user345", "wanderlust_92", apodos o nombres claramente falsos), NO lo reconozcas ni lo saludes por ahí: trátalo sin nombre y, en un momento natural, pregúntale con amabilidad cómo se llama.
+${cierre}`;
 }
 
 export function buildSystemPrompt(account, conversation, opts = {}) {

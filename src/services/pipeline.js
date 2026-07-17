@@ -146,6 +146,8 @@ export function mergeSetter(account, s) {
     followup_ai_check: s.followup_ai_check !== false, // por defecto ON
     // modo test: el de la CONEXIÓN aplica a todos; el del setter solo a él (misma test_tag de la conexión)
     test_mode: Boolean(account.test_mode || s.test_mode),
+    // canales de atención del setter (si no tiene, hereda los de la conexión — setters legacy)
+    channels: Array.isArray(s.channels) && s.channels.length ? s.channels : account.channels,
     // calendarios "agenda" del setter (sin respaldo: vacío = este setter no mide agendas)
     calendar_ids: Array.isArray(s.calendar_ids) ? s.calendar_ids : [],
     required_tags: s.required_tags,
@@ -159,6 +161,17 @@ export function mergeSetter(account, s) {
     audio_provider_id: s.audio_provider_id,
     audio_model: s.audio_model,
   };
+}
+
+// ¿Este setter atiende este canal? Usa la lista EFECTIVA (los canales del setter, o los de la
+// conexión si el setter no define ninguno) — la MISMA que aplica mergeSetter/allowedByTags, para que
+// SELECCIÓN y RESPUESTA nunca discrepen (evita asignar-y-mutear). Si tampoco hay conexión: no filtra.
+function servesChannel(s, channel, account) {
+  const ch = (Array.isArray(s.channels) && s.channels.length)
+    ? s.channels
+    : (Array.isArray(account?.channels) ? account.channels : []);
+  if (!ch.length) return true;
+  return !channel || ch.includes(channel);
 }
 
 function setterMatches(s, tags) {
@@ -209,12 +222,13 @@ async function activeVersusFor(account, conv) {
       matches = tags.includes(String(v.audience_tag || '').trim().toLowerCase());
     }
     if (!matches) continue;
-    const cands = await q(
+    const rows = await q(
       `SELECT s.*, vs.weight AS vweight FROM versus_setters vs JOIN setters s ON s.id = vs.setter_id
        WHERE vs.versus_id = $1 AND s.account_id = $2 AND s.bot_enabled AND s.test_mode = false ORDER BY s.id`,
       [v.id, account.id]
     );
-    if (!cands.length) continue; // (si todos sus setters están en test, el versus no aplica → ruta normal)
+    const cands = rows.filter((s) => servesChannel(s, conv.channel, account)); // solo setters que atienden este canal
+    if (!cands.length) continue; // (si ninguno aplica —test/canal—, el versus no gobierna → ruta normal)
     return { versusId: v.id, setter: pickByWeight(cands.map((c) => ({ ...c, weight: c.vweight }))) };
   }
   // ninguno casó, pero había un versus por etiqueta que no pudimos evaluar → aplazar
@@ -229,8 +243,8 @@ async function selectSetter(account, conv) {
   const vr = await activeVersusFor(account, conv);
   if (vr?.defer) return { setter: null, hasSetters: true, defer: true };
   if (vr?.setter) return { setter: vr.setter, hasSetters: true, versusId: vr.versusId };
-  // candidatos a leads NUEVOS: encendidos y que aceptan leads (accepts_leads)
-  const setters = all.filter((s) => s.bot_enabled && s.accepts_leads !== false);
+  // candidatos a leads NUEVOS: encendidos, que aceptan leads y que atienden ESTE canal
+  const setters = all.filter((s) => s.bot_enabled && s.accepts_leads !== false && servesChannel(s, conv.channel, account));
   if (!setters.length) return { setter: null, hasSetters: true };
   // Atajo de un solo setter SOLO si no está en test; si lo está, pasa por el filtro de test de abajo
   // (para no asignarle un lead real y dejarlo mudo).
@@ -320,8 +334,8 @@ export async function handleInbound(account, evt) {
     await logEvent('canal_ignorado', { account: account.id, raw: evt.channel });
     return null;
   }
-  const channels = Array.isArray(account.channels) ? account.channels : [];
-  if (!channels.includes(channel)) return null;
+  // Los canales son POR SETTER (quién responde dónde se decide al enrutar/responder);
+  // aquí se archiva todo canal conocido para que el cliente vea sus mensajes.
 
   // recaudación desactivada y bot apagado → no guardamos nada (ni procesamos adjuntos)
   if (!(await shouldCollect(account))) return null;
@@ -679,8 +693,14 @@ async function getContactTags(account, conv) {
   return tags;
 }
 
-// El bot solo responde si pasa el modo test Y el filtro de etiquetas requeridas.
+// El bot solo responde si pasa el canal del setter, el modo test Y el filtro de etiquetas.
 async function allowedByTags(account, conv) {
+  // Canal: el setter (ya fusionado en account) solo responde en SUS canales. Cubre también las
+  // conversaciones ya asignadas (sticky): si le quitan un canal, deja de responder ahí al instante.
+  const chans = Array.isArray(account.channels) ? account.channels : [];
+  if (chans.length && conv.channel && !chans.includes(conv.channel)) {
+    return false;
+  }
   const needTest = Boolean(account.test_mode);
   const norm = (arr) => (Array.isArray(arr) ? arr.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : []);
   // En un versus, las etiquetas propias del setter NO aplican (el versus gobierna el reparto).

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
+import { CHANNELS, CHANNEL_LABEL } from '../stages.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner } from '../components/ui.jsx';
 import { ModelPicker } from '../components/ModelPicker.jsx';
@@ -159,6 +160,26 @@ export default function SetterEdit() {
 
       {tab === 'comportamiento' && (
         <Card className="max-w-2xl space-y-6 p-6">
+          <div>
+            <span className="mb-2 block text-sm font-medium text-slate-700">Canales que atiende este setter</span>
+            <div className="flex flex-wrap gap-2">
+              {CHANNELS.map((ch) => {
+                const cur = s.channels || [];
+                const active = cur.includes(ch);
+                const isLast = active && cur.length === 1;
+                return (
+                  <button key={ch} type="button" disabled={isLast}
+                    onClick={() => set({ channels: active ? cur.filter((c) => c !== ch) : [...cur, ch] })}
+                    title={isLast ? 'Debe atender al menos un canal' : ''}
+                    className={`rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${active ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'} ${isLast ? 'cursor-not-allowed opacity-70' : ''}`}>
+                    {CHANNEL_LABEL[ch]}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1.5 text-xs text-slate-400">Este setter SOLO responde en los canales marcados (debe tener al menos uno; los mensajes de otros canales se archivan igual). Cada setter tiene los suyos. Para apagarlo del todo, usa el interruptor del setter.</p>
+          </div>
+
           <Input label={`Espera antes de responder (debounce): ${s.debounce_seconds} s`} type="range" min="10" max="120" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Number(e.target.value) })} className="!p-0 accent-violet-600" hint="El bot espera este silencio y responde a todo junto, como una persona." />
 
           <div className="border-t border-slate-100 pt-5">
