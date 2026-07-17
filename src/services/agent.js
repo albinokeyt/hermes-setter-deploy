@@ -55,12 +55,35 @@ function outputSpec() {
 }`;
 }
 
+// Limpia el nombre del perfil del lead para el prompt: fuera emojis/símbolos decorativos.
+// La decisión de si "parece un nombre de persona real" la toma el MODELO con la regla del prompt
+// (distingue mejor "Lucía García" de "user345" o un apodo raro que cualquier regex).
+function leadNameForPrompt(raw) {
+  const s = String(raw || '')
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s.slice(0, 60);
+}
+
+function leadNameBlock(conversation) {
+  const name = leadNameForPrompt(conversation?.lead_name);
+  if (!name) {
+    return `=== NOMBRE DEL LEAD ===\nNo conocemos su nombre. NO lo llames por ningún nombre hasta que él te lo diga (y cuando lo diga, guárdalo en "memoria").`;
+  }
+  return `=== NOMBRE DEL LEAD ===
+Su perfil/usuario dice: «${name}».
+- Si ahí se reconoce un nombre de persona real, úsalo con naturalidad (solo el nombre de pila, p. ej. «Lucía García» → "Lucía"; corrige mayúsculas si hace falta).
+- Si NO parece un nombre humano (números o rarezas tipo "user345", "wanderlust_92", apodos o nombres claramente falsos), el nombre NO se reconoce: NO lo llames así ni lo saludes por ese nombre; trátalo sin nombre hasta que él te diga cómo se llama. Jamás inventes ni adivines un nombre.`;
+}
+
 export function buildSystemPrompt(account, conversation, opts = {}) {
   const memoria = conversation?.memory && Object.keys(conversation.memory).length
     ? JSON.stringify(conversation.memory, null, 2)
     : '(aún sin datos)';
   const parts = [
     `Eres el setter comercial del negocio descrito abajo. Conversas por ${conversation?.channel || 'chat'} con un lead. Tu trabajo: conectar, cualificar y llevarlo al objetivo del FLUJO.`,
+    leadNameBlock(conversation),
     `=== 1. IDENTIDAD Y PERSONALIDAD ===\n${account.prompt_identity || '(sin definir)'}`,
     `=== 2. NEGOCIO Y OFERTA ===\n${account.prompt_business || '(sin definir)'}`,
     `=== 3. FLUJO Y OBJETIVO ===\n${account.prompt_flow || '(sin definir)'}`,
