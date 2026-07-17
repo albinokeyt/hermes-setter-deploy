@@ -38,6 +38,7 @@ function styleRules(account) {
 - El lead puede haber enviado varios mensajes seguidos: respóndelos como un TODO, no uno por uno.
 - Máximo UNA pregunta por turno.
 - Emojis con mucha moderación (0 o 1), solo si encajan.
+- Deja SIEMPRE un espacio después de punto, coma o interrogación antes de la siguiente palabra ("...atacado. Si quieres..."): si pegas dos frases sin espacio, el chat lo convierte en un enlace falso.
 - Jamás digas que eres una IA salvo que te lo pregunten directamente; si te lo preguntan, no mientas.
 - Nunca inventes datos, precios ni enlaces que no estén en tu contexto.
 - Si el lead pide hablar con una persona, se molesta, o el caso es delicado: responde breve y marca "handoff": true.`;
@@ -84,6 +85,44 @@ export function historyToMessages(history) {
   }));
 }
 
+// Sanea un mensaje saliente. Clave: sin espacio tras el punto ("atacado.Si quieres"), Instagram
+// interpreta "atacado.si" como un DOMINIO (.si = Eslovenia) y muestra una preview de un enlace que
+// el bot jamás quiso mandar. Solo tocamos minúscula/dígito + puntuación + MAYÚSCULA (una URL real
+// va en minúsculas, así no se rompen los enlaces legítimos del prompt).
+export function sanitizeMessage(text) {
+  // Un token es tipo URL/email si tiene '/', '@', '://', empieza por www. o lleva query '?..=':
+  // esos NO se tocan (para no romper enlaces reales que el bot deba reenviar tal cual).
+  const isUrlish = (tok) => /[/@]|:\/\/|^www\.|\?[^\s]*=/.test(tok);
+  return String(text).split(/(\s+)/).map((tok) => {
+    if (!tok || /^\s+$/.test(tok) || isUrlish(tok)) return tok;
+    return tok
+      .replace(/([\p{Ll}\p{N}])\.(\p{Lu})/gu, '$1. $2')
+      .replace(/([\p{Ll}\p{N}])([!?;])(\p{Lu})/gu, '$1$2 $3');
+  }).join('');
+}
+
+// Rescata los mensajes COMPLETOS del array "mensajes" de un JSON truncado (el modelo se quedó sin
+// tokens a mitad). Solo captura literales de cadena cerrados: el mensaje cortado a medias se descarta.
+function salvageMensajes(text) {
+  // Localiza el inicio del array de mensajes: tras "mensajes": [ , o un array suelto al principio.
+  let body = null;
+  const keyed = text.match(/"mensajes"\s*:\s*\[([\s\S]*)/);
+  if (keyed) body = keyed[1];
+  else if (text.trimStart().startsWith('[')) body = text.slice(text.indexOf('[') + 1);
+  if (body == null) return [];
+  // Recorre literales de cadena CERRADOS; para en el primer ']' que esté FUERA de una cadena.
+  // El alternador de cadena consume comillas y escapes, así que un ']' dentro de un mensaje
+  // ("te dejo [aquí]") no corta el recorrido; el mensaje a medias (sin cierre) se descarta.
+  const out = [];
+  const re = /"((?:[^"\\]|\\.)*)"|\]/g;
+  let g;
+  while ((g = re.exec(body)) !== null) {
+    if (g[0] === ']') break;
+    try { out.push(JSON.parse(`"${g[1]}"`)); } catch { out.push(g[1]); }
+  }
+  return out.map((s) => String(s).trim()).filter(Boolean);
+}
+
 export function parseAgentJson(content, account) {
   let text = String(content).trim();
   text = text.replace(/^```(?:json)?/i, '').replace(/```$/,'').trim();
@@ -94,12 +133,23 @@ export function parseAgentJson(content, account) {
     try { parsed = JSON.parse(text.slice(start, end + 1)); } catch { parsed = null; }
   }
   if (!parsed || typeof parsed !== 'object') {
-    // fallback: el modelo respondió texto plano → lo troceamos por párrafos
-    const chunks = text.split(/\n\n+/).map((s) => s.trim()).filter(Boolean);
-    parsed = { mensajes: chunks.length ? chunks : [text], etiqueta: null, memoria: {}, handoff: false, motivo: '' };
+    const t = text.trimStart();
+    const looksJson = t.startsWith('{') || t.startsWith('[') || /"mensajes"\s*:\s*\[/.test(text);
+    if (looksJson) {
+      // Parecía JSON del agente pero no parsea (roto/truncado, o con texto antepuesto): JAMÁS se
+      // envía el crudo al lead. Rescatamos los mensajes completos; si no hay ninguno, lanzamos para
+      // que el reintento del pipeline lo genere de nuevo (mejor no responder que mandar el JSON).
+      const rescued = salvageMensajes(text);
+      if (!rescued.length) throw new Error('el modelo devolvió un JSON malformado/truncado (sin mensajes rescatables)');
+      parsed = { mensajes: rescued, etiqueta: null, memoria: {}, handoff: false, motivo: '' };
+    } else {
+      // fallback: el modelo respondió texto plano → lo troceamos por párrafos
+      const chunks = text.split(/\n\n+/).map((s) => s.trim()).filter(Boolean);
+      parsed = { mensajes: chunks.length ? chunks : [text], etiqueta: null, memoria: {}, handoff: false, motivo: '' };
+    }
   }
   let mensajes = Array.isArray(parsed.mensajes) ? parsed.mensajes : [String(parsed.mensajes || '')];
-  mensajes = mensajes.map((m) => String(m || '').trim()).filter(Boolean);
+  mensajes = mensajes.map((m) => sanitizeMessage(String(m || '').trim()).trim()).filter(Boolean);
   const max = account.max_msgs || 3;
   if (mensajes.length > max) {
     const keep = mensajes.slice(0, max - 1);
