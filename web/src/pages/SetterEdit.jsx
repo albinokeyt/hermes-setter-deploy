@@ -5,7 +5,6 @@ import { api } from '../api.js';
 import { CHANNELS, CHANNEL_LABEL } from '../stages.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
-import { ModelPicker } from '../components/ModelPicker.jsx';
 import { PromptArchitect } from '../components/PromptArchitect.jsx';
 
 const TABS = [
@@ -75,10 +74,6 @@ export default function SetterEdit() {
 
   const set = (patch) => setS({ ...s, ...patch });
   const providersFor = (kind) => providers.filter((p) => !Array.isArray(p.kinds) || p.kinds.includes(kind));
-  const isOpenRouter = (providerId) => {
-    const p = providers.find((x) => x.id === providerId);
-    return Boolean(p && /openrouter\.ai/.test(p.base_url || ''));
-  };
 
   const save = async () => {
     setSaving(true);
@@ -149,11 +144,13 @@ export default function SetterEdit() {
           {providers.length === 0 && <Banner tone="warn">Aún no tienes APIs. Créalas en <b>APIs de IA</b>.</Banner>}
           <Card className="space-y-5 p-6">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-800">💬 API de texto (el chat del agente)</div>
-            <Select label="Proveedor de texto" value={s.provider_id || ''} onChange={(e) => set({ provider_id: e.target.value ? Number(e.target.value) : null })}>
-              <option value="">— Elige una API de texto —</option>
-              {providersFor('text').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </Select>
-            <ModelPicker label="Modelo" value={s.model} onChange={(v) => set({ model: v })} isOpenRouter={isOpenRouter(s.provider_id)} placeholder="vacío = modelo por defecto del proveedor" hint={isOpenRouter(s.provider_id) ? 'Busca y elige el modelo de OpenRouter' : 'Ej.: gemini-2.5-flash-lite'} />
+            <div>
+              <Select label="Modelo de IA (elige una API que ya creaste)" value={s.provider_id || ''} onChange={(e) => set({ provider_id: e.target.value ? Number(e.target.value) : null, model: '' })}>
+                <option value="">— Elige una API de texto —</option>
+                {providersFor('text').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </Select>
+              <p className="mt-1.5 text-xs text-slate-400">Cada API ya trae su modelo (lo configuraste en <b>APIs de IA</b>). Para usar otro modelo, créalo como una API nueva ahí y elígela aquí.</p>
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <Input label={`Temperatura: ${s.temperature}`} type="range" min="0" max="1.5" step="0.1" value={s.temperature} onChange={(e) => set({ temperature: Number(e.target.value) })} className="!p-0 accent-violet-600" hint="Más alta = más creativo" />
               <Select label="Máximo de mensajes por respuesta" value={s.max_msgs} onChange={(e) => set({ max_msgs: Number(e.target.value) })}>
@@ -166,24 +163,24 @@ export default function SetterEdit() {
           <Card className="space-y-4 p-6">
             <Toggle checked={s.vision_enabled} onChange={(v) => set({ vision_enabled: v })} label="👁️ API de imagen (leer fotos)" description="Cuando el lead envía una imagen, este setter la lee y la usa en la conversación" />
             {s.vision_enabled && (
-              <div className="grid grid-cols-2 gap-4 pl-1">
-                <Select label="Proveedor de imagen" value={s.vision_provider_id || ''} onChange={(e) => set({ vision_provider_id: e.target.value ? Number(e.target.value) : null })}>
+              <div className="pl-1">
+                <Select label="API de imagen" value={s.vision_provider_id || ''} onChange={(e) => set({ vision_provider_id: e.target.value ? Number(e.target.value) : null, vision_model: '' })}>
                   <option value="">— Elige una API de imagen —</option>
                   {providersFor('image').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </Select>
-                <ModelPicker label="Modelo de imagen" value={s.vision_model} onChange={(v) => set({ vision_model: v })} isOpenRouter={isOpenRouter(s.vision_provider_id)} kind="image" placeholder="google/gemini-2.5-flash" />
+                <p className="mt-1.5 text-xs text-slate-400">Usa el modelo que configuraste en esa API. Para otro modelo, créalo como una API de imagen nueva en <b>APIs de IA</b>.</p>
               </div>
             )}
           </Card>
           <Card className="space-y-4 p-6">
             <Toggle checked={s.audio_enabled} onChange={(v) => set({ audio_enabled: v })} label="🎤 API de audio (transcribir notas de voz)" description="Convierte las notas de voz del lead en texto para este setter" />
             {s.audio_enabled && (
-              <div className="grid grid-cols-2 gap-4 pl-1">
-                <Select label="Proveedor de audio" value={s.audio_provider_id || ''} onChange={(e) => set({ audio_provider_id: e.target.value ? Number(e.target.value) : null })}>
+              <div className="pl-1">
+                <Select label="API de audio" value={s.audio_provider_id || ''} onChange={(e) => set({ audio_provider_id: e.target.value ? Number(e.target.value) : null, audio_model: '' })}>
                   <option value="">— Elige una API de audio —</option>
                   {providersFor('audio').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </Select>
-                <ModelPicker label="Modelo de audio (Whisper)" value={s.audio_model} onChange={(v) => set({ audio_model: v })} isOpenRouter={isOpenRouter(s.audio_provider_id)} kind="audio" placeholder="openai/whisper-large-v3-turbo" />
+                <p className="mt-1.5 text-xs text-slate-400">Usa el modelo que configuraste en esa API. Para otro modelo, créalo como una API de audio nueva en <b>APIs de IA</b>.</p>
               </div>
             )}
           </Card>
