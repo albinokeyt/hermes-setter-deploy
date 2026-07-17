@@ -9,13 +9,13 @@ const ADMIN_EDITABLE = [
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
-  'calendar_ids', 'entry_wait_seconds', 'activation_enabled', 'activation_tag', 'activation_wait_seconds', 'sync_history',
+  'calendar_ids', 'activation_enabled', 'activation_tag', 'activation_wait_seconds',
 ];
 const USER_EDITABLE = [
   'name', 'bot_enabled', 'test_mode', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
-  'calendar_ids', 'entry_wait_seconds', 'activation_enabled', 'activation_tag', 'activation_wait_seconds', 'sync_history',
+  'calendar_ids', 'activation_enabled', 'activation_tag', 'activation_wait_seconds',
 ];
 const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids', 'channels']);
 

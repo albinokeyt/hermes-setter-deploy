@@ -150,10 +150,6 @@ export function mergeSetter(account, s) {
     test_mode: Boolean(account.test_mode || s.test_mode),
     // canales de atención del setter (si no tiene, hereda los de la conexión — setters legacy)
     channels: Array.isArray(s.channels) && s.channels.length ? s.channels : account.channels,
-    // espera de ENTRADA del setter (primer mensaje de un lead nuevo); el CTA que case es dominante
-    entry_wait_seconds: Number(s.entry_wait_seconds) || 0,
-    // re-leer el historial de GHL antes de responder (para no perder mensajes de humano/CTA/ManyChat)
-    sync_history: Boolean(s.sync_history),
     // calendarios "agenda" del setter (sin respaldo: vacío = este setter no mide agendas)
     calendar_ids: Array.isArray(s.calendar_ids) ? s.calendar_ids : [],
     required_tags: s.required_tags,
@@ -478,17 +474,14 @@ export async function handleInbound(account, evt) {
       const s = await one(`SELECT * FROM setters WHERE id = $1`, [conv.setter_id]);
       if (s) account = mergeSetter(account, s);
     }
-    // Espera de entrada: el CTA que case es DOMINANTE; si no casa ninguno, aplica el
-    // "tiempo de entrada" propio del setter (0 = responde con su debounce normal).
+    // Si un 🎯 CTA de la conexión casa con el primer mensaje, aplica su espera; si no, el debounce normal.
     let delayMs = null;
     if (conv.is_new) {
       const ctaWait = matchCtaWait(account, body);
-      const entryWait = Math.min(Math.max(0, Number(account.entry_wait_seconds) || 0), 3600);
-      const wait = ctaWait != null ? ctaWait : (entryWait > 0 ? entryWait : null);
-      if (wait != null) {
-        delayMs = wait * 1000;
-        await redis.set(ctaKey(conv.id), String(Date.now() + delayMs), 'EX', wait + 300);
-        await logEvent(ctaWait != null ? 'cta_espera' : 'entrada_espera', { conv: conv.id, segundos: wait });
+      if (ctaWait != null) {
+        delayMs = ctaWait * 1000;
+        await redis.set(ctaKey(conv.id), String(Date.now() + delayMs), 'EX', ctaWait + 300);
+        await logEvent('cta_espera', { conv: conv.id, segundos: ctaWait });
       }
     } else {
       // mensajes posteriores durante la espera del CTA: respetar el mínimo que falta
@@ -538,16 +531,8 @@ export async function activateSetterForContact(account, setter, contactId, waitS
     await q(`UPDATE conversations SET setter_id = $1 WHERE id = $2`, [setter.id, conv.id]);
     conv.setter_id = setter.id;
   }
-  // importar el historial que no tengamos (dedupe por ghl_message_id)
-  for (const m of ghlHistory.messages) {
-    if (!m.id) continue;
-    await q(
-      `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (ghl_message_id) WHERE ghl_message_id IS NOT NULL DO NOTHING`,
-      [conv.id, m.direction, m.direction === 'inbound' ? 'lead' : 'humano', m.body, String(m.id)]
-    );
-  }
+  // importar el historial que no tengamos (con fecha real y sin duplicar/re-etiquetar los propios)
+  await saveGhlMessages(conv, ghlHistory.messages);
   await redis.set(activarKey(conv.id), '1', 'EX', 3600);
   await logEvent('activador_externo', { conv: conv.id, setter: setter.id, contactId, canal: channel, mensajes_importados: ghlHistory.messages.length, espera_s: waitSeconds });
   // espera configurable tras la etiqueta antes de que el setter entre (mín. 3 s para que no sea instantáneo)
@@ -555,20 +540,12 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   await scheduleDebounce(merged, conv.id, delayMs);
 }
 
-// Trae de GHL los mensajes del contacto (entrantes y salientes) y guarda los que falten
-// (dedupe por ghl_message_id). Devuelve cuántos se importaron. Para tener el contexto completo
-// aunque un humano/CTA/otra herramienta haya escrito por el mismo canal.
-async function importGhlHistory(account, conv, limit = 20) {
-  if (!account.location_id) return 0;
-  let ghlHistory;
-  try {
-    ghlHistory = await ghl.listContactMessages(account, conv.ghl_contact_id, limit);
-  } catch (err) {
-    await logEvent('sync_historial_error', { conv: conv.id, error: String(err.message).slice(0, 150) });
-    return 0;
-  }
+// Guarda en `messages` los mensajes traídos de GHL (entrantes y salientes) que falten, dedupe por
+// ghl_message_id, preservando su fecha real y sin duplicar/re-etiquetar los que ya teníamos.
+// Recibe los mensajes ya traídos (no vuelve a llamar a GHL). Devuelve cuántos insertó de nuevo.
+async function saveGhlMessages(conv, messages) {
   let imported = 0;
-  for (const m of ghlHistory.messages) {
+  for (const m of (Array.isArray(messages) ? messages : [])) {
     if (!m.id) continue;
     try {
       // Fecha REAL del mensaje en GHL (para ordenar cronológico, no por id de inserción).
@@ -924,19 +901,11 @@ export async function processDebounce(job) {
     return;
   }
 
-  // Antes de responder, re-leer el historial de GHL si el setter lo pide (o siempre en una activación),
-  // para tener también los salientes de humano/CTA/otra herramienta y no responder sin sentido.
-  let history2 = history;
-  if ((account.sync_history || activacion) && account.location_id) {
-    const imp = await importGhlHistory(account, conv);
-    if (imp > 0) history2 = (await q(`SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC, id DESC LIMIT 30`, [conversationId])).reverse();
-  }
-
   const snapshotId = await lastInboundId(conversationId);
   let result;
   try {
     result = await generateReply({
-      account, provider, conversation: conv, history: history2,
+      account, provider, conversation: conv, history,
       followupInstruction: activacion
         ? 'ACTIVACIÓN EXTERNA: el negocio te activó para esta conversación (p. ej. tras asignar una etiqueta en su flujo). Lee el historial y escribe tú el mensaje adecuado para iniciar o retomar según tu FLUJO — natural, breve, sin sonar automático. Si no hay historial, preséntate según tu identidad.'
         : null,
@@ -1017,7 +986,7 @@ export async function processSend(job) {
   const res = await ghl.sendMessage(account, { channel: conv.channel, contactId: conv.ghl_contact_id, message: body });
   await redis.setex(sentKey, 3600, '1').catch(() => {});
   try {
-    // Guardamos SIEMPRE que se pueda el id real de GHL: es lo que evita que un re-sync (sync_history)
+    // Guardamos SIEMPRE que se pueda el id real de GHL: es lo que evita que el import de la activación
     // reimporte nuestro propio mensaje y lo re-etiquete como 'humano'. Cubrimos las variantes del payload.
     const ghlMessageId = res?.messageId || res?.messageIds?.[0] || res?.msg?.id || res?.message?.id || null;
     if (!ghlMessageId) await logEvent('envio_sin_message_id', { conv: conv.id, keys: Object.keys(res || {}) });

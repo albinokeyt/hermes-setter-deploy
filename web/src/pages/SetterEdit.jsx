@@ -212,27 +212,7 @@ export default function SetterEdit() {
             <p className="mt-1.5 text-xs text-slate-400">Este setter SOLO responde en los canales marcados (debe tener al menos uno; los mensajes de otros canales se archivan igual). Cada setter tiene los suyos. Para apagarlo del todo, usa el interruptor del setter.</p>
           </div>
 
-          <Input label="Espera antes de responder (debounce, segundos)" type="number" min="5" max="3600" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Math.min(3600, Math.max(5, Number(e.target.value) || 5)) })} className="!w-48" hint="El bot espera este silencio tras el último mensaje del lead y responde a todo junto, como una persona. Puedes poner desde 5 s hasta 1 h (3600 s)." />
-
-          <div className="border-t border-slate-100 pt-5">
-            <Toggle
-              checked={Boolean(s.sync_history)}
-              onChange={(v) => set({ sync_history: v })}
-              label="🔄 Leer el historial de GHL antes de responder"
-              description="Antes de escribir, re-lee toda la conversación en GHL (entrantes y salientes: humano, CTAs, u otra herramienta como ManyChat en el mismo Instagram) para no responder sin contexto. Cuesta una llamada extra a GHL por respuesta; útil si comparten el canal con otras herramientas."
-            />
-          </div>
-
-          <div className="border-t border-slate-100 pt-5">
-            <Input
-              label="⏱️ Tiempo de entrada (segundos)"
-              type="number" min="0" max="3600" step="5"
-              value={s.entry_wait_seconds ?? 0}
-              onChange={(e) => set({ entry_wait_seconds: Number(e.target.value) })}
-              className="!w-48"
-              hint="Espera antes de responder al PRIMER mensaje de un lead nuevo (0 = debounce normal). Si un 🎯 CTA de la conexión casa con el mensaje, la espera del CTA manda sobre esta."
-            />
-          </div>
+          <Input label="Espera antes de responder (debounce, segundos)" type="number" min="5" max="3600" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Math.min(3600, Math.max(5, Number(e.target.value) || 5)) })} className="!w-48" hint="El bot espera este silencio tras el último mensaje del lead y responde a todo junto, como una persona. Puedes poner desde 5 s hasta 1 h (3600 s). El bot siempre lee la conversación completa antes de responder." />
 
           <div className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/40 p-4">
             <Toggle
