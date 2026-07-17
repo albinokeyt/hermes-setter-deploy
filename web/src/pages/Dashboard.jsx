@@ -133,25 +133,29 @@ export default function Dashboard() {
       )}
 
       <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
-        {STAGES.map((s) => (
-          <Link key={s.key} to={`/etiquetas`} className="group">
-            <Card className="p-4 transition group-hover:border-violet-300">
-              <div className="flex items-center gap-1.5">
-                <span className={`h-2 w-2 rounded-full ${s.dot}`} />
-                <span className="truncate text-xs font-medium text-slate-500">{s.label}</span>
-                <span className="ml-auto shrink-0" title={s.desc} onClick={(e) => e.preventDefault()}>
-                  <Info size={13} className="text-slate-300 hover:text-slate-500" />
-                </span>
-              </div>
-              <div className="mt-1.5 text-2xl font-bold text-slate-900">{stageCount[s.key] || 0}</div>
-            </Card>
-          </Link>
-        ))}
-        {/* Comentarios de Instagram — rellenan la fila de etiquetas y enlazan al Archivo */}
+        {STAGES.map((s) => {
+          const alerta = s.key === 'atencion_humana';
+          const n = stageCount[s.key] || 0;
+          const hot = alerta && n > 0; // resalta de verdad solo si HAY casos esperando
+          return (
+            <Link key={s.key} to={`/etiquetas`} className="group">
+              <Card className={`p-4 transition ${hot ? 'border-orange-400 bg-orange-50 ring-2 ring-orange-200 group-hover:border-orange-500' : alerta ? 'border-orange-200 group-hover:border-orange-300' : 'group-hover:border-violet-300'}`}>
+                <div className="flex items-center gap-1.5">
+                  {alerta ? <span className="text-sm leading-none">🚨</span> : <span className={`h-2 w-2 rounded-full ${s.dot}`} />}
+                  <span className={`truncate text-xs font-medium ${alerta ? 'text-orange-700' : 'text-slate-500'}`}>{s.label}</span>
+                  <span className="ml-auto shrink-0" title={s.desc} onClick={(e) => e.preventDefault()}>
+                    <Info size={13} className="text-slate-300 hover:text-slate-500" />
+                  </span>
+                </div>
+                <div className={`mt-1.5 text-2xl font-bold ${hot ? 'text-orange-600' : 'text-slate-900'}`}>{n}</div>
+              </Card>
+            </Link>
+          );
+        })}
+        {/* Comentarios de Instagram — enlazan al Archivo */}
         {[
           { key: 'comentarios', label: '💬 Comentarios', value: t.comentarios ?? 0, accent: 'text-violet-600', desc: 'Comentarios de Instagram recibidos por webhook en el rango.' },
           { key: 'comentarios_nuevos', label: '✨ De nuevos usuarios', value: t.comentarios_nuevos ?? 0, accent: 'text-fuchsia-600', desc: 'Comentarios cuyo autor comenta por primera vez (su primer comentario).' },
-          { key: 'comentaristas', label: '👥 Comentaristas', value: t.comentaristas ?? 0, accent: 'text-blue-600', desc: 'Personas distintas que comentaron en el rango (nuevas + recurrentes).' },
         ].map((cm) => (
           <Link key={cm.key} to="/archivo" className="group">
             <Card className="p-4 transition group-hover:border-violet-300">

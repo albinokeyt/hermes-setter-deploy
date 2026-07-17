@@ -82,6 +82,10 @@ export default async function conversationRoutes(app) {
     }
     if (b.stage && STAGE_KEYS.includes(b.stage) && b.stage !== conv.stage) {
       await applyStage(conv, account, b.stage, 'cambio manual desde el panel');
+      // Sacar la conversación de «atención humana» reactiva el bot (quita la pausa que puso la IA).
+      if (conv.stage === 'atencion_humana' && b.stage !== 'atencion_humana' && conv.paused_by === 'ia') {
+        await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
+      }
     }
     if (b.memory && typeof b.memory === 'object') {
       await q(`UPDATE conversations SET memory = $1::jsonb, updated_at = now() WHERE id = $2`, [JSON.stringify(b.memory), conv.id]);

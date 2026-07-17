@@ -777,6 +777,7 @@ export async function processDebounce(job) {
   const { conv, account, provider, history, variantId, setterId } = await loadContext(conversationId);
   if (!conv || !account) return;
   if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) return;
+  if (conv.stage === 'atencion_humana') return; // requiere atención humana → el bot no responde
   if (!provider) {
     await logEvent('error_config', { conv: conv.id, msg: 'la cuenta o el agente no tiene proveedor de IA configurado' });
     return;
@@ -843,6 +844,8 @@ export async function processDebounce(job) {
   }
 
   if (result.handoff) {
+    // Etiqueta VISIBLE «Requiere atención humana» + pausa; mientras la tenga, el bot no responde.
+    await applyStage(conv, account, 'atencion_humana', result.motivo || 'la IA pidió atención humana');
     await q(`UPDATE conversations SET bot_paused = true, paused_by = 'ia', updated_at = now() WHERE id = $1`, [conv.id]);
     await redis.del(fuKey(conv.id));
     await logEvent('handoff_ia', { conv: conv.id, motivo: result.motivo });
@@ -912,6 +915,7 @@ export async function processFollowup(job) {
   const { conv, account, provider, history, variantId, setterId } = await loadContext(conversationId);
   if (!conv || !account || !provider) return;
   if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) return;
+  if (conv.stage === 'atencion_humana') return; // requiere atención humana → sin seguimientos
 
   // Gate duro por estado (sin coste): descartado (fuera) o agendado (objetivo cumplido) → nunca.
   // El resto (en_conversion, calificado, etc.) lo decide el chequeo IA leyendo los mensajes,

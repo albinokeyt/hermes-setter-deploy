@@ -44,10 +44,11 @@ export const STAGES = [
   { key: 'agendado', label: 'Agendado', color: '#14b8a6', desc: 'Reservó una cita en el calendario de GHL. Solo aplica si el objetivo del setter es agendar; lo detecta el sistema.' },
   { key: 'agenda_cancelada', label: 'Agenda cancelada', color: '#fb7185', desc: 'Su cita fue cancelada en el calendario de GHL.' },
   { key: 'descartado', label: 'Descartado', color: '#ef4444', desc: 'No cumple el filtro, no le interesa o es spam; el setter deja de perseguirlo.' },
+  { key: 'atencion_humana', label: 'Requiere atención humana', color: '#f97316', desc: 'La IA detectó que este caso necesita a una persona (pidió hablar con alguien, se molestó, o es delicado). MIENTRAS tenga esta etiqueta, el bot NO responde. Un humano lo atiende y luego lo mueve a otra etiqueta para reactivar.' },
 ];
 
-// Etiquetas que pone el sistema (calendario o seguimientos), nunca la IA directamente.
-export const SYSTEM_STAGES = ['agendado', 'agenda_cancelada', 'seguimiento_calificado'];
+// Etiquetas que pone el sistema (calendario, seguimientos o handoff a humano), nunca la IA por «etiqueta».
+export const SYSTEM_STAGES = ['agendado', 'agenda_cancelada', 'seguimiento_calificado', 'atencion_humana'];
 
 export const STAGE_KEYS = STAGES.map((s) => s.key);
 
