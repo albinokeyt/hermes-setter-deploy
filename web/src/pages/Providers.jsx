@@ -4,7 +4,10 @@ import { api } from '../api.js';
 import { Card, SectionTitle, Button, Input, Select, Toggle, Banner, EmptyState } from '../components/ui.jsx';
 import { ModelPicker } from '../components/ModelPicker.jsx';
 
-const EMPTY = { name: '', base_url: '', api_key: '', default_model: '', notes: '', price_in: '', price_out: '', kinds: ['text'], user_available: false };
+const EMPTY = {
+  name: '', base_url: '', api_key: '', default_model: '', notes: '', price_in: '', price_out: '', kinds: ['text'], user_available: false,
+  markup_percent: '', bill_in: '', bill_out: '', price_audio_min: '', bill_audio_min: '', price_image: '', bill_image: '',
+};
 
 const KIND_META = [
   { key: 'text', label: 'Texto (chat)', icon: '💬' },
@@ -149,7 +152,27 @@ export default function Providers() {
                 <Input label="Salida ($/1M tokens)" type="number" step="0.001" min="0" value={form.price_out} onChange={(e) => setForm({ ...form, price_out: e.target.value })} />
               </div>
               {priceLookup.msg && <p className={`mt-1.5 text-xs font-medium ${priceLookup.msg.startsWith('✓') ? 'text-emerald-600' : 'text-red-500'}`}>{priceLookup.msg}</p>}
-              <p className="mt-1 text-xs text-slate-400">Solo sirve para estimar el gasto del CHAT. Con OpenRouter no hace falta: reporta el coste real solo. Los modelos de audio/imagen se cobran aparte (por minuto o por imagen), no aquí.</p>
+              <p className="mt-1 text-xs text-slate-400">Es tu COSTO del chat. Con OpenRouter no hace falta: reporta el coste real solo.</p>
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <Input label="🎤 Costo audio ($/minuto)" type="number" step="0.0001" min="0" value={form.price_audio_min} onChange={(e) => setForm({ ...form, price_audio_min: e.target.value })} hint="Si el proveedor no reporta el coste del audio, se usa esto por transcripción." />
+                <Input label="👁️ Costo imagen ($/imagen)" type="number" step="0.0001" min="0" value={form.price_image} onChange={(e) => setForm({ ...form, price_image: e.target.value })} hint="Si el proveedor no reporta el coste de visión, se usa esto por imagen." />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4">
+              <span className="mb-1 block text-sm font-bold text-slate-800">💰 Precio al cliente (lo que FACTURAS)</span>
+              <p className="mb-3 text-xs text-slate-400">
+                Con estos valores se calcula el «Gasto IA» que ve el cliente en SU dashboard (tú ves costo y facturado). La vía fácil: pon solo el <b>margen %</b> y se aplica sobre el costo real. Si prefieres precios fijos, rellena los campos y estos mandan sobre el margen.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <Input label="Margen sobre el costo (%)" type="number" step="1" min="0" value={form.markup_percent} onChange={(e) => setForm({ ...form, markup_percent: e.target.value })} hint="Ej. 100 = le cobras el doble del costo" />
+                <Input label="Precio entrada ($/1M)" type="number" step="0.001" min="0" value={form.bill_in} onChange={(e) => setForm({ ...form, bill_in: e.target.value })} />
+                <Input label="Precio salida ($/1M)" type="number" step="0.001" min="0" value={form.bill_out} onChange={(e) => setForm({ ...form, bill_out: e.target.value })} />
+              </div>
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <Input label="🎤 Precio audio ($/minuto)" type="number" step="0.0001" min="0" value={form.bill_audio_min} onChange={(e) => setForm({ ...form, bill_audio_min: e.target.value })} />
+                <Input label="👁️ Precio imagen ($/imagen)" type="number" step="0.0001" min="0" value={form.bill_image} onChange={(e) => setForm({ ...form, bill_image: e.target.value })} />
+              </div>
             </div>
             <div className="flex gap-2">
               <Button type="submit" loading={saving}>{editingId ? 'Guardar cambios' : 'Añadir'}</Button>
@@ -173,7 +196,7 @@ export default function Providers() {
               <div className="flex items-start justify-between">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600"><Plug size={18} /></div>
                 <div className="flex items-center gap-1">
-                  <Button variant="ghost" className="!px-2.5 !py-1.5 text-xs" onClick={() => { setEditingId(p.id); setForm({ name: p.name, base_url: p.base_url, api_key: '', default_model: p.default_model, notes: p.notes, price_in: p.price_in || '', price_out: p.price_out || '', kinds: p.kinds || ['text'], user_available: Boolean(p.user_available) }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+                  <Button variant="ghost" className="!px-2.5 !py-1.5 text-xs" onClick={() => { setEditingId(p.id); setForm({ name: p.name, base_url: p.base_url, api_key: '', default_model: p.default_model, notes: p.notes, price_in: p.price_in || '', price_out: p.price_out || '', kinds: p.kinds || ['text'], user_available: Boolean(p.user_available), markup_percent: p.markup_percent || '', bill_in: p.bill_in || '', bill_out: p.bill_out || '', price_audio_min: p.price_audio_min || '', bill_audio_min: p.bill_audio_min || '', price_image: p.price_image || '', bill_image: p.bill_image || '' }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
                     Editar
                   </Button>
                   <button

@@ -1,5 +1,5 @@
 import { q, one, getSetting } from '../db.js';
-import { requireAdmin } from '../lib/session.js';
+import { requireManageAgents, canAccessAccount } from '../lib/session.js';
 import { chatCompletion } from '../services/llm.js';
 import { recordUsage } from '../services/pipeline.js';
 
@@ -109,21 +109,18 @@ async function runPromptEditor(target, accountId, setterId, req, reply) {
 }
 
 export default async function promptEditorRoutes(app) {
+  // Disponible para admin Y para el dueño con IA activa (requireManageAgents), cada uno
+  // solo sobre SUS conexiones/setters (canAccessAccount).
   app.addHook('preHandler', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return reply;
+    if (!(await requireManageAgents(req, reply))) return reply;
   });
 
+  // Arquitecto/corrector de un SETTER concreto (los prompts viven en el setter, no en la conexión).
   // body: { history, images?, mode:'architect'|'edit', message? }
-  app.post('/api/accounts/:id/prompt-editor', async (req, reply) => {
-    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [req.params.id]);
-    if (!account) return reply.code(404).send({ error: 'Conexión no encontrada' });
-    return runPromptEditor(account, account.id, null, req, reply);
-  });
-
-  // Arquitecto/corrector de un SETTER concreto.
   app.post('/api/setters/:id/prompt-editor', async (req, reply) => {
     const setter = await one(`SELECT * FROM setters WHERE id = $1`, [req.params.id]);
     if (!setter) return reply.code(404).send({ error: 'Setter no encontrado' });
+    if (!(await canAccessAccount(req, setter.account_id))) return reply.code(403).send({ error: 'Sin acceso a este setter' });
     return runPromptEditor(setter, setter.account_id, setter.id, req, reply);
   });
 }

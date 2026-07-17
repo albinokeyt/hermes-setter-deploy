@@ -142,7 +142,7 @@ export default function AccountEdit() {
                 </span>
                 <span className="text-right text-xs text-slate-400">
                   <span className="font-semibold text-slate-600">{st.leads}</span> leads · <span className="font-semibold text-emerald-600">{st.agendados}</span> agendas ({st.tasa_agenda}%)
-                  {st.gasto > 0 && <span> · ${st.gasto.toFixed(2)}</span>}
+                  {(isAdmin ? st.gasto : st.facturado) > 0 && <span> · ${(isAdmin ? st.gasto : st.facturado).toFixed(2)}</span>}
                 </span>
                 <ChevronRight size={15} className="text-slate-300" />
               </Link>

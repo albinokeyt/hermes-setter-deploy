@@ -12,6 +12,7 @@ export default function Playground() {
   const [history, setHistory] = useState([]);
   const [memory, setMemory] = useState({});
   const [importOpen, setImportOpen] = useState(false);
+  const [spend, setSpend] = useState(null);
   const [meta, setMeta] = useState(null);
   const [text, setText] = useState('');
   const [thinking, setThinking] = useState(false);
@@ -23,8 +24,10 @@ export default function Playground() {
   const memoryRef = useRef({});
   memoryRef.current = memory;
 
+  const loadSpend = () => api.get('/api/playground/spend').then(setSpend).catch(() => {});
   useEffect(() => {
     api.get('/api/accounts').then((a) => { setAccounts(a); if (a[0]) setAccountId(String(a[0].id)); }).catch(() => {});
+    loadSpend();
     return () => clearTimeout(timerRef.current);
   }, []);
 
@@ -42,6 +45,7 @@ export default function Playground() {
     setError('');
     try {
       const r = await api.post('/api/playground/reply', { account_id: Number(accountId), setter_id: setterId ? Number(setterId) : undefined, history: historyRef.current, memory: memoryRef.current });
+      loadSpend();
       setMemory(r.memoria_final || {});
       setMeta({ etiqueta: r.etiqueta, motivo: r.motivo, handoff: r.handoff });
       for (let i = 0; i < r.mensajes.length; i++) {
@@ -83,10 +87,12 @@ export default function Playground() {
         subtitle="Escribe como si fueras el lead. El bot espera unos segundos (debounce real) y responde en varios mensajes."
         actions={
           <div className="flex items-center gap-2">
-            <Select value={accountId} onChange={(e) => { setAccountId(e.target.value); reset(); }} className="!w-48" title="Conexión">
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </Select>
-            {setters.length > 1 && (
+            {accounts.length > 1 && (
+              <Select value={accountId} onChange={(e) => { setAccountId(e.target.value); setSetterId(''); reset(); }} className="!w-44" title="Conexión">
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.alias || a.name}</option>)}
+              </Select>
+            )}
+            {setters.length > 0 && (
               <Select value={setterId} onChange={(e) => { setSetterId(e.target.value); reset(); }} className="!w-48" title="Setter a probar">
                 {setters.map((s) => <option key={s.id} value={s.id}>🤖 {s.name}</option>)}
               </Select>
@@ -166,9 +172,21 @@ export default function Playground() {
           </Card>
 
           <Card className="p-5">
+            <h3 className="mb-2 text-sm font-semibold text-slate-700">💸 Gastado en pruebas</h3>
+            {spend ? (
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-bold text-slate-900">${Number(spend.costo || 0).toFixed(4)}</span>
+                <span className="text-[11px] text-slate-400">{spend.llamadas} llamadas (pruebas y ajustes de prompt)</span>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400">—</p>
+            )}
+          </Card>
+
+          <Card className="p-5">
             <h3 className="mb-1 text-sm font-semibold text-slate-700">Ajustar el prompt</h3>
             <p className="mb-3 text-xs text-slate-400">¿Ves algo que mejorar mientras pruebas? Dile los cambios (con imágenes si quieres) y los aplica a los 3 bloques.</p>
-            <Button variant="secondary" className="w-full" onClick={() => setImportOpen(true)} disabled={!accountId}>
+            <Button variant="secondary" className="w-full" onClick={() => setImportOpen(true)} disabled={!setterId}>
               <Wand2 size={15} /> Importar cambio
             </Button>
           </Card>
@@ -184,7 +202,7 @@ export default function Playground() {
             </div>
             <div className="p-3">
               <PromptArchitect
-                targetPath={setterId ? `/api/setters/${setterId}` : `/api/accounts/${accountId}`}
+                targetPath={`/api/setters/${setterId}`}
                 mode="edit" compact onApplied={() => { /* prompts guardados en el setter */ }}
               />
             </div>

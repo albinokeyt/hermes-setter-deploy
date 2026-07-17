@@ -312,14 +312,39 @@ export async function recordUsage(accountId, conversationId, provider, model, us
     // el audio reporta input_tokens/output_tokens; el chat prompt_tokens/completion_tokens
     const pt = Number(usage.prompt_tokens ?? usage.input_tokens) || 0;
     const ct = Number(usage.completion_tokens ?? usage.output_tokens) || 0;
+    // pg devuelve NUMERIC como string → normalizamos a número (>0) o null
+    const numOr = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
     let cost = typeof usage.cost === 'number' ? usage.cost : null;
-    if (cost === null && provider && (provider.price_in || provider.price_out)) {
-      cost = (pt * Number(provider.price_in || 0) + ct * Number(provider.price_out || 0)) / 1_000_000;
+    // el AUDIO no se cobra por tokens de texto: su estimación por tokens queda excluida
+    // (los precios price_in/out son del CHAT; el audio usa su coste por minuto/transcripción)
+    if (cost === null && source !== 'audio' && provider && (numOr(provider.price_in) || numOr(provider.price_out))) {
+      cost = (pt * (numOr(provider.price_in) || 0) + ct * (numOr(provider.price_out) || 0)) / 1_000_000;
     }
+    // audio/imagen se cobran distinto (por minuto/por imagen): si no hubo coste,
+    // usa el coste plano editable del proveedor para esa unidad.
+    if (cost === null && provider) {
+      if (source === 'audio' && numOr(provider.price_audio_min)) cost = numOr(provider.price_audio_min);
+      else if (source === 'vision' && numOr(provider.price_image)) cost = numOr(provider.price_image);
+    }
+    // FACTURADO al cliente: precio explícito del proveedor (por unidad o por 1M tokens de CHAT) o,
+    // si no hay, margen % sobre el coste. Sin nada configurado → facturado = coste.
+    let billed = null;
+    if (provider) {
+      const billIn = numOr(provider.bill_in);
+      const billOut = numOr(provider.bill_out);
+      if (source === 'vision' && numOr(provider.bill_image)) billed = numOr(provider.bill_image);
+      else if (source === 'audio' && numOr(provider.bill_audio_min)) billed = numOr(provider.bill_audio_min);
+      else if (source !== 'audio' && (billIn || billOut) && (pt || ct)) {
+        billed = (pt * (billIn || 0) + ct * (billOut || 0)) / 1_000_000;
+      } else if (Number(provider.markup_percent) > 0 && cost !== null) {
+        billed = cost * (1 + Number(provider.markup_percent) / 100);
+      }
+    }
+    if (billed === null) billed = cost;
     await q(
-      `INSERT INTO llm_usage (account_id, conversation_id, variant_id, setter_id, model, prompt_tokens, completion_tokens, cost_usd, source)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [accountId, conversationId, variantId, setterId, model || '', pt, ct, cost, source]
+      `INSERT INTO llm_usage (account_id, conversation_id, variant_id, setter_id, model, prompt_tokens, completion_tokens, cost_usd, billed_usd, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [accountId, conversationId, variantId, setterId, model || '', pt, ct, cost, billed, source]
     );
   } catch (err) {
     console.error('[usage]', err.message);

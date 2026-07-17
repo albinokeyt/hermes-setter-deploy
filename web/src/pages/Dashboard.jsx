@@ -97,7 +97,14 @@ export default function Dashboard() {
         <StatCard label="Recibidos" value={t.recibidos ?? 0} sub="mensajes de leads" icon={ArrowDownToLine} tone="blue" />
         <StatCard label="Enviados" value={t.enviados ?? 0} sub="respuestas del setter" icon={ArrowUpFromLine} tone="emerald" />
         <StatCard label="Agendas" value={t.agendas ?? 0} sub={`${t.canceladas ?? 0} canceladas`} icon={CalendarCheck} tone="emerald" />
-        <StatCard label="Gasto IA" value={fmtUsd(t.gasto)} sub="clic para ver el desglose" icon={Wallet} tone="violet" onClick={() => setShowSpend((v) => !v)} />
+        {me?.role === 'admin' ? (
+          <>
+            <StatCard label="Costo IA" value={fmtUsd(t.gasto)} sub="lo que pagas · clic: desglose" icon={Wallet} tone="violet" onClick={() => setShowSpend((v) => !v)} />
+            <StatCard label="Facturado" value={fmtUsd(t.facturado)} sub="lo que cobras a clientes" icon={Wallet} tone="emerald" />
+          </>
+        ) : (
+          <StatCard label="Gasto IA" value={fmtUsd(t.facturado ?? t.gasto)} sub="consumo de IA del período" icon={Wallet} tone="violet" />
+        )}
       </div>
 
       {showSpend && (
@@ -230,7 +237,8 @@ export default function Dashboard() {
                   <th className="px-3 py-3 font-medium">En seguimiento</th>
                   <th className="px-3 py-3 font-medium">Calificados</th>
                   <th className="px-3 py-3 font-medium">En conversión</th>
-                  <th className="px-3 py-3 font-medium">Gasto</th>
+                  <th className="px-3 py-3 font-medium">{me?.role === 'admin' ? 'Costo' : 'Gasto'}</th>
+                  {me?.role === 'admin' && <th className="px-3 py-3 font-medium">Facturado</th>}
                   <th className="px-5 py-3 font-medium text-right">Bot</th>
                 </tr>
               </thead>
@@ -245,7 +253,8 @@ export default function Dashboard() {
                     <td className="px-3 py-3">{a.en_seguimiento}</td>
                     <td className="px-3 py-3 font-semibold text-violet-600">{a.calificados}</td>
                     <td className="px-3 py-3 font-semibold text-emerald-600">{a.en_conversion}</td>
-                    <td className="px-3 py-3 text-slate-600">{fmtUsd(a.gasto)}</td>
+                    <td className="px-3 py-3 text-slate-600">{fmtUsd(me?.role === 'admin' ? a.gasto : (a.facturado ?? a.gasto))}</td>
+                    {me?.role === 'admin' && <td className="px-3 py-3 font-semibold text-emerald-600">{fmtUsd(a.facturado)}</td>}
                     <td className="px-5 py-3 text-right">
                       <span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${a.bot_enabled ? 'text-emerald-600' : 'text-slate-400'}`}>
                         <span className={`h-1.5 w-1.5 rounded-full ${a.bot_enabled ? 'bg-emerald-500' : 'bg-slate-300'}`} />

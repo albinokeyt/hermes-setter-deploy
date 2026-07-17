@@ -7,8 +7,10 @@ import * as ghl from '../services/ghl.js';
 // URL de comentarios: FIJA y LIMPIA, la misma para todas las conexiones (enruta por location.id).
 const COMMENT_WEBHOOK_URL = `${config.appBaseUrl}/api/webhooks/comentarios`;
 
+// OJO: los prompt_* de la conexión son columnas LEGACY (el bot usa SIEMPRE los del setter via
+// mergeSetter) — fuera del whitelist para no escribir en una columna muerta sin versionado.
 const ADMIN_EDITABLE = [
-  'name', 'alias', 'mode', 'pit_token', 'location_id', 'channels', 'prompt_identity', 'prompt_business', 'prompt_flow',
+  'name', 'alias', 'mode', 'pit_token', 'location_id', 'channels',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'active_hours',
   'timezone', 'sync_tags', 'auto_handoff', 'bot_enabled', 'ai_enabled', 'test_mode', 'test_tag', 'exclude_tag',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
@@ -18,7 +20,7 @@ const ADMIN_EDITABLE = [
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
 const USER_EDITABLE = [
   'alias',
-  'prompt_identity', 'prompt_business', 'prompt_flow', 'followups', 'debounce_seconds', 'max_msgs',
+  'followups', 'debounce_seconds', 'max_msgs',
   'active_hours', 'timezone', 'temperature', 'bot_enabled', 'test_mode', 'test_tag', 'auto_handoff_minutes',
   'required_tags', 'required_tags_mode',
 ];

@@ -12,6 +12,12 @@ const PRESETS = [
   { name: 'Personalizado', base_url: '', default_model: '', notes: 'Cualquier API compatible con /chat/completions', kinds: ['text'] },
 ];
 
+// Precio válido = número finito > 0; todo lo demás ('', '0', 'abc') → null (sin precio).
+function cleanPrice(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function cleanKinds(kinds, fallback) {
   if (!Array.isArray(kinds)) return fallback;
   const out = kinds.filter((k) => VALID_KINDS.includes(k));
@@ -141,9 +147,15 @@ export default async function providerRoutes(app) {
     const { name, base_url, api_key, default_model, notes, price_in, price_out } = req.body || {};
     if (!name || !base_url || !api_key) return reply.code(400).send({ error: 'Faltan nombre, URL base o API key' });
     const kinds = cleanKinds(req.body?.kinds, ['text']);
+    const b = req.body || {};
     const row = await one(
-      `INSERT INTO providers (name, base_url, api_key, default_model, notes, price_in, price_out, kinds, user_available) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9) RETURNING *`,
-      [name, String(base_url).replace(/\/+$/, ''), api_key, default_model || '', notes || '', price_in || null, price_out || null, JSON.stringify(kinds), Boolean(req.body?.user_available)]
+      `INSERT INTO providers (name, base_url, api_key, default_model, notes, price_in, price_out, kinds, user_available,
+                              markup_percent, bill_in, bill_out, price_audio_min, bill_audio_min, price_image, bill_image)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+      [name, String(base_url).replace(/\/+$/, ''), api_key, default_model || '', notes || '', cleanPrice(price_in), cleanPrice(price_out),
+       JSON.stringify(kinds), Boolean(b.user_available),
+       Number(b.markup_percent) || 0, cleanPrice(b.bill_in), cleanPrice(b.bill_out),
+       cleanPrice(b.price_audio_min), cleanPrice(b.bill_audio_min), cleanPrice(b.price_image), cleanPrice(b.bill_image)]
     );
     return mask(row);
   });
@@ -153,18 +165,23 @@ export default async function providerRoutes(app) {
     if (!existing) return reply.code(404).send({ error: 'No existe' });
     const b = req.body || {};
     const kinds = cleanKinds(b.kinds, existing.kinds);
+    const num = (field) => (b[field] !== undefined ? cleanPrice(b[field]) : existing[field]);
     const row = await one(
-      `UPDATE providers SET name=$1, base_url=$2, api_key=$3, default_model=$4, notes=$5, price_in=$6, price_out=$7, kinds=$8::jsonb, user_available=$9 WHERE id=$10 RETURNING *`,
+      `UPDATE providers SET name=$1, base_url=$2, api_key=$3, default_model=$4, notes=$5, price_in=$6, price_out=$7, kinds=$8::jsonb, user_available=$9,
+         markup_percent=$10, bill_in=$11, bill_out=$12, price_audio_min=$13, bill_audio_min=$14, price_image=$15, bill_image=$16
+       WHERE id=$17 RETURNING *`,
       [
         b.name || existing.name,
         String(b.base_url || existing.base_url).replace(/\/+$/, ''),
         b.api_key ? b.api_key : existing.api_key,
         b.default_model ?? existing.default_model,
         b.notes ?? existing.notes,
-        b.price_in !== undefined ? b.price_in || null : existing.price_in,
-        b.price_out !== undefined ? b.price_out || null : existing.price_out,
+        b.price_in !== undefined ? cleanPrice(b.price_in) : existing.price_in,
+        b.price_out !== undefined ? cleanPrice(b.price_out) : existing.price_out,
         JSON.stringify(kinds),
         b.user_available !== undefined ? Boolean(b.user_available) : existing.user_available,
+        b.markup_percent !== undefined ? Number(b.markup_percent) || 0 : existing.markup_percent,
+        num('bill_in'), num('bill_out'), num('price_audio_min'), num('bill_audio_min'), num('price_image'), num('bill_image'),
         existing.id,
       ]
     );

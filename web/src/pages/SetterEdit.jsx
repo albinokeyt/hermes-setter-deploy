@@ -30,6 +30,21 @@ export default function SetterEdit() {
   const [saving, setSaving] = useState(false);
   const [showTags, setShowTags] = useState(false);
   const [calendars, setCalendars] = useState(null);
+  const [versions, setVersions] = useState(null); // null = modal cerrado
+  const [restoring, setRestoring] = useState(false);
+
+  const openHistory = () => api.get(`/api/setters/${id}/prompt-versions`).then(setVersions).catch((e) => setError(e.message));
+  const restoreVersion = async (v) => {
+    if (!window.confirm(`¿Volver a la versión del ${new Date(v.created_at).toLocaleString('es-ES')}? Los 3 bloques del prompt se reemplazarán (lo actual queda guardado en el historial).`)) return;
+    setRestoring(true);
+    try {
+      const updated = await api.post(`/api/setters/${id}/prompt-versions/${v.id}/restore`, {});
+      // solo los 3 prompts: no pisar ediciones locales sin guardar de otros campos
+      setS((cur) => ({ ...cur, prompt_identity: updated.prompt_identity, prompt_business: updated.prompt_business, prompt_flow: updated.prompt_flow }));
+      setVersions(null);
+      setSaved(true); setTimeout(() => setSaved(false), 2000);
+    } catch (e) { setError(e.message); } finally { setRestoring(false); }
+  };
 
   const load = () => api.get(`/api/setters/${id}`).then((r) => { setS(r); setShowTags((r.required_tags || []).length > 0 || (r.excluded_tags || []).length > 0); }).catch((e) => setError(e.message));
   useEffect(() => {
@@ -99,7 +114,10 @@ export default function SetterEdit() {
 
       {tab === 'prompt' && (
         <div className="space-y-4">
-          <Banner tone="info">El prompt se divide en 3 partes. El agente las combina con la memoria del lead y las reglas de humanización automáticamente.</Banner>
+          <div className="flex items-center justify-between gap-3">
+            <Banner tone="info">El prompt se divide en 3 partes. El agente las combina con la memoria del lead y las reglas de humanización automáticamente.</Banner>
+            <Button variant="secondary" className="shrink-0" onClick={openHistory}>🕘 Historial</Button>
+          </div>
           <Card className="p-5">
             <Textarea label="1 · Identidad y personalidad" rows={8} value={s.prompt_identity} onChange={(e) => set({ prompt_identity: e.target.value })} placeholder="Eres Sofía, setter del centro..." hint="Quién es el setter: nombre, tono, forma de escribir, qué haría y qué jamás diría." />
           </Card>
@@ -320,6 +338,41 @@ export default function SetterEdit() {
           <Card className="overflow-hidden p-0">
             <PromptArchitect targetPath={`/api/setters/${id}`} mode="architect" onApplied={load} />
           </Card>
+        </div>
+      )}
+
+      {versions !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setVersions(null)}>
+          <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
+              <h3 className="text-sm font-bold text-slate-800">🕘 Historial de versiones del prompt</h3>
+              <button onClick={() => setVersions(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100">✕</button>
+            </div>
+            <div className="scroll-thin flex-1 space-y-2 overflow-y-auto p-4">
+              {versions.length === 0 && <p className="py-8 text-center text-sm text-slate-400">Todavía no hay versiones guardadas. Se crean solas cada vez que el prompt cambia (a mano, por el arquitecto o por el corrector).</p>}
+              {versions.map((v) => (
+                <details key={v.id} className="rounded-xl border border-slate-200 p-3">
+                  <summary className="flex cursor-pointer items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-slate-700">
+                      {new Date(v.created_at).toLocaleString('es-ES')}
+                      <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">
+                        {{ manual: '✍️ manual', corrector: '🪄 corrector', arquitecto: '✨ arquitecto', previo_restauracion: '↩️ antes de restaurar' }[v.source] || v.source}
+                      </span>
+                    </span>
+                    <Button variant="secondary" className="!py-1 text-xs" loading={restoring} onClick={(e) => { e.preventDefault(); restoreVersion(v); }}>↩️ Restaurar</Button>
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    {[['1 · Identidad', v.prompt_identity], ['2 · Negocio', v.prompt_business], ['3 · Flujo', v.prompt_flow]].map(([lbl, txt]) => (
+                      <div key={lbl}>
+                        <div className="text-[10px] font-bold uppercase text-slate-400">{lbl}</div>
+                        <pre className="scroll-thin max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-2 text-[11px] leading-relaxed text-slate-600">{txt || '(vacío)'}</pre>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>

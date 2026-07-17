@@ -41,7 +41,8 @@ export default async function setterRoutes(app) {
         COUNT(c.id) FILTER (WHERE c.stage = 'en_conversion')::int AS en_conversion,
         COUNT(c.id) FILTER (WHERE c.stage = 'agendado')::int AS agendados,
         COUNT(c.id) FILTER (WHERE c.stage = 'descartado')::int AS descartados,
-        COALESCE((SELECT SUM(u.cost_usd) FROM llm_usage u WHERE u.setter_id = s.id), 0) AS gasto
+        COALESCE((SELECT SUM(u.cost_usd) FROM llm_usage u WHERE u.setter_id = s.id), 0) AS gasto,
+        COALESCE((SELECT SUM(COALESCE(u.billed_usd, u.cost_usd)) FROM llm_usage u WHERE u.setter_id = s.id), 0) AS facturado
        FROM setters s
        LEFT JOIN providers p ON p.id = s.provider_id
        LEFT JOIN conversations c ON c.setter_id = s.id
@@ -50,14 +51,18 @@ export default async function setterRoutes(app) {
        ORDER BY s.is_default DESC, s.id`,
       [req.params.id]
     );
+    const isAdmin = req.auth?.role === 'admin';
     return rows.map((r) => {
       const leads = r.leads || 0;
       const won = r.agendados || 0;
       const conv = (r.en_conversion || 0) + won;
+      const facturado = Number(r.facturado || 0);
       return {
         ...r,
         conversations_count: leads,
-        gasto: Number(r.gasto || 0),
+        // el COSTO real es solo del admin; el cliente ve lo facturado también en "gasto"
+        gasto: isAdmin ? Number(r.gasto || 0) : facturado,
+        facturado,
         tasa_agenda: leads ? Math.round((won / leads) * 100) : 0,
         tasa_conversion: leads ? Math.round((conv / leads) * 100) : 0,
         tasa_calificacion: leads ? Math.round(((r.calificados + conv) / leads) * 100) : 0,
@@ -91,6 +96,21 @@ export default async function setterRoutes(app) {
     return { ...setter, provider_name };
   });
 
+  // Guarda la versión ANTERIOR de los 3 prompts antes de sobrescribirlos (historial para volver atrás).
+  async function savePromptVersion(setter, source) {
+    await q(
+      `INSERT INTO prompt_versions (setter_id, prompt_identity, prompt_business, prompt_flow, source)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [setter.id, setter.prompt_identity || '', setter.prompt_business || '', setter.prompt_flow || '', String(source || 'manual').slice(0, 40)]
+    );
+    // tope de historial por setter
+    await q(
+      `DELETE FROM prompt_versions WHERE setter_id = $1 AND id NOT IN
+         (SELECT id FROM prompt_versions WHERE setter_id = $1 ORDER BY id DESC LIMIT 30)`,
+      [setter.id]
+    );
+  }
+
   app.put('/api/setters/:id', async (req, reply) => {
     if (!(await requireManageAgents(req, reply))) return;
     const { setter, code, error } = await loadSetterScoped(req, req.params.id);
@@ -108,7 +128,43 @@ export default async function setterRoutes(app) {
     }
     if (!sets.length) return setter;
     vals.push(setter.id);
-    return one(`UPDATE setters SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`, vals);
+    const row = await one(`UPDATE setters SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`, vals);
+    // ¿cambió algún prompt? → guardar la versión ANTERIOR (en memoria) DESPUÉS del update
+    // (si el update falla no queda una entrada espuria en el historial). source con whitelist.
+    const PROMPTS = ['prompt_identity', 'prompt_business', 'prompt_flow'];
+    const promptChanged = PROMPTS.some((f) => f in b && String(b[f] ?? '') !== String(setter[f] ?? ''));
+    if (promptChanged) {
+      const source = ['corrector', 'arquitecto'].includes(b.prompt_source) ? b.prompt_source : 'manual';
+      await savePromptVersion(setter, source).catch(() => {});
+    }
+    return row;
+  });
+
+  // Historial de versiones de los prompts (admin y dueño): listar y restaurar.
+  app.get('/api/setters/:id/prompt-versions', async (req, reply) => {
+    const { setter, code, error } = await loadSetterScoped(req, req.params.id);
+    if (code) return reply.code(code).send({ error });
+    return q(
+      `SELECT id, prompt_identity, prompt_business, prompt_flow, source, created_at
+       FROM prompt_versions WHERE setter_id = $1 ORDER BY id DESC LIMIT 30`,
+      [setter.id]
+    );
+  });
+
+  app.post('/api/setters/:id/prompt-versions/:vid/restore', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
+    const { setter, code, error } = await loadSetterScoped(req, req.params.id);
+    if (code) return reply.code(code).send({ error });
+    const v = await one(`SELECT * FROM prompt_versions WHERE id = $1 AND setter_id = $2`, [req.params.vid, setter.id]);
+    if (!v) return reply.code(404).send({ error: 'Versión no encontrada' });
+    // aplica la versión y DESPUÉS guarda lo que había (para deshacer la restauración);
+    // si el update falla, no queda entrada espuria en el historial
+    const row = await one(
+      `UPDATE setters SET prompt_identity = $1, prompt_business = $2, prompt_flow = $3 WHERE id = $4 RETURNING *`,
+      [v.prompt_identity, v.prompt_business, v.prompt_flow, setter.id]
+    );
+    await savePromptVersion(setter, 'previo_restauracion').catch(() => {});
+    return row;
   });
 
   app.delete('/api/setters/:id', async (req, reply) => {

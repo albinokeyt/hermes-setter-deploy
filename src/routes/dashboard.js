@@ -29,6 +29,7 @@ export default async function dashboardRoutes(app) {
     const { from, to } = parseRange(req.query || {});
     const P = [from, to]; // $1 = desde, $2 = hasta
 
+    const isAdmin = ids === null;
     const cond = inIds ? `AND c.account_id IN (${inIds})` : '';
     const condM = inIds
       ? `AND m.conversation_id IN (SELECT id FROM conversations WHERE account_id IN (${inIds}))`
@@ -49,6 +50,7 @@ export default async function dashboardRoutes(app) {
         (SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'agendado' AND ap.created_at BETWEEN $1 AND $2 ${condA}) AS agendas,
         (SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'cancelado' AND ap.created_at BETWEEN $1 AND $2 ${condA}) AS canceladas,
         (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2 ${condU}) AS gasto,
+        (SELECT COALESCE(SUM(COALESCE(u.billed_usd, u.cost_usd)), 0) FROM llm_usage u WHERE u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2 ${condU}) AS facturado,
         (SELECT COUNT(*)::int FROM comments cm WHERE cm.created_at BETWEEN $1 AND $2 ${condCm}) AS comentarios,
         (SELECT COUNT(DISTINCT ${CM_UID})::int FROM comments cm WHERE cm.created_at BETWEEN $1 AND $2 ${condCm}) AS comentaristas,
         (SELECT COUNT(*)::int FROM (
@@ -85,7 +87,8 @@ export default async function dashboardRoutes(app) {
         COUNT(c.id) FILTER (WHERE c.stage = 'en_conversion')::int AS en_conversion,
         COUNT(c.id) FILTER (WHERE c.stage IN ('en_seguimiento','seguimiento_calificado'))::int AS en_seguimiento,
         COUNT(c.id) FILTER (WHERE c.updated_at BETWEEN $1 AND $2)::int AS activas,
-        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.account_id = a.id AND u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2) AS gasto
+        (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.account_id = a.id AND u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2) AS gasto,
+        (SELECT COALESCE(SUM(COALESCE(u.billed_usd, u.cost_usd)), 0) FROM llm_usage u WHERE u.account_id = a.id AND u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2) AS facturado
       FROM accounts a LEFT JOIN conversations c ON c.account_id = a.id
       ${inIds ? `WHERE a.id IN (${inIds})` : ''}
       GROUP BY a.id ORDER BY a.id
@@ -99,14 +102,21 @@ export default async function dashboardRoutes(app) {
       ORDER BY c.updated_at DESC LIMIT 8
     `);
 
-    // Gasto de IA por tipo dentro del rango (chat, seguimiento, imagen, audio, pruebas)
+    // Gasto de IA por tipo dentro del rango. Para NO-admin se suma lo FACTURADO (el costo real
+    // es solo del admin: si el cliente lo viera, deduciría el margen).
     const gastoPorTipo = await q(`
-      SELECT source, COALESCE(SUM(cost_usd), 0) AS total
+      SELECT source, COALESCE(SUM(${isAdmin ? 'cost_usd' : 'COALESCE(billed_usd, cost_usd)'}), 0) AS total
       FROM llm_usage
       WHERE source <> 'archivo' AND created_at BETWEEN $1 AND $2
         ${inIds ? `AND account_id IN (${inIds})` : ''}
       GROUP BY source ORDER BY total DESC
     `, P);
+
+    // El COSTO real jamás sale de aquí para un no-admin (la UI lo oculta, pero la API también debe).
+    if (!isAdmin) {
+      totals.gasto = totals.facturado;
+      for (const a of perAccount) a.gasto = a.facturado;
+    }
 
     return { range: { from, to }, totals, byStage, daily, perAccount, recientes, gastoPorTipo };
   });

@@ -2,9 +2,25 @@ import { one } from '../db.js';
 import { generateReply } from '../services/agent.js';
 import { typingDelayMs } from '../services/humanize.js';
 import { recordUsage, mergeSetter } from '../services/pipeline.js';
-import { requireManageAgents, canAccessAccount } from '../lib/session.js';
+import { requireManageAgents, canAccessAccount, accessibleAccountIds } from '../lib/session.js';
 
 export default async function playgroundRoutes(app) {
+  // Gasto acumulado en pruebas y ajustes (playground + corrector + arquitecto), scoped:
+  // admin ve el total; un usuario, solo el de sus conexiones.
+  app.get('/api/playground/spend', async (req) => {
+    const ids = await accessibleAccountIds(req);
+    const row = await one(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS costo, COALESCE(SUM(COALESCE(billed_usd, cost_usd)), 0) AS facturado, COUNT(*)::int AS llamadas
+       FROM llm_usage WHERE source IN ('playground', 'corrector', 'arquitecto')
+       ${ids ? 'AND account_id = ANY($1::int[])' : ''}`,
+      ids ? [ids] : []
+    );
+    if (!row) return { costo: 0, facturado: 0, llamadas: 0 };
+    // el COSTO real es solo del admin; al cliente se le muestra lo facturado
+    if (req.auth?.role !== 'admin') row.costo = row.facturado;
+    return row;
+  });
+
   app.post('/api/playground/reply', async (req, reply) => {
     if (!(await requireManageAgents(req, reply))) return;
     const { account_id, setter_id, history = [], memory = {} } = req.body || {};

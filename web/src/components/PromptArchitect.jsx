@@ -1,17 +1,25 @@
 import { useRef, useState } from 'react';
-import { Send, Image, X, Check, Sparkles } from 'lucide-react';
+import { Send, Image, X, Check, Sparkles, Eye, PencilLine } from 'lucide-react';
 import { api } from '../api.js';
 import { Button, Banner } from './ui.jsx';
 
+const BLOCKS = [
+  { key: 'prompt_identity', label: '1 · Identidad y personalidad' },
+  { key: 'prompt_business', label: '2 · Negocio y oferta' },
+  { key: 'prompt_flow', label: '3 · Flujo y objetivo' },
+];
+
 // Chat con la IA arquitecta que arma/ajusta los 3 bloques del prompt de un setter.
 // mode: 'architect' (entrevista) o 'edit' (aplicar cambios con imágenes).
-export function PromptArchitect({ accountId, targetPath, mode = 'architect', onApplied, compact = false }) {
-  const base = targetPath || `/api/accounts/${accountId}`;
+// targetPath SIEMPRE apunta a un setter (/api/setters/:id): los prompts de la conexión son legacy.
+export function PromptArchitect({ targetPath, mode = 'architect', onApplied, compact = false }) {
+  const base = targetPath;
   const [chat, setChat] = useState([]);
   const [text, setText] = useState('');
   const [images, setImages] = useState([]); // data URLs, NO se guardan
   const [busy, setBusy] = useState(false);
   const [proposal, setProposal] = useState(null);
+  const [preview, setPreview] = useState(null); // { current } — comparación antes/después
   const [error, setError] = useState('');
   const [applied, setApplied] = useState(false);
   const bottomRef = useRef(null);
@@ -58,20 +66,44 @@ export function PromptArchitect({ accountId, targetPath, mode = 'architect', onA
     setBusy(true);
     try {
       // solo aplicamos las secciones con contenido (no borramos un bloque por una propuesta vacía)
-      const patch = {};
+      const patch = { prompt_source: mode === 'edit' ? 'corrector' : 'arquitecto' };
       if (proposal.prompt_identity?.trim()) patch.prompt_identity = proposal.prompt_identity;
       if (proposal.prompt_business?.trim()) patch.prompt_business = proposal.prompt_business;
       if (proposal.prompt_flow?.trim()) patch.prompt_flow = proposal.prompt_flow;
       await api.put(base, patch);
       setApplied(true);
       setProposal(null);
-      setChat((c) => [...c, { role: 'assistant', text: '✅ Cambios aplicados a los 3 bloques del prompt del setter.' }]);
+      setPreview(null);
+      setChat((c) => [...c, { role: 'assistant', text: '✅ Cambios aplicados. La versión anterior quedó guardada en el Historial por si quieres volver atrás.' }]);
       onApplied?.();
     } catch (err) {
       setError(err.message);
     } finally {
       setBusy(false);
     }
+  };
+
+  const openPreview = async () => {
+    try {
+      const cur = await api.get(base);
+      setPreview({ current: cur });
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const modifyRequest = () => {
+    setProposal(null);
+    setPreview(null);
+    setChat((c) => [...c, { role: 'assistant', text: '✏️ Vale — dime qué ajusto de la propuesta y te preparo una nueva versión.' }]);
+    scroll();
+  };
+
+  const cancelProposal = () => {
+    setProposal(null);
+    setPreview(null);
+    setChat((c) => [...c, { role: 'assistant', text: '❌ Cambio descartado. El prompt queda como estaba.' }]);
+    scroll();
   };
 
   return (
@@ -111,13 +143,63 @@ export function PromptArchitect({ accountId, targetPath, mode = 'architect', onA
 
       {proposal && (
         <div className="border-x border-slate-100 bg-violet-50/50 p-3">
-          <div className="mb-2 text-xs font-semibold text-violet-700">Propuesta lista para aplicar a los 3 bloques:</div>
+          <div className="mb-1 text-xs font-bold text-violet-700">✨ He preparado el cambio. Esto es lo que haría:</div>
           {(proposal.cambios || []).length > 0 && (
             <ul className="mb-2 space-y-0.5 text-xs text-slate-600">
               {proposal.cambios.map((c, i) => <li key={i}>• {c}</li>)}
             </ul>
           )}
-          <Button onClick={apply} loading={busy}><Check size={15} /> Sí, aplicar estos cambios</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" className="!py-1.5 text-xs" onClick={openPreview}><Eye size={14} /> Ver antes / después</Button>
+            <Button className="!py-1.5 text-xs" onClick={apply} loading={busy}><Check size={14} /> Aplicar</Button>
+            <Button variant="secondary" className="!py-1.5 text-xs" onClick={modifyRequest}><PencilLine size={14} /> Modificar solicitud</Button>
+            <Button variant="ghost" className="!py-1.5 text-xs" onClick={cancelProposal}><X size={14} /> Cancelar cambio</Button>
+          </div>
+          <p className="mt-1.5 text-[11px] text-slate-400">Elige una opción para continuar (el chat queda en pausa mientras decides).</p>
+        </div>
+      )}
+
+      {preview && proposal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setPreview(null)}>
+          <div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
+              <h3 className="text-sm font-bold text-slate-800">👀 Antes / después del prompt</h3>
+              <button onClick={() => setPreview(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
+            </div>
+            <div className="scroll-thin flex-1 space-y-4 overflow-y-auto p-5">
+              {BLOCKS.map((blk) => {
+                const before = String(preview.current?.[blk.key] || '');
+                const afterRaw = String(proposal[blk.key] || '');
+                const changed = afterRaw.trim() && afterRaw !== before;
+                return (
+                  <div key={blk.key}>
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-700">{blk.label}</span>
+                      {!changed && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">sin cambios</span>}
+                    </div>
+                    {changed ? (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="rounded-xl border border-red-200 bg-red-50/40 p-2.5">
+                          <div className="mb-1 text-[10px] font-bold uppercase text-red-400">Antes</div>
+                          <pre className="scroll-thin max-h-48 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-slate-600">{before || '(vacío)'}</pre>
+                        </div>
+                        <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-2.5">
+                          <div className="mb-1 text-[10px] font-bold uppercase text-emerald-500">Después</div>
+                          <pre className="scroll-thin max-h-48 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-slate-700">{afterRaw}</pre>
+                        </div>
+                      </div>
+                    ) : (
+                      <pre className="scroll-thin max-h-24 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-50 p-2.5 text-[11px] leading-relaxed text-slate-400">{before || '(vacío)'}</pre>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
+              <Button variant="ghost" onClick={() => setPreview(null)}>Volver</Button>
+              <Button onClick={apply} loading={busy}><Check size={15} /> Aplicar estos cambios</Button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -146,10 +228,11 @@ export function PromptArchitect({ accountId, targetPath, mode = 'architect', onA
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder={mode === 'edit' ? 'Instrucciones de cambio…' : 'Escribe aquí…'}
-            className="flex-1 rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+            disabled={Boolean(proposal)}
+            placeholder={proposal ? 'Elige una opción arriba para continuar…' : (mode === 'edit' ? 'Instrucciones de cambio…' : 'Escribe aquí…')}
+            className="flex-1 rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100 disabled:bg-slate-50 disabled:text-slate-400"
           />
-          <Button type="submit" className="!px-3.5" loading={busy}><Send size={16} /></Button>
+          <Button type="submit" className="!px-3.5" loading={busy} disabled={Boolean(proposal)}><Send size={16} /></Button>
         </form>
       </div>
     </div>
