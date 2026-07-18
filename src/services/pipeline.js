@@ -298,6 +298,10 @@ export async function cancelBotJobs(conversationId) {
   await redis.del(debKey(conversationId));
   await redis.del(fuKey(conversationId));
   await redis.del(reactKey(conversationId));
+  // También la activación externa pendiente: si la dejamos, al reanudar el bot el SIGUIENTE mensaje
+  // del lead se trataría como «activación» (saltándose modo test y etiquetas requeridas) y entraría
+  // con el contexto de una etiqueta vieja.
+  await redis.del(activarKey(conversationId));
 }
 
 // Invalida la caché de etiquetas del contacto (p. ej. tras excluir/incluir manualmente).
@@ -497,14 +501,14 @@ export async function handleInbound(account, evt) {
 // ⚡ ACTIVADOR EXTERNO: un workflow de GHL (p. ej. al asignar una etiqueta) activa a ESTE setter
 // para un contacto: importa el historial (entrantes y salientes) desde GHL, reclama la conversación
 // y programa una respuesta proactiva (instrucción de activación en processDebounce).
-export async function activateSetterForContact(account, setter, contactId, waitSeconds = 0) {
+export async function activateSetterForContact(account, setter, contactId, waitSeconds = 0, contexto = '') {
   const merged = mergeSetter(account, setter);
   if (!account.ai_enabled || !merged.bot_enabled) {
     await logEvent('activador_apagado', { setter: setter.id, contactId, ai: account.ai_enabled, bot: merged.bot_enabled });
     return;
   }
   // historial del contacto en GHL (si falla o no hay, se sigue con lo que tengamos local)
-  let ghlHistory = { conversationId: null, messages: [] };
+  let ghlHistory = { conversationId: null, messages: [], lastInboundAt: null };
   try {
     ghlHistory = await ghl.listContactMessages(account, contactId, 20);
   } catch (err) {
@@ -533,7 +537,27 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   }
   // importar el historial que no tengamos (con fecha real y sin duplicar/re-etiquetar los propios)
   await saveGhlMessages(conv, ghlHistory.messages);
-  await redis.set(activarKey(conv.id), '1', 'EX', 3600);
+
+  // La conversación puede nacer AQUÍ (todo su historial viene de GHL, no de un webhook entrante), y
+  // entonces last_inbound_at quedaría NULL → windowBlocked daría "cerrada" SIEMPRE en IG/FB/WhatsApp
+  // y el setter no llegaría a escribir nunca. Lo fijamos con la fecha REAL del último entrante que
+  // trajimos (nunca now(): falsear la ventana de 24 h de Meta sería mentirle a la política).
+  // lastInboundAt lo calcula ghl.listContactMessages sobre los mensajes CRUDOS (incluye los que solo
+  // llevan adjuntos, que el filtro por texto descarta) y solo con el dateAdded real de GHL.
+  const fechaEntrante = ghlHistory.lastInboundAt ? new Date(ghlHistory.lastInboundAt) : null;
+  if (fechaEntrante && !Number.isNaN(fechaEntrante.getTime())) {
+    await q(
+      `UPDATE conversations SET last_inbound_at = GREATEST(COALESCE(last_inbound_at, 'epoch'::timestamptz), $2::timestamptz)
+        WHERE id = $1`,
+      [conv.id, fechaEntrante.toISOString()]
+    );
+  }
+  // El valor guarda el CONTEXTO de esta activación (por qué la etiqueta lo activó ahora), para que
+  // processDebounce se lo pase a la IA. '1' = activación sin contexto (comportamiento por defecto).
+  // TTL HOLGADO y por encima de la espera: si caduca antes de que corra el debounce, la activación
+  // se perdería en silencio (y con espera=3600 caducaba justo al ejecutarse).
+  const ttlActivar = Math.max(86400, (Number(waitSeconds) || 0) * 2 + 3600);
+  await redis.set(activarKey(conv.id), String(contexto || '').trim().slice(0, 1500) || '1', 'EX', ttlActivar);
   await logEvent('activador_externo', { conv: conv.id, setter: setter.id, contactId, canal: channel, mensajes_importados: ghlHistory.messages.length, espera_s: waitSeconds });
   // espera configurable tras la etiqueta antes de que el setter entre (mín. 3 s para que no sea instantáneo)
   const delayMs = Math.max(3, Math.min(Number(waitSeconds) || 0, 3600)) * 1000;
@@ -877,14 +901,33 @@ export async function processDebounce(job) {
 
   const { conv, account, provider, history, variantId, setterId } = await loadContext(conversationId);
   if (!conv || !account) return;
-  if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) return;
-  if (conv.stage === 'atencion_humana') return; // requiere atención humana → el bot no responde
-  if (!provider) {
-    await logEvent('error_config', { conv: conv.id, msg: 'la cuenta o el agente no tiene proveedor de IA configurado' });
+
+  // ¿activación externa pendiente? → el setter escribe él solo (aunque el último mensaje sea nuestro).
+  // El valor lleva su contexto ('1' = sin contexto). Se lee ANTES de los cortes de abajo para poder
+  // CONSUMIRLA si el bot no puede atenderla: si la dejáramos viva, al reanudar el bot el siguiente
+  // mensaje del lead se trataría como activación (saltándose modo test y etiquetas requeridas).
+  const activarRaw = await redis.get(activarKey(conversationId));
+  const activacion = Boolean(activarRaw);
+  const activContexto = activarRaw && activarRaw !== '1' ? activarRaw : '';
+  const descartarActivacion = async (motivo) => {
+    if (!activacion) return;
+    await redis.del(activarKey(conversationId));
+    await logEvent('activacion_descartada', { conv: conv.id, motivo });
+  };
+
+  if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) {
+    await descartarActivacion(conv.bot_paused ? 'conversacion_pausada' : 'ia_o_bot_apagado');
     return;
   }
-  // ¿activación externa pendiente? → el setter escribe él solo (aunque el último mensaje sea nuestro)
-  const activacion = Boolean(await redis.get(activarKey(conversationId)));
+  if (conv.stage === 'atencion_humana') { // requiere atención humana → el bot no responde
+    await descartarActivacion('atencion_humana');
+    return;
+  }
+  if (!provider) {
+    await logEvent('error_config', { conv: conv.id, msg: 'la cuenta o el agente no tiene proveedor de IA configurado' });
+    await descartarActivacion('sin_proveedor');
+    return;
+  }
   // nada nuevo que responder (el último mensaje ya es nuestro)
   const lastMsg = history[history.length - 1];
   if (!activacion && (!lastMsg || lastMsg.direction === 'outbound')) return;
@@ -897,7 +940,27 @@ export async function processDebounce(job) {
 
   const windowDelay = delayToActiveWindow(account);
   if (windowDelay > 0) {
+    // Fuera del horario activo aplazamos hasta la apertura (puede ser ~24 h). Hay que RENOVAR la
+    // activación pendiente: si no, la clave caduca durante la espera y la activación (y su contexto)
+    // se pierden en silencio — el setter nunca entraría.
+    // EXPIRE (no SET): solo renueva el TTL sin tocar el valor. Si reescribiéramos con el valor leído
+    // arriba, una activación NUEVA llegada entretanto quedaría pisada por el contexto viejo; y si la
+    // clave ya se consumió, EXPIRE no la resucita (devuelve 0).
+    if (activacion) {
+      await redis.expire(activarKey(conversationId), Math.ceil(windowDelay / 1000) + 3600);
+      await logEvent('activacion_aplazada_por_horario', { conv: conv.id, minutos: Math.round(windowDelay / 60000) });
+    }
     await scheduleDebounce(account, conversationId, windowDelay);
+    return;
+  }
+
+  // Ventana de 24 h de Meta (IG/FB/WhatsApp): si está cerrada, el envío se descartaría igualmente
+  // en processSend. Cortamos ANTES de gastar la llamada al LLM y, si había una activación, la
+  // descartamos con traza (dejarla viva haría que un mensaje posterior del lead se tratase como
+  // activación, saltándose modo test y etiquetas requeridas).
+  if (windowBlocked(conv)) {
+    await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
+    await descartarActivacion('ventana_cerrada');
     return;
   }
 
@@ -908,6 +971,9 @@ export async function processDebounce(job) {
       account, provider, conversation: conv, history,
       followupInstruction: activacion
         ? 'ACTIVACIÓN EXTERNA: el negocio te activó para esta conversación (p. ej. tras asignar una etiqueta en su flujo). Lee el historial y escribe tú el mensaje adecuado para iniciar o retomar según tu FLUJO — natural, breve, sin sonar automático. Si no hay historial, preséntate según tu identidad.'
+          + (activContexto
+            ? `\n\nCONTEXTO DE ESTA ACTIVACIÓN (qué pasó justo antes de que te activaran — es lo que marca CÓMO debes entrar; tenlo muy en cuenta y NO lo contradigas): ${activContexto}`
+            : '')
         : null,
     });
     await redis.del(`llmretry:${conversationId}`);
@@ -922,6 +988,9 @@ export async function processDebounce(job) {
     } else {
       await redis.del(`llmretry:${conversationId}`);
       await logEvent('error_llm', { conv: conv.id, error: err.message, nota: 'agotados los reintentos' });
+      // Nadie va a reprogramar ya: si dejáramos viva la activación, el siguiente mensaje del lead
+      // (horas después) se trataría como activación y se saltaría modo test y etiquetas requeridas.
+      await descartarActivacion('llm_agotado');
     }
     return;
   }

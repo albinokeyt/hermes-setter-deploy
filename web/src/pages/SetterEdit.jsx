@@ -31,18 +31,22 @@ export default function SetterEdit() {
   const [calendars, setCalendars] = useState(null);
   const [versions, setVersions] = useState(null); // null = modal cerrado
   const [restoring, setRestoring] = useState(false);
-  const [creatingTag, setCreatingTag] = useState(false);
+  const [creatingTag, setCreatingTag] = useState(null); // índice de la etiqueta que se está creando
   const [tagMsg, setTagMsg] = useState(null);
   const [tagLog, setTagLog] = useState(null); // null = aún no consultado
+  const [linkModal, setLinkModal] = useState(null); // { i, valor, editando }
 
-  const createTag = async () => {
-    setCreatingTag(true); setTagMsg(null);
+  const createTag = async (i, name) => {
+    setCreatingTag(i); setTagMsg(null);
     try {
-      const r = await api.post(`/api/setters/${id}/create-tag`, { name: s.activation_tag });
-      setTagMsg({ ok: true, text: `✓ Etiqueta «${r.tag}» lista en GHL. Úsala en tu workflow.` });
+      const r = await api.post(`/api/setters/${id}/create-tag`, { name });
+      setTagMsg({ ok: true, text: `✓ Etiqueta «${r.tag}» creada en GHL. Pulsa «Guardar» para que este setter la escuche.` });
     } catch (e) { setTagMsg({ ok: false, text: `✗ ${e.message}` }); }
-    finally { setCreatingTag(false); }
+    finally { setCreatingTag(null); }
   };
+
+  // Solo dejamos abrir/guardar enlaces http(s) (un "javascript:" sería ejecutar código al pulsar).
+  const linkOk = (u) => /^https?:\/\//i.test(String(u || '').trim());
 
   const loadTagLog = () => api.get(`/api/setters/${id}/tag-log`).then((r) => setTagLog(r.events || [])).catch(() => setTagLog([]));
 
@@ -216,18 +220,48 @@ export default function SetterEdit() {
               checked={Boolean(s.activation_enabled)}
               onChange={(v) => set({ activation_enabled: v })}
               label="⚡ Activación externa por etiqueta"
-              description="Cuando en GHL se le añade una etiqueta al contacto, este setter lee el historial de su conversación y le escribe él solo, siguiendo su flujo. Ideal para meterlo al final de un workflow."
+              description="Cuando en GHL se le añade una etiqueta al contacto, este setter lee el historial de su conversación y le escribe él solo. Cada etiqueta es un punto de entrada distinto con SU propio contexto: la que pongas tras un CTA puede hacer que entre hablando diferente que la que pongas tras un IF."
             />
-            {Boolean(s.activation_enabled) && (
+            {Boolean(s.activation_enabled) && (() => {
+              const tagsList = Array.isArray(s.activation_tags) ? s.activation_tags : [];
+              const setTag = (i, patch) => set({ activation_tags: tagsList.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+              return (
               <div className="space-y-3">
-                <div className="flex items-end gap-2">
-                  <div className="flex-1">
-                    <Input label="Etiqueta que activa al setter" value={s.activation_tag || ''} onChange={(e) => set({ activation_tag: e.target.value })} placeholder="ej. activar-setter" hint="La MISMA que añadirá tu workflow de GHL. Pulsa «Crear en GHL» para que exista exacta (sin diferencias por un espacio)." />
+                {tagsList.length === 0 && <p className="text-xs text-slate-400">Aún no hay etiquetas activadoras. Añade una para que un workflow de GHL pueda meter al setter.</p>}
+
+                {tagsList.map((t, i) => (
+                  <div key={i} className="space-y-2 rounded-xl border border-violet-200 bg-white p-3">
+                    <div className="flex items-end gap-2">
+                      <div className="flex-1">
+                        <Input label="Etiqueta que activa" value={t.tag || ''} onChange={(e) => setTag(i, { tag: e.target.value })} placeholder="ej. activar-tras-cta"
+                          hint={!String(t.tag || '').trim() && (String(t.contexto || '').trim() || t.link)
+                            ? '⚠ Ponle nombre a la etiqueta o se descartará al guardar.'
+                            : 'La MISMA que añadirá tu workflow de GHL.'} />
+                      </div>
+                      <Button variant="secondary" loading={creatingTag === i} disabled={!String(t.tag || '').trim()} onClick={() => createTag(i, t.tag)}>Crear en GHL</Button>
+                      <button type="button" onClick={() => set({ activation_tags: tagsList.filter((_, j) => j !== i) })} className="mb-2 text-slate-400 hover:text-red-500" title="Quitar esta etiqueta"><Trash2 size={16} /></button>
+                    </div>
+
+                    <Textarea label="🧠 Contexto de esta etiqueta" rows={2} maxLength={1500} value={t.contexto || ''} onChange={(e) => setTag(i, { contexto: e.target.value })}
+                      placeholder="ej. Acaba de pedir el precio por el CTA del anuncio y no contestó. Entra retomando eso, sin volver a presentarte."
+                      hint={`Qué pasó justo ANTES de que le pusieran esta etiqueta. Es lo que hace que entre hablando distinto según dónde la coloques en el workflow. Vacío = entra con su flujo normal. (${String(t.contexto || '').length}/1500)`} />
+
+                    <div className="flex items-end gap-2">
+                      <div className="w-48">
+                        <Input label="⏳ Espera (segundos)" type="number" min="0" max="3600" step="5" value={t.espera ?? 0} onChange={(e) => setTag(i, { espera: Math.min(3600, Math.max(0, Number(e.target.value) || 0)) })} hint="Antes de escribir (máx. 1 h)." />
+                      </div>
+                      <div className="mb-2 flex items-center gap-2">
+                        <Button variant="secondary" className="!py-1.5 text-xs" onClick={() => setLinkModal({ i, valor: t.link || '', editando: !t.link })}>
+                          {t.link ? '🔗 CTA vinculado' : '🔗 Vincular CTA'}
+                        </Button>
+                        {t.link && <span className="max-w-[220px] truncate text-[11px] text-slate-400">{t.link}</span>}
+                      </div>
+                    </div>
                   </div>
-                  <Button variant="secondary" loading={creatingTag} disabled={!s.activation_tag?.trim()} onClick={createTag}>Crear en GHL</Button>
-                </div>
+                ))}
+
+                <Button variant="secondary" onClick={() => set({ activation_tags: [...tagsList, { tag: '', contexto: '', espera: 0, link: '' }] })}><Plus size={16} /> Añadir etiqueta activadora</Button>
                 {tagMsg && <p className={`text-xs font-medium ${tagMsg.ok ? 'text-emerald-600' : 'text-red-500'}`}>{tagMsg.text}</p>}
-                <Input label="⏳ Espera tras la etiqueta (segundos)" type="number" min="0" max="3600" step="5" value={s.activation_wait_seconds ?? 0} onChange={(e) => set({ activation_wait_seconds: Number(e.target.value) })} className="!w-48" hint="Cuánto espera el setter tras recibir la etiqueta antes de escribir (0 = casi inmediato)." />
 
                 {/* URL DEDICADA para el evento ContactTagUpdate (aparte del webhook de mensajes) */}
                 <div className="rounded-xl border border-violet-200 bg-white p-3">
@@ -274,7 +308,8 @@ export default function SetterEdit() {
                   <p className="mt-1">Úsalo solo si prefieres un nodo «Webhook» dentro del workflow en vez del evento ContactTagUpdate. Esta URL sí es única por setter.</p>
                 </details>
               </div>
-            )}
+              );
+            })()}
           </div>
 
           <div className="border-t border-slate-100 pt-5">
@@ -417,6 +452,57 @@ export default function SetterEdit() {
           </Card>
         </div>
       )}
+
+      {/* 🔗 Vincular CTA: guarda la URL de la automatización (ManyChat/GHL/…) que pone esta etiqueta */}
+      {linkModal !== null && (() => {
+        const lista = Array.isArray(s.activation_tags) ? s.activation_tags : [];
+        const guardado = lista[linkModal.i]?.link || '';
+        const cerrar = () => setLinkModal(null);
+        const guardar = () => {
+          const v = linkModal.valor.trim();
+          if (v && !linkOk(v)) return;
+          set({ activation_tags: lista.map((x, j) => (j === linkModal.i ? { ...x, link: v } : x)) });
+          setLinkModal(null);
+        };
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={cerrar}>
+            <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
+                <h3 className="text-sm font-bold text-slate-800">🔗 CTA vinculado a «{lista[linkModal.i]?.tag || 'esta etiqueta'}»</h3>
+                <button onClick={cerrar} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100">✕</button>
+              </div>
+              <div className="space-y-3 p-5">
+                <p className="text-xs text-slate-400">Pega aquí el enlace de la automatización que pone esta etiqueta (el workflow de GHL, la automatización de ManyChat, el anuncio…). Es solo una referencia para que puedas volver a ella de un clic; no cambia el comportamiento del setter.</p>
+
+                {linkModal.editando ? (
+                  <>
+                    <Input label="Enlace" value={linkModal.valor} onChange={(e) => setLinkModal({ ...linkModal, valor: e.target.value })}
+                      placeholder="https://app.gohighlevel.com/… o https://app.manychat.com/…" autoFocus
+                      hint={linkModal.valor.trim() && !linkOk(linkModal.valor) ? '⚠ Debe empezar por http:// o https://' : 'Debe empezar por http:// o https://'} />
+                    <div className="flex justify-end gap-2">
+                      <Button variant="secondary" onClick={cerrar}>Cancelar</Button>
+                      <Button onClick={guardar} disabled={Boolean(linkModal.valor.trim()) && !linkOk(linkModal.valor)}>Guardar enlace</Button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="break-all rounded-xl bg-slate-50 p-3 text-xs text-slate-600">{guardado || '(sin enlace)'}</div>
+                    <div className="flex justify-end gap-2">
+                      <Button variant="secondary" onClick={() => { set({ activation_tags: lista.map((x, j) => (j === linkModal.i ? { ...x, link: '' } : x)) }); setLinkModal(null); }}>Quitar</Button>
+                      <Button variant="secondary" onClick={() => setLinkModal({ ...linkModal, editando: true, valor: guardado })}>Editar enlace</Button>
+                      {linkOk(guardado) && (
+                        <a href={guardado} target="_blank" rel="noopener noreferrer"
+                          className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700">Abrir enlace ↗</a>
+                      )}
+                    </div>
+                  </>
+                )}
+                <p className="text-[11px] text-slate-400">Recuerda <b>Guardar</b> el setter para que el enlace quede registrado.</p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {versions !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setVersions(null)}>

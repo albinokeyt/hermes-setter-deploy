@@ -167,10 +167,24 @@ export async function listContactMessages(account, contactId, limit = 20) {
     { version: V_CONVERSATIONS }
   );
   const convs = Array.isArray(search?.conversations) ? search.conversations : [];
-  if (!convs.length) return { conversationId: null, messages: [] };
+  if (!convs.length) return { conversationId: null, messages: [], lastInboundAt: null };
   const convId = convs[0].id;
   const data = await ghlApi(account, 'GET', `/conversations/${encodeURIComponent(convId)}/messages?limit=${limit}`, { version: V_CONVERSATIONS });
   const raw = Array.isArray(data?.messages?.messages) ? data.messages.messages : (Array.isArray(data?.messages) ? data.messages : []);
+
+  // Fecha del ÚLTIMO entrante REAL, calculada sobre los mensajes CRUDOS: el filtro de abajo descarta
+  // los que no traen texto (imagen, audio, sticker, reacción… muy comunes en IG) y ese puede ser
+  // justo el último mensaje del lead. Con ella se decide la ventana de 24 h de Meta, así que SOLO
+  // vale el dateAdded real: dateUpdated puede ser posterior (p. ej. al marcarse como leído) y nos
+  // haría creer abierta una ventana ya cerrada.
+  let lastInboundAt = null;
+  for (const m of raw) {
+    if (!m || m.direction !== 'inbound' || !m.dateAdded) continue;
+    const t = new Date(m.dateAdded);
+    if (Number.isNaN(t.getTime())) continue;
+    if (!lastInboundAt || t > lastInboundAt) lastInboundAt = t;
+  }
+
   const messages = raw
     .filter((m) => m && String(m.body || '').trim())
     .map((m) => ({
@@ -182,7 +196,7 @@ export async function listContactMessages(account, contactId, limit = 20) {
       dateAdded: m.dateAdded || m.dateUpdated || null,
     }))
     .reverse(); // GHL devuelve recientes primero → cronológico
-  return { conversationId: convId, messages };
+  return { conversationId: convId, messages, lastInboundAt: lastInboundAt ? lastInboundAt.toISOString() : null };
 }
 
 export async function getContact(account, contactId) {

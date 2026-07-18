@@ -9,15 +9,43 @@ const ADMIN_EDITABLE = [
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
-  'calendar_ids', 'activation_enabled', 'activation_tag', 'activation_wait_seconds',
+  'calendar_ids', 'activation_enabled', 'activation_tags',
 ];
 const USER_EDITABLE = [
   'name', 'bot_enabled', 'test_mode', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
-  'calendar_ids', 'activation_enabled', 'activation_tag', 'activation_wait_seconds',
+  'calendar_ids', 'activation_enabled', 'activation_tags',
 ];
-const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids', 'channels']);
+const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids', 'channels', 'activation_tags']);
+
+// Solo aceptamos enlaces http/https: el link se renderiza como <a> en el panel, así que un
+// "javascript:..." sería ejecución de código al pulsarlo. Cualquier otro esquema se descarta.
+function safeLink(v) {
+  const s = String(v || '').trim().slice(0, 500);
+  if (!s) return '';
+  try {
+    const u = new URL(s);
+    return (u.protocol === 'http:' || u.protocol === 'https:') ? s : '';
+  } catch {
+    return '';
+  }
+}
+
+// Lista de etiquetas activadoras: { tag, contexto, espera, link }. Se normaliza entera para que no
+// entre basura al prompt ni al panel (claves desconocidas fuera, longitudes y espera acotadas).
+function sanitizeActivationTags(v) {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((e) => ({
+      tag: String(e?.tag || '').trim().slice(0, 100),
+      contexto: String(e?.contexto || '').trim().slice(0, 1500),
+      espera: Math.min(Math.max(0, Math.round(Number(e?.espera) || 0)), 3600),
+      link: safeLink(e?.link),
+    }))
+    .filter((e) => e.tag)
+    .slice(0, 20);
+}
 
 async function loadSetterScoped(req, setterId) {
   const setter = await one(`SELECT * FROM setters WHERE id = $1`, [setterId]);
@@ -146,7 +174,8 @@ export default async function setterRoutes(app) {
       if (!(f in b)) continue;
       // No dejar el setter sin canales (estado ambiguo): si llega vacío/invalido, se ignora el cambio.
       if (f === 'channels' && !(Array.isArray(b[f]) && b[f].length)) continue;
-      vals.push(JSON_FIELDS.has(f) ? JSON.stringify(b[f]) : b[f]);
+      const val = f === 'activation_tags' ? sanitizeActivationTags(b[f]) : b[f];
+      vals.push(JSON_FIELDS.has(f) ? JSON.stringify(val) : val);
       sets.push(`${f} = $${vals.length}${JSON_FIELDS.has(f) ? '::jsonb' : ''}`);
     }
     if (!sets.length) return setter;
@@ -170,10 +199,10 @@ export default async function setterRoutes(app) {
     if (code) return reply.code(code).send({ error });
     const account = await one(`SELECT * FROM accounts WHERE id = $1`, [setter.account_id]);
     if (!account?.location_id) return reply.code(400).send({ error: 'Primero conecta esta subcuenta a GHL (pestaña Conexión).' });
-    const name = String(req.body?.name || setter.activation_tag || '').trim().slice(0, 100);
+    const name = String(req.body?.name || '').trim().slice(0, 100);
     if (!name) return reply.code(400).send({ error: 'Escribe primero el nombre de la etiqueta.' });
-    // guarda la etiqueta en el setter en cualquier caso (aunque ya existiera en GHL)
-    await q(`UPDATE setters SET activation_tag = $1 WHERE id = $2`, [name, setter.id]);
+    // Solo la creamos en GHL: la etiqueta vive en la lista activation_tags del setter, que se
+    // guarda con el resto del formulario (no la duplicamos en la columna legacy activation_tag).
     try {
       await ghl.createLocationTag(account, name);
       return { ok: true, tag: name };
@@ -184,7 +213,7 @@ export default async function setterRoutes(app) {
       const yaExiste = err?.status === 400 && /(exist|duplicat|already|ya existe)/.test(txt);
       if (yaExiste) return { ok: true, tag: name, nota: 'La etiqueta ya existía en GHL.' };
       return reply.code(502).send({
-        error: `La etiqueta se guardó aquí, pero GHL no la pudo crear (${err?.status || 'sin conexión'}). Revisa la conexión de la subcuenta.`,
+        error: `GHL no pudo crear la etiqueta (${err?.status || 'sin conexión'}). Revisa la conexión de la subcuenta.`,
       });
     }
   });

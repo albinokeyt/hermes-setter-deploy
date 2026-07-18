@@ -133,33 +133,56 @@ async function handleTagActivation(account, p) {
   const tagsArray = Array.isArray(p.tags) ? p.tags : (Array.isArray(p.contact?.tags) ? p.contact.tags : null);
   const tags = (tagsArray || []).map((t) => String(t).trim().toLowerCase()).filter(Boolean);
   const setters = await q(
-    `SELECT * FROM setters WHERE account_id = $1 AND activation_enabled = true AND COALESCE(activation_tag,'') <> ''`,
+    `SELECT * FROM setters WHERE account_id = $1 AND activation_enabled = true`,
     [account.id]
   );
-  // Sin ningún setter con activación por etiqueta → no hay nada que hacer. No registramos nada para
-  // no inundar la traza (ContactTagUpdate se dispara con CADA cambio de etiqueta de la subcuenta).
-  if (!setters.length) return;
-  const evaluados = [];
-  if (contactId) {
-    for (const s of setters) {
-      const tag = String(s.activation_tag || '').trim().toLowerCase();
+  // Cada setter puede tener VARIAS etiquetas activadoras, y cada una lleva su propio contexto
+  // (la misma etiqueta tras un CTA o tras un IF hace que entre hablando distinto). Las aplanamos.
+  const entradas = [];
+  for (const s of setters) {
+    const lista = Array.isArray(s.activation_tags) ? s.activation_tags : [];
+    for (const e of lista) {
+      const tag = String(e?.tag || '').trim().toLowerCase();
       if (!tag) continue;
-      const dedupe = `tagact:${s.id}:${contactId}`;
-      if (tags.includes(tag)) {
+      entradas.push({ setter: s, tag, contexto: String(e?.contexto || ''), espera: Number(e?.espera) || 0 });
+    }
+  }
+  // Sin ninguna etiqueta activadora configurada → no hay nada que hacer. No registramos nada para
+  // no inundar la traza (ContactTagUpdate se dispara con CADA cambio de etiqueta de la subcuenta).
+  if (!entradas.length) return;
+  const evaluados = [];
+  // Un setter entra UNA sola vez por evento aunque casen varias de sus etiquetas: si no, la segunda
+  // activación pisaría el contexto de la primera y el agente entraría con el contexto equivocado.
+  const yaActivados = new Set();
+  if (contactId) {
+    for (const en of entradas) {
+      const s = en.setter;
+      // dedupe POR ETIQUETA: cada etiqueta dispara una vez por «añadido», independiente de las otras
+      const dedupe = `tagact:${s.id}:${en.tag}:${contactId}`;
+      if (tags.includes(en.tag)) {
         const fresh = await redis.set(dedupe, '1', 'EX', 86400, 'NX');
-        if (!fresh) { evaluados.push({ setter: s.id, nombre: s.name, etiqueta: tag, estado: 'ya_activado' }); continue; }
-        await logEvent('activador_etiqueta', { account: account.id, setter: s.id, contactId, etiqueta: tag });
+        if (!fresh) { evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'ya_activado' }); continue; }
+        // Marcamos su dedupe igualmente (la etiqueta está puesta), pero no volvemos a activar.
+        if (yaActivados.has(s.id)) {
+          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'omitida_por_otra_etiqueta' });
+          continue;
+        }
+        await logEvent('activador_etiqueta', { account: account.id, setter: s.id, contactId, etiqueta: en.tag, con_contexto: Boolean(en.contexto.trim()) });
         try {
-          await activateSetterForContact(account, s, contactId, Number(s.activation_wait_seconds) || 0);
-          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: tag, estado: 'activado' });
+          await activateSetterForContact(account, s, contactId, en.espera, en.contexto);
+          yaActivados.add(s.id);
+          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'activado' });
         } catch (err) {
-          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: tag, estado: 'error', error: String(err.message).slice(0, 120) });
+          // Si falló, liberamos el dedupe: si no, un error pasajero quemaría la etiqueta 24 h y el
+          // lead no se contactaría nunca (ni con un reintento de GHL ni al re-añadirla).
+          await redis.del(dedupe).catch(() => {});
+          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'error', error: String(err.message).slice(0, 120) });
         }
       } else {
         // SOLO si el payload trae la lista real y la etiqueta no está → resetear (re-añadido re-dispara).
         // Si el payload venía sin lista (parcial), NO tocamos el dedupe (evita doble activación).
         if (tagsArray) await redis.del(dedupe);
-        evaluados.push({ setter: s.id, nombre: s.name, etiqueta: tag, estado: 'sin_coincidir' });
+        evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'sin_coincidir' });
       }
     }
   }
@@ -324,7 +347,18 @@ export default async function webhookRoutes(app) {
       }
       const account = await one(`SELECT * FROM accounts WHERE id = $1`, [setter.account_id]);
       if (!account) return;
-      await activateSetterForContact(account, setter, String(contactId), Number(setter.activation_wait_seconds) || 0);
+      // Alternativa avanzada (nodo Webhook). El contexto NO se acepta como texto libre: esta ruta se
+      // autentica solo con el token (que viaja en URLs de workflows y logs de terceros), así que un
+      // texto libre acabaría inyectando instrucciones en el prompt del agente. El workflow manda el
+      // NOMBRE de la etiqueta y resolvemos su contexto desde la lista del setter, ya saneada.
+      const tagPedida = String(c.tag || c.etiqueta || '').trim().toLowerCase();
+      const lista = Array.isArray(setter.activation_tags) ? setter.activation_tags : [];
+      const entrada = tagPedida ? lista.find((e) => String(e?.tag || '').trim().toLowerCase() === tagPedida) : null;
+      await activateSetterForContact(
+        account, setter, String(contactId),
+        entrada ? Number(entrada.espera) || 0 : 0,
+        entrada ? String(entrada.contexto || '') : ''
+      );
     } catch (err) {
       console.error('[webhook activar]', err);
       await logEvent('error_webhook', { error: err.message }).catch(() => {});
