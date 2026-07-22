@@ -32,7 +32,17 @@ function safeLink(v) {
   }
 }
 
-// Lista de etiquetas activadoras: { tag, contexto, espera, link }. Se normaliza entera para que no
+// Lista de CTAs vinculados a una etiqueta: [{ url, name }]. Cada url solo http/https. Acepta el campo
+// antiguo `link` (una sola URL string) por compatibilidad y lo convierte en un elemento.
+function sanitizeLinks(links, legacy) {
+  let arr = Array.isArray(links) ? links : (legacy ? [{ url: legacy, name: '' }] : []);
+  return arr
+    .map((l) => ({ url: safeLink(typeof l === 'string' ? l : l?.url), name: String(l?.name || '').trim().slice(0, 60) }))
+    .filter((l) => l.url)
+    .slice(0, 10);
+}
+
+// Lista de etiquetas activadoras: { tag, contexto, espera, links }. Se normaliza entera para que no
 // entre basura al prompt ni al panel (claves desconocidas fuera, longitudes y espera acotadas).
 function sanitizeActivationTags(v) {
   if (!Array.isArray(v)) return [];
@@ -41,7 +51,7 @@ function sanitizeActivationTags(v) {
       tag: String(e?.tag || '').trim().slice(0, 100),
       contexto: String(e?.contexto || '').trim().slice(0, 1500),
       espera: Math.min(Math.max(0, Math.round(Number(e?.espera) || 0)), 3600),
-      link: safeLink(e?.link),
+      links: sanitizeLinks(e?.links, e?.link),
     }))
     .filter((e) => e.tag)
     .slice(0, 20);
