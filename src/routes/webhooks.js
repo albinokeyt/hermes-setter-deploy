@@ -179,7 +179,7 @@ async function handleTagActivation(account, p) {
       for (const en of list) if (en !== elegida) evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'omitida_por_otra_etiqueta' });
       await logEvent('activador_etiqueta', { account: account.id, setter: s.id, contactId, etiqueta: elegida.tag, con_contexto: Boolean(elegida.contexto.trim()) });
       try {
-        await activateSetterForContact(account, s, contactId, elegida.espera, elegida.contexto);
+        await activateSetterForContact(account, s, contactId, elegida.espera, elegida.contexto, elegida.tag);
         evaluados.push({ setter: s.id, nombre: s.name, etiqueta: elegida.tag, estado: 'activado' });
       } catch (err) {
         // Si falló, liberamos su dedupe: un error pasajero no debe quemar la etiqueta 24 h.
@@ -359,7 +359,8 @@ export default async function webhookRoutes(app) {
       await activateSetterForContact(
         account, setter, String(contactId),
         entrada ? Number(entrada.espera) || 0 : 0,
-        entrada ? String(entrada.contexto || '') : ''
+        entrada ? String(entrada.contexto || '') : '',
+        entrada ? String(entrada.tag || '') : tagPedida
       );
     } catch (err) {
       console.error('[webhook activar]', err);

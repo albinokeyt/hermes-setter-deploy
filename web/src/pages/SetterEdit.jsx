@@ -36,6 +36,8 @@ export default function SetterEdit() {
   const [tagMsg, setTagMsg] = useState(null);
   const [tagLog, setTagLog] = useState(null); // null = aún no consultado
   const [linkModal, setLinkModal] = useState(null); // { i, nombre, url } — i = índice de la etiqueta
+  const [activaciones, setActivaciones] = useState(null); // registro en vivo de activaciones
+  const [now, setNow] = useState(Date.now()); // reloj para la cuenta atrás del temporizador
 
   const createTag = async (i, name) => {
     setCreatingTag(i); setTagMsg(null);
@@ -54,6 +56,8 @@ export default function SetterEdit() {
   };
 
   const loadTagLog = () => api.get(`/api/setters/${id}/tag-log`).then((r) => setTagLog(r.events || [])).catch(() => setTagLog([]));
+  const loadActivaciones = () => api.get(`/api/setters/${id}/activaciones`).then((r) => setActivaciones(r.activaciones || [])).catch(() => setActivaciones([]));
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
   const openHistory = () => api.get(`/api/setters/${id}/prompt-versions`).then(setVersions).catch((e) => setError(e.message));
   const restoreVersion = async (v) => {
@@ -78,6 +82,22 @@ export default function SetterEdit() {
   useEffect(() => {
     if (s?.account_id) api.get(`/api/accounts/${s.account_id}/calendars`).then(setCalendars).catch(() => setCalendars({ calendars: [] }));
   }, [s?.account_id]);
+  // Registro de activaciones: cargar al entrar en la pestaña + reloj de 1 s + refresco 6 s si hay pendientes.
+  useEffect(() => {
+    if (tab !== 'activaciones') return;
+    if (activaciones === null) loadActivaciones();
+    const reloj = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(reloj);
+  }, [tab]);
+  // una activación 'esperando' se considera VIVA solo si su hora objetivo no está muy vencida (>3 min):
+  // si el job del bot se perdiera (reinicio de Redis, etc.), no queremos cuenta atrás ni polling infinitos.
+  const activacionViva = (a, ref) => a.status === 'esperando' && a.respond_at && (new Date(a.respond_at).getTime() > ref - 180000);
+  useEffect(() => {
+    if (tab !== 'activaciones' || !Array.isArray(activaciones)) return;
+    if (!activaciones.some((a) => activacionViva(a, Date.now()))) return; // solo pollear si hay alguna viva
+    const poll = setInterval(loadActivaciones, 6000);
+    return () => clearInterval(poll);
+  }, [tab, activaciones]);
 
   if (!s) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 
@@ -423,6 +443,46 @@ export default function SetterEdit() {
                               <span className="ml-2 text-slate-400">{new Date(ev.created_at).toLocaleTimeString('es-ES')}</span>
                             </summary>
                             <pre className="scroll-thin mt-1 max-h-40 overflow-auto rounded bg-white p-2 text-[10px] leading-relaxed text-slate-600">{JSON.stringify(ev.payload, null, 2)}</pre>
+                          </details>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* 📋 Registro de activaciones EN VIVO: quién se activó, cuánto falta para que hable, y el mensaje */}
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-600">📋 Registro de activaciones</span>
+                    <Button variant="secondary" className="!py-1 text-xs" onClick={loadActivaciones}>Actualizar</Button>
+                  </div>
+                  {activaciones === null ? (
+                    <p className="text-xs text-slate-400">Cargando…</p>
+                  ) : activaciones.length === 0 ? (
+                    <p className="text-xs text-slate-400">Aún no ha entrado ninguna activación. Cuando una etiqueta active al setter, aparecerá aquí con su temporizador.</p>
+                  ) : (
+                    <div className="scroll-thin max-h-72 space-y-1.5 overflow-y-auto">
+                      {activaciones.map((a) => {
+                        const viva = activacionViva(a, now);
+                        const rem = viva ? Math.max(0, Math.round((new Date(a.respond_at).getTime() - now) / 1000)) : 0;
+                        return (
+                          <details key={a.id} className="rounded-lg bg-slate-50 px-2.5 py-1.5">
+                            <summary className="cursor-pointer text-[11px]">
+                              {a.status === 'esperando'
+                                ? (viva
+                                    ? <span className="font-bold text-amber-600">{rem > 0 ? `⏳ responde en ${mmss(rem)}` : '⏳ respondiendo…'}</span>
+                                    : <span className="font-bold text-slate-400">⏳ sin confirmar</span>)
+                                : a.status === 'respondido'
+                                  ? <span className="font-bold text-emerald-600">✅ respondió</span>
+                                  : <span className="font-bold text-slate-400">✖ {a.motivo || 'descartado'}</span>}
+                              <span className="ml-2 font-medium text-slate-600">{a.contact_name || a.contact_id}</span>
+                              {a.tag && <span className="ml-1 text-slate-400">· {a.tag}</span>}
+                              <span className="ml-2 text-slate-400">{new Date(a.created_at).toLocaleTimeString('es-ES')}</span>
+                            </summary>
+                            {a.status === 'respondido' && a.message && (
+                              <div className="mt-1 whitespace-pre-wrap rounded bg-white p-2 text-[11px] leading-relaxed text-slate-700">{a.message}</div>
+                            )}
+                            {a.contexto && <div className="mt-1 text-[10px] text-slate-400">🧠 Contexto: {a.contexto}</div>}
                           </details>
                         );
                       })}

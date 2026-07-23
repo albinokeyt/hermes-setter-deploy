@@ -46,6 +46,46 @@ export async function logEvent(kind, payload) {
   }
 }
 
+// ── Registro de activaciones por etiqueta (para el panel en vivo de la sección Activaciones) ──
+async function activationLogStart(account, setter, conv, { tag = '', contexto = '', waitSeconds = 0 }) {
+  try {
+    // una activación nueva reemplaza a la anterior pendiente de esta conversación (last-wins)
+    await q(`UPDATE activation_log SET status = 'descartado', motivo = 'reemplazada', updated_at = now() WHERE conversation_id = $1 AND status = 'esperando'`, [conv.id]);
+    await q(
+      `INSERT INTO activation_log (account_id, setter_id, conversation_id, contact_id, contact_name, tag, contexto, wait_seconds, respond_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now() + ($8 * interval '1 second'))`,
+      [account.id, setter.id, conv.id, conv.ghl_contact_id, conv.lead_name || '', String(tag || '').slice(0, 100), String(contexto || '').slice(0, 1500), Math.max(0, Number(waitSeconds) || 0)]
+    );
+    await q(`DELETE FROM activation_log WHERE id < (SELECT COALESCE(MAX(id),0) FROM activation_log) - 3000`);
+  } catch (err) {
+    console.error('[activation_log start]', err.message);
+  }
+}
+// Llamado desde el worker cuando un job de debounce FALLA (excepción no capturada): resuelve la fila
+// para que no quede 'esperando' con temporizador infinito. Idempotente (solo toca filas 'esperando').
+export async function markActivationFailed(conversationId) {
+  await activationLogDone(conversationId, 'descartado', 'error');
+}
+async function activationLogDone(conversationId, status, extra = '') {
+  try {
+    if (status === 'respondido') {
+      await q(`UPDATE activation_log SET status = 'respondido', message = $2, updated_at = now() WHERE conversation_id = $1 AND status = 'esperando'`, [conversationId, String(extra || '').slice(0, 4000)]);
+    } else {
+      await q(`UPDATE activation_log SET status = 'descartado', motivo = $2, updated_at = now() WHERE conversation_id = $1 AND status = 'esperando'`, [conversationId, String(extra || '').slice(0, 200)]);
+    }
+  } catch (err) {
+    console.error('[activation_log done]', err.message);
+  }
+}
+// Reprograma la hora objetivo (p. ej. aplazada por horario) para que el temporizador sea correcto.
+async function activationLogReschedule(conversationId, seconds) {
+  try {
+    await q(`UPDATE activation_log SET respond_at = now() + ($2 * interval '1 second'), updated_at = now() WHERE conversation_id = $1 AND status = 'esperando'`, [conversationId, Math.max(0, Math.round(Number(seconds) || 0))]);
+  } catch (err) {
+    console.error('[activation_log resched]', err.message);
+  }
+}
+
 export async function accountByLocation(locationId) {
   return one(`SELECT * FROM accounts WHERE location_id = $1`, [locationId]);
 }
@@ -329,6 +369,9 @@ export async function cancelBotJobs(conversationId) {
   // del lead se trataría como «activación» (saltándose modo test y etiquetas requeridas) y entraría
   // con el contexto de una etiqueta vieja.
   await redis.del(activarKey(conversationId));
+  // y cerramos su registro (idempotente: solo toca filas 'esperando') para que no quede colgado el
+  // temporizador del panel al pausar/excluir/hacer handoff/borrar durante la espera de una activación.
+  await activationLogDone(conversationId, 'descartado', 'cancelado');
 }
 
 // Invalida la caché de etiquetas del contacto (p. ej. tras excluir/incluir manualmente).
@@ -556,7 +599,7 @@ export async function handleInbound(account, evt) {
 // ⚡ ACTIVADOR EXTERNO: un workflow de GHL (p. ej. al asignar una etiqueta) activa a ESTE setter
 // para un contacto: importa el historial (entrantes y salientes) desde GHL, reclama la conversación
 // y programa una respuesta proactiva (instrucción de activación en processDebounce).
-export async function activateSetterForContact(account, setter, contactId, waitSeconds = 0, contexto = '') {
+export async function activateSetterForContact(account, setter, contactId, waitSeconds = 0, contexto = '', tag = '') {
   const merged = mergeSetter(account, setter);
   if (!account.ai_enabled || !merged.bot_enabled) {
     await logEvent('activador_apagado', { setter: setter.id, contactId, ai: account.ai_enabled, bot: merged.bot_enabled });
@@ -582,7 +625,10 @@ export async function activateSetterForContact(account, setter, contactId, waitS
     [account.id, String(contactId), ghlHistory.conversationId, channel]
   );
   if (conv.bot_paused || conv.stage === 'atencion_humana') {
-    await logEvent('activador_bloqueado', { conv: conv.id, setter: setter.id, motivo: conv.stage === 'atencion_humana' ? 'atencion_humana' : 'pausado' });
+    const motivo = conv.stage === 'atencion_humana' ? 'atencion_humana' : 'pausado';
+    await logEvent('activador_bloqueado', { conv: conv.id, setter: setter.id, motivo });
+    await activationLogStart(account, setter, conv, { tag, contexto, waitSeconds });
+    await activationLogDone(conv.id, 'descartado', motivo);
     return;
   }
   // la activación RECLAMA la conversación para este setter
@@ -627,6 +673,8 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   // espera configurable tras la etiqueta antes de que el setter entre (mín. 3 s para que no sea instantáneo)
   const delayMs = Math.max(3, Math.min(Number(waitSeconds) || 0, 3600)) * 1000;
   await scheduleDebounce(merged, conv.id, delayMs);
+  // registro en vivo (panel de Activaciones): esperando, con la hora objetivo real del temporizador
+  await activationLogStart(account, setter, conv, { tag, contexto, waitSeconds: delayMs / 1000 });
 }
 
 // Guarda en `messages` los mensajes traídos de GHL (entrantes y salientes) que falten, dedupe por
@@ -979,6 +1027,7 @@ export async function processDebounce(job) {
     if (!activacion) return;
     await redis.del(activarKey(conversationId));
     await logEvent('activacion_descartada', { conv: conv.id, motivo });
+    await activationLogDone(conversationId, 'descartado', motivo);
   };
 
   if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) {
@@ -1008,7 +1057,7 @@ export async function processDebounce(job) {
 
   if (!(await allowedByTags(account, conv, activacion))) {
     await logEvent('respuesta_omitida_por_etiqueta', { conv: conv.id, contacto: conv.ghl_contact_id, test_mode: account.test_mode, required_tags: account.required_tags, activacion });
-    if (activacion) await redis.del(activarKey(conversationId));
+    await descartarActivacion('filtro_etiqueta'); // borra activarKey + marca el registro (no dejar 'esperando' colgado)
     return;
   }
 
@@ -1023,6 +1072,7 @@ export async function processDebounce(job) {
     if (activacion) {
       await redis.expire(activarKey(conversationId), Math.ceil(windowDelay / 1000) + 3600);
       await logEvent('activacion_aplazada_por_horario', { conv: conv.id, minutos: Math.round(windowDelay / 60000) });
+      await activationLogReschedule(conversationId, windowDelay / 1000); // temporizador correcto tras el aplazamiento
     }
     await scheduleDebounce(account, conversationId, windowDelay);
     return;
@@ -1094,7 +1144,10 @@ export async function processDebounce(job) {
       { delay: cursor }
     );
   }
-  if (activacion) await redis.del(activarKey(conversationId)); // activación consumida
+  if (activacion) {
+    await redis.del(activarKey(conversationId)); // activación consumida
+    await activationLogDone(conversationId, 'respondido', result.mensajes.join('\n')); // panel: el mensaje que respondió
+  }
 
   if (result.handoff) {
     // Etiqueta VISIBLE «Requiere atención humana» + pausa; mientras la tenga, el bot no responde.

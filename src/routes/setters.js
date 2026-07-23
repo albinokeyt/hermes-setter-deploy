@@ -159,6 +159,19 @@ export default async function setterRoutes(app) {
     return { events };
   });
 
+  // 📋 Registro de ACTIVACIONES en vivo de este setter: qué activaciones llegaron, el temporizador que
+  // falta para que hable (respond_at) y el mensaje que respondió. Para el panel de la sección Activaciones.
+  app.get('/api/setters/:id/activaciones', async (req, reply) => {
+    const { setter, code, error } = await loadSetterScoped(req, req.params.id);
+    if (code) return reply.code(code).send({ error });
+    const rows = await q(
+      `SELECT id, contact_id, contact_name, tag, contexto, wait_seconds, respond_at, status, message, motivo, created_at
+       FROM activation_log WHERE setter_id = $1 ORDER BY id DESC LIMIT 30`,
+      [setter.id]
+    );
+    return { activaciones: rows };
+  });
+
   // Guarda la versión ANTERIOR de los 3 prompts antes de sobrescribirlos (historial para volver atrás).
   async function savePromptVersion(setter, source) {
     await q(
