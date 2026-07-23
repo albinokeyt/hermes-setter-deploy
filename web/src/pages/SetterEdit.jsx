@@ -254,13 +254,17 @@ export default function SetterEdit() {
             })()}
           </div>
 
-          <div className="space-y-4 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+          <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
             <Toggle
               checked={Boolean(s.test_mode)}
               onChange={(v) => set({ test_mode: v })}
               label="🧪 Modo test (solo este setter)"
-              description="Este setter SOLO responde a contactos con la etiqueta de prueba de la conexión (los demás setters siguen normal). Para poner TODA la conexión en test, usa el modo test de la conexión."
+              description="Este setter SOLO responde a contactos con SU etiqueta de test (los demás setters siguen normal). Puedes probar varios setters a la vez, cada uno con su etiqueta. Para poner TODA la conexión en test, usa el modo test de la conexión."
             />
+            {Boolean(s.test_mode) && (
+              <Input label="Etiqueta de test de este setter (tag de GHL)" value={s.test_tag || ''} onChange={(e) => set({ test_tag: e.target.value })} placeholder="ej. test-valeria"
+                hint="Añade esta etiqueta a tu contacto de prueba en GHL y solo este setter le responderá. Si la dejas vacía, usa la etiqueta de test de la conexión. Si un contacto tiene varias etiquetas de test, gana el setter más nuevo." />
+            )}
           </div>
 
           {isAdmin && (

@@ -11,7 +11,7 @@ const TABS = [
   { key: 'ajustes', label: 'Ajustes' },
   { key: 'ctas', label: '🎯 CTAs' },
   { key: 'accesos', label: 'Accesos' },
-  { key: 'conexion', label: 'Conexión GHL' },
+  { key: 'conexion', label: 'Conexión GHL', adminOnly: true },
 ];
 
 const fmtWait = (s) => {
@@ -28,7 +28,7 @@ export default function AccountEdit() {
   const isAdmin = me?.role === 'admin';
   const tabs = TABS.filter((t) => isAdmin || !t.adminOnly);
   const [searchParams] = useSearchParams();
-  const [tab, setTab] = useState(searchParams.get('conectada') !== null ? 'conexion' : 'setters');
+  const [tab, setTab] = useState(searchParams.get('conectada') !== null && isAdmin ? 'conexion' : 'setters');
   const [acc, setAcc] = useState(null);
   const [setters, setSetters] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -288,7 +288,7 @@ export default function AccountEdit() {
 
       {tab === 'accesos' && <AccessManager accountId={id} />}
 
-      {tab === 'conexion' && (
+      {tab === 'conexion' && isAdmin && (
         <div className="max-w-2xl space-y-4">
           <Card className="space-y-4 p-6">
             <Select label="Modo de conexión" value={acc.mode} onChange={(e) => set({ mode: e.target.value })}>

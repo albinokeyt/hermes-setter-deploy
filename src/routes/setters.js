@@ -5,14 +5,14 @@ import * as ghl from '../services/ghl.js';
 
 // El admin edita todo; un usuario del portal solo el cerebro de su setter (no el proveedor/modelo de IA).
 const ADMIN_EDITABLE = [
-  'name', 'bot_enabled', 'accepts_leads', 'test_mode', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
+  'name', 'bot_enabled', 'accepts_leads', 'test_mode', 'test_tag', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
   'calendar_ids', 'activation_enabled', 'activation_tags', 'insertion_wait_seconds', 'insertion_idle_hours',
 ];
 const USER_EDITABLE = [
-  'name', 'bot_enabled', 'test_mode', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
+  'name', 'bot_enabled', 'test_mode', 'test_tag', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   // pestaña IA: el usuario elige sus APIs (solo las habilitadas para usuarios; se valida abajo)

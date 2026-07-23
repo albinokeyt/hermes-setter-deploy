@@ -152,8 +152,13 @@ export function mergeSetter(account, s) {
     debounce_seconds: s.debounce_seconds,
     followups: Array.isArray(s.followups) && s.followups.length ? s.followups : account.followups,
     followup_ai_check: s.followup_ai_check !== false, // por defecto ON
-    // modo test: el de la CONEXIÓN aplica a todos; el del setter solo a él (misma test_tag de la conexión)
+    // modo test: el de la CONEXIÓN aplica a todos (con la etiqueta de la conexión); el del setter solo
+    // a él, con SU propia etiqueta de test (si no tiene, cae a la de la conexión).
     test_mode: Boolean(account.test_mode || s.test_mode),
+    test_tag: account.test_mode ? account.test_tag : (String(s.test_tag || '').trim() || account.test_tag),
+    // prueba de ESTE setter (no test "en bloque" de la conexión): durante ella la etiqueta de test es la
+    // llave y las etiquetas REQUERIDAS del setter no aplican (si no, capta el lead de prueba y queda mudo).
+    test_by_setter: Boolean(s.test_mode && !account.test_mode),
     // canales de atención del setter (si no tiene, hereda los de la conexión — setters legacy)
     channels: Array.isArray(s.channels) && s.channels.length ? s.channels : account.channels,
     // tiempo de inserción: el del setter manda si lo tiene (>0); si no, el de la conexión
@@ -259,28 +264,41 @@ async function selectSetter(account, conv) {
   if (!setters.length) return { setter: null, hasSetters: true };
   // Atajo de un solo setter SOLO si no está en test; si lo está, pasa por el filtro de test de abajo
   // (para no asignarle un lead real y dejarlo mudo).
-  if (setters.length === 1 && !setters[0].test_mode) return { setter: setters[0], hasSetters: true };
+  if (setters.length === 1 && !setters[0].test_mode && !account.test_mode) return { setter: setters[0], hasSetters: true };
   const tags = await getContactTags(account, conv);
   const norm = (a) => (Array.isArray(a) ? a.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : []);
   const hasReq = (s) => norm(s.required_tags).length > 0;
   const hasExcl = (s) => norm(s.excluded_tags).length > 0;
   const generalExclude = String(account.exclude_tag || '').trim().toLowerCase();
-  const anyTest = setters.some((s) => s.test_mode);
+  // modo test: la CONEXIÓN aplica a todos con su etiqueta; un setter solo, con la SUYA (o la de la
+  // conexión si no tiene). enTest(s) = ese setter está en prueba; testTagOf(s) = qué etiqueta le toca.
+  const connTest = Boolean(account.test_mode);
+  const connTag = String(account.test_tag || 'hermes-test').trim().toLowerCase();
+  const enTest = (s) => connTest || s.test_mode;
+  const testTagOf = (s) => connTest ? connTag : (String(s.test_tag || '').trim().toLowerCase() || connTag);
+  const anyTest = setters.some(enTest);
   // si dependemos de etiquetas y no se pudieron leer, aplazamos (no fijar asignación equivocada).
   if (tags === null && (generalExclude || anyTest || setters.some((s) => hasReq(s) || hasExcl(s)))) return { setter: null, hasSetters: true, defer: true };
   // exclusión general de la conexión → ningún setter responde
   if (generalExclude && tags && tags.includes(generalExclude)) return { setter: null, hasSetters: true };
-  // Un setter en test SOLO capta leads de PRUEBA (con la etiqueta de test de la conexión). Los leads
-  // reales NO se le asignan (irían a los setters vivos) para no quedarse mudos durante la prueba.
-  const testTag = String(account.test_tag || 'hermes-test').trim().toLowerCase();
-  const leadIsTest = Boolean(tags && testTag && tags.includes(testTag));
-  const passesTest = (s) => !s.test_mode || leadIsTest;
+  // Un setter en test SOLO capta leads de PRUEBA (con SU etiqueta de test). Los leads reales NO se le
+  // asignan (irían a los setters vivos) para no quedarse mudos durante la prueba.
+  const passesTest = (s) => !enTest(s) || Boolean(tags && testTagOf(s) && tags.includes(testTagOf(s)));
   // fuera los que excluyen a este lead por sus etiquetas, y los setters en test para leads reales
   const cands = setters.filter((s) => passesTest(s) && !(hasExcl(s) && tags && norm(s.excluded_tags).some((t) => tags.includes(t))));
   if (!cands.length) return { setter: null, hasSetters: true };
+  // PRUEBA por setter: si hay setters con su PROPIO test que casan (el contacto tiene su etiqueta), el
+  // MÁS NUEVO (id mayor) gana la propiedad — así se pueden probar varios a la vez. No aplica al test
+  // "en bloque" de la conexión (ahí el enrutado es el normal, solo filtrado por su etiqueta).
+  if (!connTest) {
+    const testCands = cands.filter((s) => s.test_mode);
+    if (testCands.length) return { setter: testCands.reduce((a, b) => (b.id > a.id ? b : a)), hasSetters: true };
+  }
   let pool = cands.filter((s) => hasReq(s) && setterMatches(s, tags));
   if (!pool.length) pool = cands.filter((s) => !hasReq(s));
-  if (!pool.length) pool = cands.filter((s) => s.is_default);
+  // Respaldo: el setter por defecto, PERO solo si el lead casa sus etiquetas requeridas (si no, lo
+  // reclamaría y luego el gate de respuesta lo silenciaría, dejándolo pegado y mudo).
+  if (!pool.length) pool = cands.filter((s) => s.is_default && (!hasReq(s) || setterMatches(s, tags)));
   // Fuera de un versus el reparto es a partes iguales (el peso proporcional se usa en Versus).
   return { setter: pool.length ? pool[Math.floor(Math.random() * pool.length)] : null, hasSetters: true };
 }
@@ -900,10 +918,11 @@ async function allowedByTags(account, conv, activacion = false) {
   }
   const needTest = Boolean(account.test_mode) && !activacion;
   const norm = (arr) => (Array.isArray(arr) ? arr.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : []);
-  // En un versus o una activación externa, las etiquetas requeridas del setter NO aplican.
+  // En un versus, una activación externa, o una PRUEBA por-setter, las etiquetas requeridas del setter
+  // NO aplican (en la prueba la llave es la etiqueta de test; si no, el setter capta el lead y queda mudo).
   const inVersus = Boolean(conv.versus_id) || activacion;
-  const required = inVersus ? [] : norm(account.required_tags);
-  const excluded = inVersus ? [] : norm(account.excluded_tags); // del setter (via merge)
+  const required = (inVersus || account.test_by_setter) ? [] : norm(account.required_tags);
+  const excluded = inVersus ? [] : norm(account.excluded_tags); // del setter (via merge) — sí se respeta en test
   const generalExclude = String(account.exclude_tag || '').trim().toLowerCase(); // de la conexión
   if (!needTest && !required.length && !excluded.length && !generalExclude) return true; // sin filtros
   if (!(account.location_id || account.pit_token)) return true; // sin GHL no podemos consultar etiquetas
