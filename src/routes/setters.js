@@ -9,13 +9,13 @@ const ADMIN_EDITABLE = [
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
-  'calendar_ids', 'activation_enabled', 'activation_tags',
+  'calendar_ids', 'activation_enabled', 'activation_tags', 'insertion_wait_seconds', 'insertion_idle_hours',
 ];
 const USER_EDITABLE = [
   'name', 'bot_enabled', 'test_mode', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
-  'calendar_ids', 'activation_enabled', 'activation_tags',
+  'calendar_ids', 'activation_enabled', 'activation_tags', 'insertion_wait_seconds', 'insertion_idle_hours',
 ];
 const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids', 'channels', 'activation_tags']);
 
@@ -184,7 +184,9 @@ export default async function setterRoutes(app) {
       if (!(f in b)) continue;
       // No dejar el setter sin canales (estado ambiguo): si llega vacío/invalido, se ignora el cambio.
       if (f === 'channels' && !(Array.isArray(b[f]) && b[f].length)) continue;
-      const val = f === 'activation_tags' ? sanitizeActivationTags(b[f]) : b[f];
+      let val = f === 'activation_tags' ? sanitizeActivationTags(b[f]) : b[f];
+      if (f === 'insertion_wait_seconds') val = Math.min(Math.max(0, Math.round(Number(b[f]) || 0)), 3600);
+      if (f === 'insertion_idle_hours') val = Math.min(Math.max(0, Math.round(Number(b[f]) || 0)), 720);
       vals.push(JSON_FIELDS.has(f) ? JSON.stringify(val) : val);
       sets.push(`${f} = $${vals.length}${JSON_FIELDS.has(f) ? '::jsonb' : ''}`);
     }

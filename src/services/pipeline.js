@@ -23,6 +23,8 @@ const debKey = (id) => `debtoken:${id}`;
 const fuKey = (id) => `futoken:${id}`;
 const ctaKey = (id) => `ctawait:${id}`; // instante (ms) hasta el que el setter espera por un CTA
 const activarKey = (id) => `activar:${id}`; // activación externa pendiente (el setter escribe él solo)
+const insFreshKey = (id) => `insfresh:${id}`; // pendiente de re-leer etiquetas frescas tras la inserción
+const ctagsKey = (conv) => `ctags:${conv.account_id}:${conv.ghl_contact_id}`; // caché de etiquetas del contacto
 
 export function normalizeChannel(raw) {
   const s = String(raw || '').toUpperCase();
@@ -150,6 +152,9 @@ export function mergeSetter(account, s) {
     test_mode: Boolean(account.test_mode || s.test_mode),
     // canales de atención del setter (si no tiene, hereda los de la conexión — setters legacy)
     channels: Array.isArray(s.channels) && s.channels.length ? s.channels : account.channels,
+    // tiempo de inserción: el del setter manda si lo tiene (>0); si no, el de la conexión
+    insertion_wait_seconds: Number(s.insertion_wait_seconds) > 0 ? Number(s.insertion_wait_seconds) : (Number(account.insertion_wait_seconds) || 0),
+    insertion_idle_hours: Number(s.insertion_idle_hours) > 0 ? Number(s.insertion_idle_hours) : (Number(account.insertion_idle_hours) || 0),
     // calendarios "agenda" del setter (sin respaldo: vacío = este setter no mide agendas)
     calendar_ids: Array.isArray(s.calendar_ids) ? s.calendar_ids : [],
     required_tags: s.required_tags,
@@ -375,6 +380,14 @@ export async function handleInbound(account, evt) {
   const attachments = Array.isArray(evt.attachments) ? evt.attachments : [];
   if (!textBody && !attachments.length) return null; // nada que procesar
 
+  // Última actividad ANTES de esta entrada (el upsert de abajo pisa last_inbound_at), para saber si
+  // el lead vuelve tras un periodo de inactividad y reaplicar el tiempo de inserción.
+  const prevAct = await one(
+    `SELECT GREATEST(COALESCE(last_inbound_at, 'epoch'::timestamptz), COALESCE(last_outbound_at, 'epoch'::timestamptz)) AS at
+       FROM conversations WHERE account_id = $1 AND ghl_contact_id = $2 AND channel = $3`,
+    [account.id, evt.contactId, channel]
+  );
+
   const conv = await one(
     `INSERT INTO conversations (account_id, ghl_contact_id, ghl_conversation_id, channel, lead_name, last_inbound_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, now(), now())
@@ -393,6 +406,7 @@ export async function handleInbound(account, evt) {
   // lead no tenga setter (por si se etiqueta más tarde). Si hay setters pero ninguno
   // aplica a este lead, NO se responde (respetar el filtro de etiquetas del setter).
   let respond = true;
+  let recienAsignado = false; // el setter se fija EN esta llamada (1er mensaje o uno posterior)
   if (!conv.setter_id && account.ai_enabled) {
     const { setter, hasSetters, defer, versusId } = await selectSetter(account, conv);
     if (setter) {
@@ -400,6 +414,7 @@ export async function handleInbound(account, evt) {
       conv.setter_id = setter.id;
       conv.versus_id = versusId || null;
       account = mergeSetter(account, setter);
+      recienAsignado = true;
       await logEvent('lead_asignado_setter', { conv: conv.id, setter: setter.id, nombre: setter.name, versus: versusId || null });
     } else if (defer) {
       respond = false; // no se pudieron leer etiquetas: no fijamos setter, se reintenta luego
@@ -478,17 +493,35 @@ export async function handleInbound(account, evt) {
       const s = await one(`SELECT * FROM setters WHERE id = $1`, [conv.setter_id]);
       if (s) account = mergeSetter(account, s);
     }
-    // Si un 🎯 CTA de la conexión casa con el primer mensaje, aplica su espera; si no, el debounce normal.
+    // Espera antes de procesar. Se aplica al ENTRAR el lead (primer mensaje) o cuando vuelve tras un
+    // periodo de inactividad: se retiene el mensaje unos segundos (tiempo de INSERCIÓN) para que las
+    // etiquetas/automatizaciones de GHL asienten y las reglas de filtrado se validen luego con la info
+    // completa. Un 🎯 CTA que case suma su propia espera (se toma la mayor). La activación por etiqueta
+    // no pasa por aquí, así que salta esta espera por diseño.
+    const insWait = Math.min(Math.max(0, Number(account.insertion_wait_seconds) || 0), 3600);
+    const idleHours = Math.min(Math.max(0, Number(account.insertion_idle_hours) || 0), 720);
+    const prevMs = prevAct?.at ? new Date(prevAct.at).getTime() : 0;
+    const volvioTrasInactividad = insWait > 0 && idleHours > 0 && prevMs > 0 && (Date.now() - prevMs) >= idleHours * 3600_000;
+    // También cuenta como "entrada" cuando el setter se acaba de asignar en esta llamada (el 1er
+    // mensaje pudo no asignar por un hipo de GHL, y el setter se fija en el 2º): así la re-lectura
+    // fresca de etiquetas también protege ese camino.
+    const esEntrada = conv.is_new || volvioTrasInactividad || recienAsignado;
+
     let delayMs = null;
-    if (conv.is_new) {
+    if (esEntrada) {
       const ctaWait = matchCtaWait(account, body);
-      if (ctaWait != null) {
-        delayMs = ctaWait * 1000;
-        await redis.set(ctaKey(conv.id), String(Date.now() + delayMs), 'EX', ctaWait + 300);
-        await logEvent('cta_espera', { conv: conv.id, segundos: ctaWait });
+      const wait = Math.max(insWait, ctaWait || 0);
+      if (wait > 0) {
+        delayMs = wait * 1000;
+        await redis.set(ctaKey(conv.id), String(Date.now() + delayMs), 'EX', wait + 300);
+        await logEvent(insWait >= (ctaWait || 0) ? 'insercion_espera' : 'cta_espera', { conv: conv.id, segundos: wait, reaplicada: volvioTrasInactividad });
+        // La espera de inserción existe para dar tiempo a que las etiquetas asienten: marcamos la
+        // conversación para que, al procesar, se RE-LEAN las etiquetas frescas (la caché de etiquetas
+        // dura 60 s y selectSetter la pobló con el estado ANTERIOR a la etiqueta).
+        if (insWait > 0) await redis.set(insFreshKey(conv.id), '1', 'EX', wait + 120);
       }
     } else {
-      // mensajes posteriores durante la espera del CTA: respetar el mínimo que falta
+      // mensajes posteriores durante una espera en curso: respetar el mínimo que falta
       const target = Number(await redis.get(ctaKey(conv.id)));
       const remaining = target ? target - Date.now() : 0;
       if (remaining > 0) delayMs = Math.max(remaining, Math.max(5, account.debounce_seconds || 35) * 1000);
@@ -535,6 +568,16 @@ export async function activateSetterForContact(account, setter, contactId, waitS
     await q(`UPDATE conversations SET setter_id = $1 WHERE id = $2`, [setter.id, conv.id]);
     conv.setter_id = setter.id;
   }
+  // La activación toma el control: descartamos cualquier espera de inserción en curso de esta
+  // conversación (ctaKey = instante objetivo, insFreshKey = re-lectura pendiente). Si no, un mensaje
+  // posterior del lead se retendría hasta el target de inserción original aunque la activación ya respondió.
+  // Invalidamos también la caché de etiquetas: la activación SÍ respeta el exclude_tag («sin-ia»), y su
+  // debounce (≥3 s) debe re-leerlas frescas por si se añadió una justo al activar (no heredamos la
+  // re-lectura del insFreshKey que acabamos de borrar).
+  await redis.del(ctaKey(conv.id));
+  await redis.del(insFreshKey(conv.id));
+  await redis.del(ctagsKey(conv));
+
   // importar el historial que no tengamos (con fecha real y sin duplicar/re-etiquetar los propios)
   await saveGhlMessages(conv, ghlHistory.messages);
 
@@ -826,7 +869,7 @@ async function loadContext(conversationId) {
 // Se consulta el contacto en GHL (con caché de 60 s) y ante cualquier duda NO se responde.
 // Etiquetas del contacto en GHL (minúsculas), cacheadas 60s.
 async function getContactTags(account, conv) {
-  const cacheKey = `ctags:${conv.account_id}:${conv.ghl_contact_id}`;
+  const cacheKey = ctagsKey(conv);
   const cached = await redis.get(cacheKey);
   if (cached !== null) { try { return JSON.parse(cached); } catch { return []; } }
   let tags = [];
@@ -931,6 +974,14 @@ export async function processDebounce(job) {
   // nada nuevo que responder (el último mensaje ya es nuestro)
   const lastMsg = history[history.length - 1];
   if (!activacion && (!lastMsg || lastMsg.direction === 'outbound')) return;
+
+  // Si venimos de una espera de INSERCIÓN, invalidamos la caché de etiquetas para leerlas FRESCAS:
+  // el objetivo de la espera era dar tiempo a que la etiqueta se asignara, y la caché (60 s) la pobló
+  // selectSetter con el estado anterior. Sin esto, una espera < 60 s no vería la etiqueta nueva.
+  if (await redis.get(insFreshKey(conversationId))) {
+    await redis.del(ctagsKey(conv));
+    await redis.del(insFreshKey(conversationId));
+  }
 
   if (!(await allowedByTags(account, conv, activacion))) {
     await logEvent('respuesta_omitida_por_etiqueta', { conv: conv.id, contacto: conv.ghl_contact_id, test_mode: account.test_mode, required_tags: account.required_tags, activacion });

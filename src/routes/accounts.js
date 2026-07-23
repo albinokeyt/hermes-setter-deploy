@@ -15,6 +15,7 @@ const ADMIN_EDITABLE = [
   'timezone', 'sync_tags', 'auto_handoff', 'bot_enabled', 'ai_enabled', 'test_mode', 'test_tag', 'exclude_tag',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
   'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode', 'ctas',
+  'insertion_wait_seconds', 'insertion_idle_hours',
 ];
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
@@ -22,7 +23,7 @@ const USER_EDITABLE = [
   'alias',
   'followups', 'debounce_seconds', 'max_msgs',
   'active_hours', 'timezone', 'temperature', 'bot_enabled', 'test_mode', 'test_tag', 'auto_handoff_minutes',
-  'required_tags', 'required_tags_mode',
+  'required_tags', 'required_tags_mode', 'insertion_wait_seconds', 'insertion_idle_hours',
 ];
 
 const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags', 'ctas']);
@@ -92,7 +93,10 @@ export default async function accountRoutes(app) {
     const vals = [];
     for (const field of editable) {
       if (!(field in b)) continue;
-      vals.push(JSON_FIELDS.has(field) ? JSON.stringify(b[field]) : b[field] === '' && field === 'location_id' ? null : b[field]);
+      let value = JSON_FIELDS.has(field) ? JSON.stringify(b[field]) : b[field] === '' && field === 'location_id' ? null : b[field];
+      if (field === 'insertion_wait_seconds') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 3600);
+      if (field === 'insertion_idle_hours') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 720);
+      vals.push(value);
       sets.push(`${field} = $${vals.length}${JSON_FIELDS.has(field) ? '::jsonb' : ''}`);
     }
     if (!sets.length) return stripSecrets(existing, req);

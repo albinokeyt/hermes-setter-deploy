@@ -153,36 +153,38 @@ async function handleTagActivation(account, p) {
   const evaluados = [];
   // Un setter entra UNA sola vez por evento aunque casen varias de sus etiquetas: si no, la segunda
   // activación pisaría el contexto de la primera y el agente entraría con el contexto equivocado.
-  const yaActivados = new Set();
+  // Un setter entra UNA sola vez por evento; si varias de sus etiquetas casan a la vez, prevalece la
+  // ÚLTIMA (por orden de la lista), que es la más reciente. Entre eventos distintos, la más nueva
+  // también gana porque activateSetterForContact reescribe la activación pendiente.
+  const frescasPorSetter = new Map(); // setterId -> { setter, list: [entradas frescas] }
   if (contactId) {
     for (const en of entradas) {
       const s = en.setter;
-      // dedupe POR ETIQUETA: cada etiqueta dispara una vez por «añadido», independiente de las otras
       const dedupe = `tagact:${s.id}:${en.tag}:${contactId}`;
       if (tags.includes(en.tag)) {
         const fresh = await redis.set(dedupe, '1', 'EX', 86400, 'NX');
         if (!fresh) { evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'ya_activado' }); continue; }
-        // Marcamos su dedupe igualmente (la etiqueta está puesta), pero no volvemos a activar.
-        if (yaActivados.has(s.id)) {
-          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'omitida_por_otra_etiqueta' });
-          continue;
-        }
-        await logEvent('activador_etiqueta', { account: account.id, setter: s.id, contactId, etiqueta: en.tag, con_contexto: Boolean(en.contexto.trim()) });
-        try {
-          await activateSetterForContact(account, s, contactId, en.espera, en.contexto);
-          yaActivados.add(s.id);
-          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'activado' });
-        } catch (err) {
-          // Si falló, liberamos el dedupe: si no, un error pasajero quemaría la etiqueta 24 h y el
-          // lead no se contactaría nunca (ni con un reintento de GHL ni al re-añadirla).
-          await redis.del(dedupe).catch(() => {});
-          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'error', error: String(err.message).slice(0, 120) });
-        }
+        if (!frescasPorSetter.has(s.id)) frescasPorSetter.set(s.id, { setter: s, list: [] });
+        frescasPorSetter.get(s.id).list.push(en);
       } else {
         // SOLO si el payload trae la lista real y la etiqueta no está → resetear (re-añadido re-dispara).
         // Si el payload venía sin lista (parcial), NO tocamos el dedupe (evita doble activación).
         if (tagsArray) await redis.del(dedupe);
         evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'sin_coincidir' });
+      }
+    }
+    // Activar cada setter con su ÚLTIMA etiqueta fresca (last wins); las demás quedan marcadas (no re-disparan).
+    for (const { setter: s, list } of frescasPorSetter.values()) {
+      const elegida = list[list.length - 1];
+      for (const en of list) if (en !== elegida) evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'omitida_por_otra_etiqueta' });
+      await logEvent('activador_etiqueta', { account: account.id, setter: s.id, contactId, etiqueta: elegida.tag, con_contexto: Boolean(elegida.contexto.trim()) });
+      try {
+        await activateSetterForContact(account, s, contactId, elegida.espera, elegida.contexto);
+        evaluados.push({ setter: s.id, nombre: s.name, etiqueta: elegida.tag, estado: 'activado' });
+      } catch (err) {
+        // Si falló, liberamos su dedupe: un error pasajero no debe quemar la etiqueta 24 h.
+        await redis.del(`tagact:${s.id}:${elegida.tag}:${contactId}`).catch(() => {});
+        evaluados.push({ setter: s.id, nombre: s.name, etiqueta: elegida.tag, estado: 'error', error: String(err.message).slice(0, 120) });
       }
     }
   }

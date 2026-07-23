@@ -181,6 +181,14 @@ export default function AccountEdit() {
               </div>
             )}
           </div>
+          <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
+            <span className="block text-sm font-bold text-slate-800">⏳ Tiempo de inserción (toda la conexión)</span>
+            <p className="-mt-1 text-xs text-slate-500">Cuando un lead <b>entra por primera vez</b>, los setters de esta conexión esperan estos segundos <b>antes de procesar</b> su primer mensaje. Así, si una automatización de GHL le pone una etiqueta (p. ej. para que el bot NO responda), da tiempo a que se asigne antes de que el setter valide las reglas. La <b>activación por etiqueta</b> se salta esta espera. Cada setter puede fijar el suyo propio (si es mayor, manda).</p>
+            <div className="flex flex-wrap gap-4">
+              <Input label="Segundos de espera" type="number" min="0" max="3600" step="5" value={acc.insertion_wait_seconds ?? 0} onChange={(e) => set({ insertion_wait_seconds: Math.min(3600, Math.max(0, Number(e.target.value) || 0)) })} className="!w-44" hint="0 = procesa de inmediato." />
+              <Input label="Reaplicar tras inactividad (horas)" type="number" min="0" max="720" step="1" value={acc.insertion_idle_hours ?? 0} onChange={(e) => set({ insertion_idle_hours: Math.min(720, Math.max(0, Number(e.target.value) || 0)) })} className="!w-56" hint="Si el lead vuelve tras estas horas, se aplica otra vez. 0 = solo la 1ª vez." />
+            </div>
+          </div>
           <div className="space-y-4 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
             <Toggle checked={acc.test_mode} onChange={(v) => set({ test_mode: v })} label="🧪 Modo test" description="Los setters SOLO responden a contactos con la etiqueta de prueba" />
             {acc.test_mode && (

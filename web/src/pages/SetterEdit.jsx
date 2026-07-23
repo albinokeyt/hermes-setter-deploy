@@ -220,6 +220,16 @@ export default function SetterEdit() {
 
           <Input label="Espera antes de responder (debounce, segundos)" type="number" min="5" max="3600" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Math.min(3600, Math.max(5, Number(e.target.value) || 5)) })} className="!w-48" hint="El bot espera este silencio tras el último mensaje del lead y responde a todo junto, como una persona. Puedes poner desde 5 s hasta 1 h (3600 s). El bot siempre lee la conversación completa antes de responder." />
 
+          <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
+            <span className="block text-sm font-bold text-slate-800">⏳ Tiempo de inserción</span>
+            <p className="-mt-1 text-xs text-slate-500">Cuando un lead <b>entra por primera vez</b>, el setter espera estos segundos <b>antes de procesar</b> su primer mensaje. El mensaje entra al sistema pero aún no se responde: pasado ese tiempo se validan <b>todas las reglas</b> (etiquetas incluidas). Sirve para dar margen a que una automatización de GHL que pone una etiqueta (p. ej. para que el setter NO responda) se asigne antes de que el setter decida. La <b>activación por etiqueta</b> se salta esta espera.</p>
+            <div className="flex flex-wrap gap-4">
+              <Input label="Segundos de espera" type="number" min="0" max="3600" step="5" value={s.insertion_wait_seconds ?? 0} onChange={(e) => set({ insertion_wait_seconds: Math.min(3600, Math.max(0, Number(e.target.value) || 0)) })} className="!w-44" hint="0 = procesa de inmediato (con su debounce)." />
+              <Input label="Reaplicar tras inactividad (horas)" type="number" min="0" max="720" step="1" value={s.insertion_idle_hours ?? 0} onChange={(e) => set({ insertion_idle_hours: Math.min(720, Math.max(0, Number(e.target.value) || 0)) })} className="!w-56" hint="Si el lead vuelve tras estas horas sin actividad, se aplica de nuevo. 0 = solo la 1ª vez." />
+            </div>
+            <p className="text-[11px] text-slate-400">Si lo dejas en 0, se usa el tiempo de inserción de la conexión (Ajustes). El del setter, si es mayor que 0, manda.</p>
+          </div>
+
           <div className="border-t border-slate-100 pt-5">
             <span className="mb-1 block text-sm font-medium text-slate-700">📅 Calendarios que cuentan como «agenda» de este setter</span>
             <p className="mb-2 text-xs text-slate-400">Si el objetivo de este setter es <b>agendar</b>, marca SUS calendarios: solo esas reservas cuentan como agenda para él. Si su objetivo es otro (enviar un link, etc.), déjalo <b>vacío</b> → este setter no mide agendas. La agenda la reclama el setter que atendió la conversación, solo si la reserva cae en un calendario suyo.</p>
