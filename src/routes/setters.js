@@ -15,6 +15,8 @@ const USER_EDITABLE = [
   'name', 'bot_enabled', 'test_mode', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'temperature', 'debounce_seconds', 'max_msgs', 'followups', 'followup_ai_check',
+  // pestaña IA: el usuario elige sus APIs (solo las habilitadas para usuarios; se valida abajo)
+  'provider_id', 'model', 'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
   'calendar_ids', 'activation_enabled', 'activation_tags', 'insertion_wait_seconds', 'insertion_idle_hours',
 ];
 const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids', 'channels', 'activation_tags']);
@@ -178,6 +180,24 @@ export default async function setterRoutes(app) {
     if (code) return reply.code(code).send({ error });
     const editable = req.auth?.role === 'admin' ? ADMIN_EDITABLE : USER_EDITABLE;
     const b = req.body || {};
+
+    // Un usuario NO admin solo puede CAMBIAR a una API habilitada para usuarios (user_available): así no
+    // asigna por id una API no aprobada. Validamos SOLO los provider que CAMBIAN respecto a lo guardado:
+    // si el setter ya tenía una API no-user_available (la fijó el admin, o se desmarcó después), el
+    // frontend la reenvía tal cual en cada guardado y NO debe bloquear (si no, no podría ni editar un prompt).
+    if (req.auth?.role !== 'admin') {
+      const provIds = ['provider_id', 'vision_provider_id', 'audio_provider_id']
+        .filter((f) => f in b && Number(b[f]) !== Number(setter[f])) // solo los que cambian
+        .map((f) => b[f]).filter((v) => v != null && v !== '').map(Number).filter((n) => Number.isFinite(n));
+      if (provIds.length) {
+        const ok = await q(`SELECT id FROM providers WHERE user_available = true AND id = ANY($1::int[])`, [provIds]);
+        const okSet = new Set(ok.map((r) => r.id));
+        if (provIds.some((n) => !okSet.has(n))) {
+          return reply.code(400).send({ error: 'Esa API de IA no está disponible para usuarios. Elige una de las habilitadas.' });
+        }
+      }
+    }
+
     const sets = [];
     const vals = [];
     for (const f of editable) {
@@ -187,6 +207,9 @@ export default async function setterRoutes(app) {
       let val = f === 'activation_tags' ? sanitizeActivationTags(b[f]) : b[f];
       if (f === 'insertion_wait_seconds') val = Math.min(Math.max(0, Math.round(Number(b[f]) || 0)), 3600);
       if (f === 'insertion_idle_hours') val = Math.min(Math.max(0, Math.round(Number(b[f]) || 0)), 720);
+      // Un usuario elige la API, no el modelo suelto: se usa el default_model de la API (más seguro y
+      // es el mismo UX del panel). El admin sí puede fijar un modelo concreto.
+      if (req.auth?.role !== 'admin' && (f === 'model' || f === 'vision_model' || f === 'audio_model')) val = '';
       vals.push(JSON_FIELDS.has(f) ? JSON.stringify(val) : val);
       sets.push(`${f} = $${vals.length}${JSON_FIELDS.has(f) ? '::jsonb' : ''}`);
     }

@@ -142,7 +142,11 @@ export function mergeSetter(account, s) {
     prompt_business: s.prompt_business,
     prompt_flow: s.prompt_flow,
     provider_id: s.provider_id || account.provider_id,
-    model: s.model || account.model,
+    // El modelo va ATADO a su proveedor: SOLO cuando el setter elige un proveedor DISTINTO al de la
+    // conexión no hereda su model (sería el string de otra API) → con model vacío, generateReply cae al
+    // default_model del proveedor elegido. Si usa el mismo proveedor (o ninguno propio), sí hereda el
+    // model de la conexión como respaldo (es válido, misma API).
+    model: (s.provider_id && s.provider_id !== account.provider_id) ? (s.model || '') : (s.model || account.model),
     temperature: s.temperature,
     max_msgs: s.max_msgs,
     debounce_seconds: s.debounce_seconds,
