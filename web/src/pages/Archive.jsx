@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Search, Download, Send, Sparkles, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react';
 import { api } from '../api.js';
-import { CHANNEL_LABEL } from '../stages.js';
+import { CHANNELS, CHANNEL_LABEL } from '../stages.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 
@@ -17,6 +17,7 @@ const QUIEN_CLS = {
   'Setter IA': 'bg-violet-50 text-violet-700',
   'Seguimiento IA': 'bg-amber-50 text-amber-700',
   Humano: 'bg-emerald-50 text-emerald-700',
+  'Automatización': 'bg-sky-50 text-sky-700',
 };
 
 export default function Archive() {
@@ -29,7 +30,7 @@ export default function Archive() {
   const [providers, setProviders] = useState([]);
   const [settings, setSettings] = useState(null);
   const [spend, setSpend] = useState({ d24: 0, d30: 0, total: 0, preguntas: 0 });
-  const [filters, setFilters] = useState({ account_id: '', direction: '', search: '', kind: 'messages' });
+  const [filters, setFilters] = useState({ account_id: '', direction: '', search: '', kind: 'messages', channel: '', source: '' });
   const [data, setData] = useState({ total: 0, messages: [], kind: 'messages' });
   const [loading, setLoading] = useState(true);
   const [commentActive, setCommentActive] = useState(false);
@@ -56,6 +57,8 @@ export default function Archive() {
     params.set('limit', '150');
     const isComments = filters.kind === 'comments';
     if (!isComments && filters.direction) params.set('direction', filters.direction);
+    if (!isComments && filters.channel) params.set('channel', filters.channel);
+    if (!isComments && filters.source) params.set('source', filters.source);
     const t = setTimeout(() => {
       setLoading(true);
       const url = isComments ? `/api/archive/comments?${params}` : `/api/archive/messages?${params}`;
@@ -87,6 +90,8 @@ export default function Archive() {
     const params = new URLSearchParams();
     if (filters.account_id) params.set('account_id', filters.account_id);
     if (filters.direction) params.set('direction', filters.direction);
+    if (filters.channel) params.set('channel', filters.channel);
+    if (filters.source) params.set('source', filters.source);
     if (filters.search) params.set('search', filters.search);
     const res = await fetch(`/api/archive/export?${params}`, { credentials: 'same-origin' });
     const blob = await res.blob();
@@ -112,6 +117,8 @@ export default function Archive() {
         model: settings.model,
         account_id: filters.account_id || undefined,
         direction: filters.direction || undefined,
+        channel: filters.channel || undefined,
+        source: filters.source || undefined,
         search: filters.search || undefined,
       });
       setChat((c) => [...c, { role: 'ai', text: r.answer }]);
@@ -186,11 +193,29 @@ export default function Archive() {
               <option value="messages">Mensajes (DM)</option>
               <option value="comments">💬 Comentarios entrantes</option>
             </Select>
-            {filters.kind === 'messages' && (
+            {/* El filtro de Origen ya implica la dirección (Lead = entrante, el resto = salientes), así
+                que se oculta el de dirección para no combinarlos y acabar con 0 resultados sin motivo. */}
+            {filters.kind === 'messages' && !filters.source && (
               <Select value={filters.direction} onChange={(e) => setFilters({ ...filters, direction: e.target.value })} className="!w-40">
                 <option value="">Entrantes y salientes</option>
                 <option value="inbound">Solo entrantes</option>
                 <option value="outbound">Solo salientes</option>
+              </Select>
+            )}
+            {filters.kind === 'messages' && (
+              <Select value={filters.channel} onChange={(e) => setFilters({ ...filters, channel: e.target.value })} className="!w-36" title="Canal">
+                <option value="">Todos los canales</option>
+                {CHANNELS.map((ch) => <option key={ch} value={ch}>{CHANNEL_LABEL[ch]}</option>)}
+              </Select>
+            )}
+            {filters.kind === 'messages' && (
+              <Select value={filters.source} onChange={(e) => setFilters({ ...filters, source: e.target.value, direction: '' })} className="!w-44" title="Quién lo envió">
+                <option value="">Todos los orígenes</option>
+                <option value="lead">👤 Lead (entrante)</option>
+                <option value="bot">🤖 Setter IA</option>
+                <option value="seguimiento">🔁 Seguimiento IA</option>
+                <option value="humano">🙋 Humano</option>
+                <option value="automatizacion">⚙️ Automatización</option>
               </Select>
             )}
             {filters.kind === 'messages' && <Button variant="secondary" onClick={download}><Download size={15} /> Descargar CSV</Button>}

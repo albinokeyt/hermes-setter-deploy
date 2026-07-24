@@ -8,13 +8,16 @@ import { Card, Button, StagePill, Toggle, Select, Banner } from '../components/u
 function Bubble({ m }) {
   const mine = m.direction === 'outbound';
   const human = m.source === 'humano';
-  const sourceLabel = { bot: '🤖 Setter IA', humano: '👤 Humano', seguimiento: '🤖 Seguimiento IA', lead: '' }[m.source] || '';
+  const auto = m.source === 'automatizacion'; // workflow de GHL: ni el setter ni una persona
+  const sourceLabel = { bot: '🤖 Setter IA', humano: '👤 Humano', automatizacion: '⚙️ Automatización', seguimiento: '🤖 Seguimiento IA', lead: '' }[m.source] || '';
   const bubble = !mine
     ? 'bg-white border border-slate-200 text-slate-800 rounded-bl-md'
     : human
       ? 'bg-blue-600 text-white rounded-br-md'   // humano al mando
-      : 'bg-violet-600 text-white rounded-br-md'; // agente IA
-  const meta = !mine ? 'text-slate-400' : human ? 'text-blue-200' : 'text-violet-200';
+      : auto
+        ? 'bg-sky-700 text-white rounded-br-md'  // automatización de GHL
+        : 'bg-violet-600 text-white rounded-br-md'; // agente IA
+  const meta = !mine ? 'text-slate-400' : human ? 'text-blue-200' : auto ? 'text-sky-200' : 'text-violet-200';
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${bubble}`}>

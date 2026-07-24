@@ -6,9 +6,13 @@ import { recordUsage, invalidateArchiveCache } from '../services/pipeline.js';
 function quien(m) {
   if (m.direction === 'inbound') return 'Lead';
   if (m.source === 'humano') return 'Humano';
+  if (m.source === 'automatizacion') return 'Automatización';
   if (m.source === 'seguimiento') return 'Seguimiento IA';
   return 'Setter IA';
 }
+
+// Orígenes válidos para el filtro (whitelist: entra directo al WHERE).
+const ORIGENES = new Set(['lead', 'bot', 'seguimiento', 'humano', 'automatizacion']);
 
 // Construye el WHERE de los filtros de la sección.
 function buildFilter(query, ids) {
@@ -18,6 +22,13 @@ function buildFilter(query, ids) {
   const aid = Number(query.account_id);
   if (Number.isInteger(aid) && aid > 0) { vals.push(aid); where.push(`c.account_id = $${vals.length}`); }
   if (query.direction === 'inbound' || query.direction === 'outbound') { vals.push(query.direction); where.push(`m.direction = $${vals.length}`); }
+  // Canal de la conversación (Instagram, WhatsApp…) y ORIGEN del mensaje (lead / setter / seguimiento /
+  // humano / automatización), para poder comprobar por separado qué mandó cada quién.
+  if (query.channel) { vals.push(String(query.channel)); where.push(`c.channel = $${vals.length}`); }
+  if (query.source && ORIGENES.has(String(query.source))) {
+    if (query.source === 'lead') { where.push(`m.direction = 'inbound'`); }
+    else { vals.push(String(query.source)); where.push(`m.direction = 'outbound' AND m.source = $${vals.length}`); }
+  }
   if (query.search) { vals.push(`%${query.search}%`); where.push(`m.body ILIKE $${vals.length}`); }
   return { clause: where.length ? 'WHERE ' + where.join(' AND ') : '', vals };
 }

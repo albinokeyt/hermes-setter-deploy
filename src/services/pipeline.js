@@ -750,11 +750,15 @@ export async function handleOutboundEvent(account, evt) {
 
   const body = String(evt.body || '').trim();
   if (body) {
+    // Distinguimos QUIÉN lo mandó: si GHL trae userId, lo escribió una PERSONA desde el panel; si no,
+    // salió de una AUTOMATIZACIÓN (workflow). Antes ambos se guardaban como 'humano' y en el Archivo
+    // no se podían separar. (La misma señal ya se usa abajo para pausar el bot solo con personas.)
+    const origen = evt.userId ? 'humano' : 'automatizacion';
     await one(
       `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id)
-       VALUES ($1, 'outbound', 'humano', $2, $3)
+       VALUES ($1, 'outbound', $4, $2, $3)
        ON CONFLICT (ghl_message_id) WHERE ghl_message_id IS NOT NULL DO NOTHING RETURNING id`,
-      [conv.id, body, evt.messageId || null]
+      [conv.id, body, evt.messageId || null, origen]
     );
     await q(`UPDATE conversations SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
   }
