@@ -43,7 +43,7 @@ export default async function dashboardRoutes(app) {
     const totals = await one(`
       SELECT
         (SELECT COUNT(*)::int FROM conversations c WHERE true ${cond}) AS conversaciones_total,
-        (SELECT COUNT(*)::int FROM conversations c WHERE c.created_at BETWEEN $1 AND $2 ${cond}) AS nuevas,
+        (SELECT COUNT(*)::int FROM conversations c WHERE c.created_at BETWEEN $1 AND $2 AND c.last_inbound_at IS NOT NULL ${cond}) AS nuevas,
         (SELECT COUNT(*)::int FROM conversations c WHERE c.updated_at BETWEEN $1 AND $2 ${cond}) AS activas,
         (SELECT COUNT(*)::int FROM messages m WHERE m.direction = 'inbound' AND m.created_at BETWEEN $1 AND $2 ${condM}) AS recibidos,
         (SELECT COUNT(*)::int FROM messages m WHERE m.direction = 'outbound' AND m.created_at BETWEEN $1 AND $2 ${condM}) AS enviados,
@@ -70,7 +70,7 @@ export default async function dashboardRoutes(app) {
         COALESCE((SELECT COUNT(*)::int FROM messages m WHERE m.direction='inbound' AND m.created_at::date = d ${condM}), 0) AS recibidos,
         COALESCE((SELECT COUNT(*)::int FROM messages m WHERE m.direction='outbound' AND m.created_at::date = d ${condM}), 0) AS enviados,
         COALESCE((SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'agendado' AND ap.created_at::date = d ${condA}), 0) AS agendas,
-        COALESCE((SELECT COUNT(*)::int FROM conversations c2 WHERE c2.created_at::date = d ${condC}), 0) AS leads_nuevos,
+        COALESCE((SELECT COUNT(*)::int FROM conversations c2 WHERE c2.created_at::date = d AND c2.last_inbound_at IS NOT NULL ${condC}), 0) AS leads_nuevos,
         COALESCE((SELECT COUNT(*)::int FROM comments cm WHERE cm.created_at::date = d ${condCm}), 0) AS comentarios,
         COALESCE((SELECT COUNT(*)::int FROM (
             SELECT MIN(cm.created_at)::date AS fd FROM comments cm WHERE true ${condCm}

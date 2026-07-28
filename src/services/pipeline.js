@@ -742,18 +742,30 @@ export async function handleOutboundEvent(account, evt) {
   if (!(await shouldCollect(account))) return; // recaudación off + bot off
   const channel = normalizeChannel(evt.channel);
   if (!channel) return;
+  // Si aún NO existe conversación en este canal (p. ej. una automatización escribe ANTES de que el
+  // lead conteste, o escribe por un canal distinto al que ya teníamos), la creamos en vez de tirar el
+  // mensaje: si no, ese saliente no aparecería en ninguna parte. No fijamos last_inbound_at (no ha
+  // escrito el lead), así que la ventana de 24 h de Meta sigue mandando sobre si el bot puede o no.
   const conv = await one(
-    `SELECT * FROM conversations WHERE account_id = $1 AND ghl_contact_id = $2 AND channel = $3`,
-    [account.id, evt.contactId, channel]
+    `INSERT INTO conversations (account_id, ghl_contact_id, ghl_conversation_id, channel, lead_name, updated_at)
+     VALUES ($1, $2, $3, $4, $5, now())
+     ON CONFLICT (account_id, ghl_contact_id, channel) DO UPDATE SET
+       ghl_conversation_id = COALESCE(EXCLUDED.ghl_conversation_id, conversations.ghl_conversation_id),
+       updated_at = now()
+     RETURNING *`,
+    [account.id, evt.contactId, evt.conversationId || null, channel, evt.contactName || '']
   );
   if (!conv) return;
 
   const body = String(evt.body || '').trim();
   if (body) {
-    // Distinguimos QUIÉN lo mandó: si GHL trae userId, lo escribió una PERSONA desde el panel; si no,
-    // salió de una AUTOMATIZACIÓN (workflow). Antes ambos se guardaban como 'humano' y en el Archivo
-    // no se podían separar. (La misma señal ya se usa abajo para pausar el bot solo con personas.)
-    const origen = evt.userId ? 'humano' : 'automatizacion';
+    // ORIGEN del saliente. OJO: `userId` NO sirve para distinguir persona de automatización — GHL solo
+    // lo manda cuando escriben desde el panel web; desde el MÓVIL (app de WhatsApp/LC Phone) no viene,
+    // y marcábamos como "automatización" a personas escribiendo desde su teléfono. Como GHL no
+    // documenta ningún campo de origen, ahora exigimos EVIDENCIA POSITIVA: por defecto es humano.
+    const pista = String(evt.origen || '').toLowerCase();
+    const esAuto = /workflow|automation|automatizacion|bulk|campaign|api|trigger/.test(pista);
+    const origen = esAuto ? 'automatizacion' : 'humano';
     await one(
       `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id)
        VALUES ($1, 'outbound', $4, $2, $3)
@@ -835,8 +847,25 @@ export async function handleAppointmentEvent(account, type, p) {
   } else {
     // Cita NUEVA: solo se registra si el setter que ATENDIÓ la reclama (su calendario). SIN respaldo:
     // sin conversación, o setter sin calendarios (su objetivo NO es agendar), o calendario ajeno → NO cuenta.
+    // Un contacto puede tener VARIAS conversaciones (una por canal), incluidas las que nacen de un
+    // saliente suelto (un workflow que le escribe por SMS) sin que el lead haya hablado nunca ahí.
+    // Elegimos por el criterio que DE VERDAD decide si la cita cuenta: que el setter sea DUEÑO del
+    // calendario donde se reservó. Luego, que tenga setter; y por último la más reciente. Ordenar por
+    // recencia (o por "tiene mensajes del lead") atribuía la cita a la conversación equivocada y se
+    // perdía la agenda: ni entraba en appointments ni la conversación real pasaba a 'agendado'.
     const conv = contactId
-      ? await one(`SELECT id, setter_id FROM conversations WHERE account_id = $1 AND ghl_contact_id = $2 ORDER BY updated_at DESC LIMIT 1`, [account.id, contactId])
+      ? await one(
+          `SELECT c.id, c.setter_id
+             FROM conversations c LEFT JOIN setters s ON s.id = c.setter_id
+            WHERE c.account_id = $1 AND c.ghl_contact_id = $2
+            ORDER BY COALESCE(s.calendar_ids @> to_jsonb($3::text), false) DESC,
+                     (c.setter_id IS NOT NULL) DESC,
+                     EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id
+                              AND (m.direction = 'inbound' OR m.source = 'bot')) DESC,
+                     c.updated_at DESC
+            LIMIT 1`,
+          [account.id, contactId, calendarId || null]
+        )
       : null;
     let setterCals = [];
     if (conv?.setter_id) {
@@ -849,6 +878,10 @@ export async function handleAppointmentEvent(account, type, p) {
         account: account.id, contactId, calendarId, setter: conv?.setter_id || null,
         motivo: !conv ? 'sin_conversacion' : (!conv.setter_id ? 'sin_setter' : (!setterCals.length ? 'setter_no_agenda' : (!calendarId ? 'sin_calendario_en_evento' : 'otro_calendario'))),
       });
+      // Que la cita no cuente como AGENDA del setter no significa que no haya pasado nada: el lead SÍ
+      // reservó. Cortamos igualmente sus seguimientos para no perseguir a alguien que ya tiene cita
+      // (el stage NO se toca, para no inflar las métricas del setter con una agenda que no es suya).
+      if (conv?.id && status === 'agendado') await redis.del(fuKey(conv.id));
       return;
     }
     convId = conv.id;

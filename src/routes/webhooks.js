@@ -210,6 +210,10 @@ function normalizeMarketplaceEvent(p) {
     body: p.body || '',
     messageId: p.messageId,
     userId: p.userId || null,
+    // Señales de ORIGEN de un saliente. GHL NO documenta un campo de origen, así que recogemos las
+    // candidatas que pueda traer; se usan solo como evidencia POSITIVA de automatización.
+    origen: p.source || p.origin || p.sentBy || p.createdBy || null,
+    conversationProviderId: p.conversationProviderId || null,
     attachments: Array.isArray(p.attachments) ? p.attachments : [],
     contactName: p.contactName || '',
   };
@@ -259,6 +263,17 @@ export default async function webhookRoutes(app) {
       }
       await logEvent(type === 'InboundMessage' ? 'mensaje_recibido' : 'mensaje_saliente', {
         locationId: p.locationId, messageType: p.messageType, contactId: p.contactId, body: String(p.body || '').slice(0, 200),
+        // Diagnóstico del ORIGEN (solo salientes): GHL no documenta un campo que diga si lo mandó una
+        // persona o un workflow. Guardamos las señales candidatas y la LISTA DE CAMPOS del payload
+        // real, que es la única forma de descubrir cuál sirve mirando tráfico de verdad.
+        ...(type === 'OutboundMessage' ? {
+          userId: p.userId || null,
+          source: p.source || null,
+          conversationProviderId: p.conversationProviderId || null,
+          status: p.status || null,
+          contentType: p.contentType || null,
+          campos: Object.keys(p || {}),
+        } : {}),
       });
       const evt = normalizeMarketplaceEvent(p);
       if (type === 'InboundMessage') await handleInbound(account, evt);
