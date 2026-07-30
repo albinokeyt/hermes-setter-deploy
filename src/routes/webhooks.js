@@ -370,7 +370,18 @@ export default async function webhookRoutes(app) {
       // NOMBRE de la etiqueta y resolvemos su contexto desde la lista del setter, ya saneada.
       const tagPedida = String(c.tag || c.etiqueta || '').trim().toLowerCase();
       const lista = Array.isArray(setter.activation_tags) ? setter.activation_tags : [];
-      const entrada = tagPedida ? lista.find((e) => String(e?.tag || '').trim().toLowerCase() === tagPedida) : null;
+      let entrada = tagPedida ? lista.find((e) => String(e?.tag || '').trim().toLowerCase() === tagPedida) : null;
+      // Si el workflow no manda la etiqueta (la UI ni lo menciona) o no casa, antes se activaba en
+      // silencio SIN el contexto que el dueño escribió — parecía que sus instrucciones se ignoraban.
+      // Si el setter tiene una sola etiqueta, usamos la suya; si no, dejamos traza para poder verlo.
+      if (!entrada) {
+        if (lista.length === 1) entrada = lista[0];
+        await logEvent('activador_tag_no_casa', {
+          setter: setter.id, pedida: tagPedida || null,
+          disponibles: lista.map((e) => e?.tag).filter(Boolean),
+          usada: entrada?.tag || null,
+        });
+      }
       await activateSetterForContact(
         account, setter, String(contactId),
         entrada ? Number(entrada.espera) || 0 : 0,

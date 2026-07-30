@@ -673,6 +673,20 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   // importar el historial que no tengamos (con fecha real y sin duplicar/re-etiquetar los propios)
   await saveGhlMessages(conv, ghlHistory.messages);
 
+  // NOMBRE DEL LEAD: aquí la conversación puede NACER (no vino de un mensaje entrante), y sin nombre el
+  // prompt aplica su «regla fija» de preguntarlo — que se come la única pregunta del turno y pisa las
+  // instrucciones de la etiqueta ("entra retomando el precio, sin presentarte"). Lo rellenamos ANTES.
+  if (!conv.lead_name) {
+    try {
+      const c = await ghl.getContact(account, contactId);
+      const nombre = [c?.firstName, c?.lastName].filter(Boolean).join(' ') || c?.name || c?.contactName || '';
+      if (nombre) {
+        await q(`UPDATE conversations SET lead_name = CASE WHEN lead_name = '' THEN $1 ELSE lead_name END WHERE id = $2`, [nombre, conv.id]);
+        conv.lead_name = nombre;
+      }
+    } catch { /* si GHL falla seguimos sin nombre: la activación no se bloquea por esto */ }
+  }
+
   // La conversación puede nacer AQUÍ (todo su historial viene de GHL, no de un webhook entrante), y
   // entonces last_inbound_at quedaría NULL → windowBlocked daría "cerrada" SIEMPRE en IG/FB/WhatsApp
   // y el setter no llegaría a escribir nunca. Lo fijamos con la fecha REAL del último entrante que
@@ -1179,12 +1193,9 @@ export async function processDebounce(job) {
   try {
     result = await generateReply({
       account, provider, conversation: conv, history,
-      followupInstruction: activacion
-        ? 'ACTIVACIÓN EXTERNA: el negocio te activó para esta conversación (p. ej. tras asignar una etiqueta en su flujo). Lee el historial y escribe tú el mensaje adecuado para iniciar o retomar según tu FLUJO — natural, breve, sin sonar automático. Si no hay historial, preséntate según tu identidad.'
-          + (activContexto
-            ? `\n\nCONTEXTO DE ESTA ACTIVACIÓN (qué pasó justo antes de que te activaran — es lo que marca CÓMO debes entrar; tenlo muy en cuenta y NO lo contradigas): ${activContexto}`
-            : '')
-        : null,
+      // La activación va por su propio canal (NO como followupInstruction): dentro del bloque de
+      // seguimiento sus instrucciones quedaban diluidas y contradichas ("el lead dejó de responder…").
+      activation: activacion ? { contexto: activContexto } : null,
     });
     await redis.del(`llmretry:${conversationId}`);
   } catch (err) {

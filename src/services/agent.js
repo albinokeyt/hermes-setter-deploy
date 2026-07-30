@@ -68,7 +68,7 @@ function leadNameForPrompt(raw) {
 
 function leadNameBlock(conversation) {
   const name = leadNameForPrompt(conversation?.lead_name);
-  const cierre = 'Esta regla del nombre es FIJA y prevalece: se combina con tu flujo (si el negocio te pide pedir el nombre, hazlo tal cual dice aquí). Jamás inventes ni adivines un nombre; en cuanto el lead te diga cómo se llama, guárdalo en "memoria" y úsalo.';
+  const cierre = 'Esta regla del nombre es FIJA y prevalece: se combina con tu flujo (si el negocio te pide pedir el nombre, hazlo tal cual dice aquí). Jamás inventes ni adivines un nombre; en cuanto el lead te diga cómo se llama, guárdalo en "memoria" y úsalo.\nEXCEPCIÓN: si más abajo hay una TAREA DE ACTIVACIÓN EXTERNA con instrucciones de cómo entrar, ESAS mandan en ese mensaje: no lo gastes preguntando el nombre (ya lo preguntarás más adelante).';
   if (!name) {
     return `=== NOMBRE DEL LEAD (regla fija) ===
 No sabemos su nombre. En un momento natural y temprano de la conversación, pregúntaselo con amabilidad (sin sonar a formulario). Mientras no lo sepas, no le pongas ningún nombre.
@@ -100,6 +100,18 @@ export function buildSystemPrompt(account, conversation, opts = {}) {
 El lead dejó de responder. Retoma la conversación de forma natural, sin sonar insistente ni desesperado.
 Instrucción para este seguimiento: ${opts.followupInstruction}
 Genera 1 o 2 mensajes como máximo. Etiqueta sugerida: "en_seguimiento".`);
+  }
+  // ACTIVACIÓN EXTERNA: bloque PROPIO y en último lugar (justo antes del formato de salida) para que
+  // sus instrucciones manden. Antes viajaba dentro del bloque de SEGUIMIENTO ("el lead dejó de
+  // responder…", etiqueta en_seguimiento), que las diluía y las contradecía: por eso se ignoraban.
+  if (opts.activation) {
+    const ctx = String(opts.activation.contexto || '').trim();
+    parts.push(`=== TAREA AHORA: ACTIVACIÓN EXTERNA (MANDA SOBRE EL FLUJO) ===
+El negocio te ha activado para esta conversación desde su flujo (le acaban de poner una etiqueta). NO es un seguimiento por silencio: entras porque te lo piden AHORA. Lee el historial y escribe tú el mensaje; si no hay historial, preséntate según tu identidad.
+${ctx ? `INSTRUCCIONES DE ESTA ACTIVACIÓN — qué ha pasado justo antes y CÓMO debes entrar:
+«${ctx}»
+Estas instrucciones PREVALECEN sobre el punto de partida de tu FLUJO para este mensaje: cúmplelas al pie de la letra y no las contradigas. Después sigue con tu flujo normal.` : 'Entra según tu FLUJO, de forma natural.'}
+Escribe 1 o 2 mensajes como máximo, sin sonar automático. Elige la etiqueta que de verdad corresponda al estado del lead (NO uses "en_seguimiento" solo por haber entrado tú).`);
   }
   parts.push(outputSpec());
   return parts.join('\n\n');
@@ -197,16 +209,21 @@ export function parseAgentJson(content, account) {
   };
 }
 
-export async function generateReply({ account, provider, conversation, history, followupInstruction = null, followupNumber = 1 }) {
+export async function generateReply({ account, provider, conversation, history, followupInstruction = null, followupNumber = 1, activation = null }) {
   const guardrail = await getGuardrail();
-  const system = `${guardrail}\n\n${buildSystemPrompt(account, conversation, { followupInstruction, followupNumber })}`;
+  const system = `${guardrail}\n\n${buildSystemPrompt(account, conversation, { followupInstruction, followupNumber, activation })}`;
   const messages = [{ role: 'system', content: system }, ...historyToMessages(history)];
   if (messages.length === 1 || messages[messages.length - 1].role !== 'user') {
+    // El empujón final también manda: si es una ACTIVACIÓN, no se le puede decir "genera el mensaje de
+    // seguimiento" (contradice sus instrucciones y es falso: el lead puede no haber callado).
+    const ctx = String(activation?.contexto || '').trim();
     messages.push({
       role: 'user',
-      content: followupInstruction
-        ? '(el lead no ha respondido; genera ahora el mensaje de seguimiento)'
-        : '(continúa la conversación de forma natural)',
+      content: activation
+        ? `(te han activado desde el flujo del negocio; escribe ahora el mensaje${ctx ? ' siguiendo AL PIE DE LA LETRA las instrucciones de esta activación' : ''})`
+        : followupInstruction
+          ? '(el lead no ha respondido; genera ahora el mensaje de seguimiento)'
+          : '(continúa la conversación de forma natural)',
     });
   }
   const modelUsed = account.model || provider.default_model;
