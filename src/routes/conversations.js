@@ -1,6 +1,6 @@
 import { q, one } from '../db.js';
 import { STAGES, STAGE_KEYS } from '../config.js';
-import { applyStage, cancelBotJobs, invalidateContactTags } from '../services/pipeline.js';
+import { applyStage, cancelBotJobs, invalidateContactTags, markOwnOutbound, markSentMessage } from '../services/pipeline.js';
 import * as ghl from '../services/ghl.js';
 import { accessibleAccountIds, canAccessAccount } from '../lib/session.js';
 
@@ -119,10 +119,15 @@ export default async function conversationRoutes(app) {
     const message = String(req.body?.message || '').trim();
     if (!message) return reply.code(400).send({ error: 'Mensaje vacío' });
     try {
+      // Marcamos el eco ANTES de enviar: el webhook nos devuelve nuestro propio mensaje y, sin esto, se
+      // tomaría por intervención externa → fila duplicada en el chat y paused_by pisado a 'humano'.
+      await markOwnOutbound(conv.id, message);
       const res = await ghl.sendMessage(account, { channel: conv.channel, contactId: conv.ghl_contact_id, message });
+      const mid = res?.messageId || res?.messageIds?.[0] || res?.msg?.id || res?.message?.id || null;
+      await markSentMessage(mid);
       await q(
         `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id) VALUES ($1,'outbound','humano',$2,$3)`,
-        [conv.id, message, res?.messageId || null]
+        [conv.id, message, mid]
       );
       await q(`UPDATE conversations SET bot_paused = true, paused_by = 'manual', last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
       await cancelBotJobs(conv.id);

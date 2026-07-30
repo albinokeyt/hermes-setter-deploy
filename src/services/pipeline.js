@@ -24,6 +24,9 @@ const fuKey = (id) => `futoken:${id}`;
 const ctaKey = (id) => `ctawait:${id}`; // instante (ms) hasta el que el setter espera por un CTA
 const activarKey = (id) => `activar:${id}`; // activación externa pendiente (el setter escribe él solo)
 const insFreshKey = (id) => `insfresh:${id}`; // pendiente de re-leer etiquetas frescas tras la inserción
+// Marca de "este texto lo enviamos NOSOTROS": se pone ANTES de enviar, para reconocer el eco que nos
+// devuelve el webhook aunque el envío falle después y no lleguemos a guardar nada.
+const ecoKey = (convId, body) => `eco:${convId}:${crypto.createHash('sha1').update(String(body || '')).digest('hex')}`;
 const ctagsKey = (conv) => `ctags:${conv.account_id}:${conv.ghl_contact_id}`; // caché de etiquetas del contacto
 
 export function normalizeChannel(raw) {
@@ -84,6 +87,17 @@ async function activationLogReschedule(conversationId, seconds) {
   } catch (err) {
     console.error('[activation_log resched]', err.message);
   }
+}
+
+// Marca un saliente como PROPIO (lo mandamos nosotros, o un humano desde NUESTRO panel) para que el eco
+// que devuelve el webhook de GHL no se tome por intervención externa (que pausaría el bot y duplicaría
+// el mensaje en el chat). markOwnOutbound se llama ANTES de enviar; markSentMessage, con el id que
+// devuelva GHL.
+export async function markOwnOutbound(conversationId, body) {
+  await redis.set(ecoKey(conversationId, body), '1', 'EX', 300).catch(() => {});
+}
+export async function markSentMessage(messageId) {
+  if (messageId) await redis.setex(`sent:${messageId}`, 86400, '1').catch(() => {});
 }
 
 export async function accountByLocation(locationId) {
@@ -624,6 +638,16 @@ export async function activateSetterForContact(account, setter, contactId, waitS
      RETURNING *`,
     [account.id, String(contactId), ghlHistory.conversationId, channel]
   );
+  // Una activación por etiqueta es una ORDEN EXPLÍCITA del negocio, así que gana a la AUTO-pausa por
+  // intervención externa (paused_by='humano'), que es solo una suposición: si el workflow manda un
+  // mensaje y acto seguido pone la etiqueta, sin esto el setter no entraría nunca. Se siguen respetando
+  // la pausa MANUAL del panel, la que pide la IA y la etiqueta de atención humana.
+  if (conv.bot_paused && conv.paused_by === 'humano' && conv.stage !== 'atencion_humana') {
+    await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
+    await cancelReactivate(conv.id);
+    conv.bot_paused = false;
+    await logEvent('activador_reanuda', { conv: conv.id, setter: setter.id, nota: 'la etiqueta manda sobre la auto-pausa' });
+  }
   if (conv.bot_paused || conv.stage === 'atencion_humana') {
     const motivo = conv.stage === 'atencion_humana' ? 'atencion_humana' : 'pausado';
     await logEvent('activador_bloqueado', { conv: conv.id, setter: setter.id, motivo });
@@ -758,6 +782,27 @@ export async function handleOutboundEvent(account, evt) {
   if (!conv) return;
 
   const body = String(evt.body || '').trim();
+
+  // ANTI-ECO: el guard `sent:` de arriba solo funciona si GHL nos devolvió el messageId al enviar.
+  // Cuando no lo devuelve (o el envío falló tras entregar), el eco de NUESTRO PROPIO mensaje llegaría
+  // como externo y —al pausar ahora con cualquier intervención externa— el setter se pausaría a sí
+  // mismo. Dos redes: (1) la marca que processSend pone ANTES de enviar, consumida de forma atómica;
+  // (2) respaldo por texto contra lo ya guardado.
+  if (body) {
+    // NO se consume la marca: se deja vivir su TTL para absorber TODOS los ecos de ese mismo texto
+    // (GHL puede reemitir el evento, y si el envío falló tras entregar el job se reintenta y reenvía).
+    // Con consumo de un solo uso, el segundo eco pausaba el bot. El riesgo de tragarse el mismo texto
+    // escrito por un humano en esos minutos ya lo asumía el respaldo de abajo, con ventana más amplia.
+    if (await redis.get(ecoKey(conv.id, body))) return; // era nuestro
+    const propio = await one(
+      `SELECT id FROM messages WHERE conversation_id = $1 AND direction = 'outbound'
+         AND source IN ('bot', 'seguimiento') AND btrim(body) = btrim($2)
+         AND created_at >= now() - interval '15 minutes' LIMIT 1`,
+      [conv.id, body]
+    );
+    if (propio) return;
+  }
+
   if (body) {
     // ORIGEN del saliente. OJO: `userId` NO sirve para distinguir persona de automatización — GHL solo
     // lo manda cuando escriben desde el panel web; desde el MÓVIL (app de WhatsApp/LC Phone) no viene,
@@ -775,12 +820,16 @@ export async function handleOutboundEvent(account, evt) {
     await q(`UPDATE conversations SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
   }
 
-  // Solo pausamos si lo escribió una persona desde GHL (userId presente)
-  if (evt.userId && account.auto_handoff) {
+  // PAUSA POR INTERVENCIÓN EXTERNA. Antes se exigía `evt.userId`, que GHL solo manda cuando se escribe
+  // desde su panel WEB: si el equipo contestaba desde el MÓVIL el bot no se apartaba y hablaba encima
+  // de ellos. GHL no da ningún campo de origen (verificado en su API), así que no se puede distinguir
+  // persona de workflow: se pausa con CUALQUIER saliente que no hayamos enviado nosotros. Lo que llega
+  // aquí ya está filtrado (guard `sent:` + respaldo anti-eco por texto), así que es intervención ajena.
+  if (account.auto_handoff) {
     if (!conv.bot_paused) {
       await q(`UPDATE conversations SET bot_paused = true, paused_by = 'humano', updated_at = now() WHERE id = $1`, [conv.id]);
       await cancelBotJobs(conv.id);
-      await logEvent('handoff_humano', { conversation: conv.id, userId: evt.userId });
+      await logEvent('handoff_humano', { conversation: conv.id, userId: evt.userId || null, desde: evt.userId ? 'panel' : 'externo' });
     }
     // reprograma la reactivación en cada mensaje humano (el reloj se reinicia)
     await scheduleReactivate(account, conv.id);
@@ -1216,6 +1265,11 @@ export async function processSend(job) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
     return;
   }
+  // Marcamos el eco ANTES de enviar: si ghl.sendMessage LANZA después de que GHL ya entregó el mensaje
+  // (timeout de 30 s, 5xx, corte de red) no se escribiría ni `sent:` ni la fila, el webhook nos
+  // devolvería nuestro propio texto como intervención externa y el bot SE PAUSARÍA A SÍ MISMO.
+  // TTL corto y consumo de un solo uso (si la petición nunca llegó, caduca sola).
+  await markOwnOutbound(conv.id, body);
   const res = await ghl.sendMessage(account, { channel: conv.channel, contactId: conv.ghl_contact_id, message: body });
   await redis.setex(sentKey, 3600, '1').catch(() => {});
   try {
