@@ -37,6 +37,7 @@ export default async function bugRoutes(app) {
     const ids = await accessibleAccountIds(req); // null = admin (todos)
     const rows = await q(
       `SELECT b.id, b.account_id, b.reporter, b.tipo, b.descripcion, b.status, b.created_at,
+              b.respuesta, b.respondida_at,
               (b.imagen <> '') AS tiene_imagen,
               COALESCE(NULLIF(a.alias, ''), a.name) AS account_name
          FROM bug_reports b LEFT JOIN accounts a ON a.id = b.account_id
@@ -64,8 +65,18 @@ export default async function bugRoutes(app) {
     if (req.auth?.role !== 'admin') return reply.code(403).send({ error: 'Solo para administradores' });
     const id = numId(req.params.id);
     if (!id) return reply.code(404).send({ error: 'No encontrado' });
-    const status = req.body?.status === 'resuelto' ? 'resuelto' : 'abierto';
-    const row = await one(`UPDATE bug_reports SET status = $2 WHERE id = $1 RETURNING id, status`, [id, status]);
+    const b = req.body || {};
+    // SET dinámico: cambiar el estado no pisa la respuesta, y responder no pisa el estado.
+    const sets = [];
+    const vals = [id];
+    if ('status' in b) { vals.push(b.status === 'resuelto' ? 'resuelto' : 'abierto'); sets.push(`status = $${vals.length}`); }
+    if ('respuesta' in b) {
+      vals.push(String(b.respuesta || '').trim().slice(0, 4000));
+      sets.push(`respuesta = $${vals.length}`);
+      sets.push(`respondida_at = CASE WHEN $${vals.length} = '' THEN NULL ELSE now() END`);
+    }
+    if (!sets.length) return reply.code(400).send({ error: 'Nada que actualizar' });
+    const row = await one(`UPDATE bug_reports SET ${sets.join(', ')} WHERE id = $1 RETURNING id, status, respuesta, respondida_at`, vals);
     if (!row) return reply.code(404).send({ error: 'No encontrado' });
     return row;
   });

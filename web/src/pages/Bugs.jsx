@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bug, Image, X, CheckCircle2, RotateCcw } from 'lucide-react';
+import { Bug, Image, X, CheckCircle2, RotateCcw, MessageCircle } from 'lucide-react';
 import { api } from '../api.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Select, Banner } from '../components/ui.jsx';
@@ -23,6 +23,7 @@ export default function Bugs() {
   const [ok, setOk] = useState(false);
   const [error, setError] = useState('');
   const [viewImg, setViewImg] = useState(null); // data URL abierta en modal
+  const [replying, setReplying] = useState(null); // { id, texto } — respuesta del admin en edición
   const fileRef = useRef(null);
 
   const load = () => api.get('/api/bugs').then((r) => setBugs(r.bugs || [])).catch(() => setBugs([]));
@@ -61,6 +62,17 @@ export default function Bugs() {
   const toggleStatus = async (b) => {
     try {
       await api.put(`/api/bugs/${b.id}`, { status: b.status === 'abierto' ? 'resuelto' : 'abierto' });
+      load();
+    } catch (err) { setError(err.message); }
+  };
+
+  // respuesta del admin al reporte (el usuario la ve en el suyo)
+  const saveReply = async (id, texto, alsoResolve) => {
+    try {
+      const body = { respuesta: texto };
+      if (alsoResolve) body.status = 'resuelto';
+      await api.put(`/api/bugs/${id}`, body);
+      setReplying(null);
       load();
     } catch (err) { setError(err.message); }
   };
@@ -122,8 +134,44 @@ export default function Bugs() {
                   {isAdmin && b.account_name && <span className="text-slate-400">· {b.account_name}</span>}
                 </div>
                 <p className="whitespace-pre-wrap text-sm text-slate-700">{b.descripcion}</p>
+
+                {/* respuesta del equipo: la ve también el usuario que reportó */}
+                {b.respuesta && replying?.id !== b.id && (
+                  <div className="mt-2 rounded-xl border border-violet-100 bg-violet-50/60 p-2.5">
+                    <div className="mb-0.5 flex items-center gap-1 text-[11px] font-semibold text-violet-700">
+                      <MessageCircle size={12} /> Respuesta del equipo
+                      {b.respondida_at && <span className="font-normal text-violet-400">· {new Date(b.respondida_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}</span>}
+                    </div>
+                    <p className="whitespace-pre-wrap text-xs text-slate-700">{b.respuesta}</p>
+                  </div>
+                )}
+
+                {/* editor de respuesta (solo admin) */}
+                {isAdmin && replying?.id === b.id && (
+                  <div className="mt-2 space-y-2">
+                    <textarea
+                      value={replying.texto}
+                      rows={3}
+                      autoFocus
+                      onChange={(e) => setReplying({ ...replying, texto: e.target.value })}
+                      placeholder="Escribe la respuesta para el usuario…"
+                      className="scroll-thin w-full resize-none rounded-xl border border-violet-300 px-3 py-2 text-xs leading-relaxed outline-none focus:ring-4 focus:ring-violet-100"
+                    />
+                    <div className="flex gap-2">
+                      <Button className="!py-1 text-xs" onClick={() => saveReply(b.id, replying.texto, false)} disabled={!replying.texto.trim() && !b.respuesta}>Responder</Button>
+                      <Button variant="secondary" className="!py-1 text-xs" onClick={() => saveReply(b.id, replying.texto, true)} disabled={!replying.texto.trim()}>Responder y resolver</Button>
+                      <Button variant="ghost" className="!py-1 text-xs" onClick={() => setReplying(null)}>Cancelar</Button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="mt-1.5 flex items-center gap-3">
                   {b.tiene_imagen && <button onClick={() => openImage(b)} className="text-xs font-semibold text-violet-600 hover:underline">📷 Ver captura</button>}
+                  {isAdmin && replying?.id !== b.id && (
+                    <button onClick={() => setReplying({ id: b.id, texto: b.respuesta || '' })} className="flex items-center gap-1 text-xs font-semibold text-violet-600 hover:underline">
+                      <MessageCircle size={13} /> {b.respuesta ? 'Editar respuesta' : 'Responder'}
+                    </button>
+                  )}
                   {isAdmin && (
                     <button onClick={() => toggleStatus(b)} className="flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-emerald-600">
                       {b.status === 'abierto' ? <><CheckCircle2 size={13} /> Marcar resuelto</> : <><RotateCcw size={13} /> Reabrir</>}
