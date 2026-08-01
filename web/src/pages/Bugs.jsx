@@ -18,16 +18,19 @@ export default function Bugs() {
   const [bugs, setBugs] = useState(null);
   const [tipo, setTipo] = useState('sistema');
   const [descripcion, setDescripcion] = useState('');
-  const [imagen, setImagen] = useState('');
+  const [imagenes, setImagenes] = useState([]); // hasta 5 capturas por reporte
   const [sending, setSending] = useState(false);
   const [ok, setOk] = useState(false);
   const [error, setError] = useState('');
-  const [viewImg, setViewImg] = useState(null); // data URL abierta en modal
+  const [viewImgs, setViewImgs] = useState(null); // lista de data URLs abierta en modal
+  const [almacen, setAlmacen] = useState(null); // admin: espacio ocupado por capturas
+  const [purgando, setPurgando] = useState(false);
   const [replying, setReplying] = useState(null); // { id, texto } — respuesta del admin en edición
   const fileRef = useRef(null);
 
   const load = () => api.get('/api/bugs').then((r) => setBugs(r.bugs || [])).catch(() => setBugs([]));
-  useEffect(() => { load(); }, []);
+  const loadAlmacen = () => { if (isAdmin) api.get('/api/bugs/almacen').then(setAlmacen).catch(() => {}); };
+  useEffect(() => { load(); loadAlmacen(); }, [isAdmin]);
 
   // comprime la captura en el navegador (máx 1400px) para que suba rápido y no pese
   const addImage = (file) => {
@@ -41,7 +44,7 @@ export default function Bugs() {
       canvas.height = Math.round(img.height * scale);
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(url);
-      setImagen(canvas.toDataURL('image/jpeg', 0.85));
+      setImagenes((list) => (list.length >= 5 ? list : [...list, canvas.toDataURL('image/jpeg', 0.85)]));
     };
     img.onerror = () => URL.revokeObjectURL(url);
     img.src = url;
@@ -52,10 +55,10 @@ export default function Bugs() {
     if (!descripcion.trim()) return;
     setSending(true); setError(''); setOk(false);
     try {
-      await api.post('/api/bugs', { tipo, descripcion: descripcion.trim(), imagen });
-      setDescripcion(''); setImagen(''); setTipo('sistema');
+      await api.post('/api/bugs', { tipo, descripcion: descripcion.trim(), imagenes });
+      setDescripcion(''); setImagenes([]); setTipo('sistema');
       setOk(true); setTimeout(() => setOk(false), 3000);
-      load();
+      load(); loadAlmacen();
     } catch (err) { setError(err.message); } finally { setSending(false); }
   };
 
@@ -77,8 +80,18 @@ export default function Bugs() {
     } catch (err) { setError(err.message); }
   };
 
-  const openImage = async (b) => {
-    try { const r = await api.get(`/api/bugs/${b.id}/imagen`); if (r.imagen) setViewImg(r.imagen); } catch { /* noop */ }
+  const openImages = async (b) => {
+    try { const r = await api.get(`/api/bugs/${b.id}/imagenes`); if (r.imagenes?.length) setViewImgs(r.imagenes); } catch { /* noop */ }
+  };
+
+  // 🧹 admin: vaciar TODAS las capturas de TODOS los reportes (los textos se conservan)
+  const purgarImagenes = async () => {
+    const mb = almacen ? (almacen.bytes / 1e6).toFixed(1) : '?';
+    if (!window.confirm(`Se borrarán TODAS las capturas de TODOS los reportes (~${mb} MB) para liberar espacio. Los textos y respuestas se conservan. ¿Continuar?`)) return;
+    if (!window.confirm('Confírmalo de nuevo: las capturas no se pueden recuperar.')) return;
+    setPurgando(true);
+    try { await api.del('/api/bugs/imagenes'); load(); loadAlmacen(); }
+    catch (err) { setError(err.message); } finally { setPurgando(false); }
   };
 
   return (
@@ -86,7 +99,7 @@ export default function Bugs() {
       <SectionTitle tour="page:errores" title="🐞 Reportar errores" subtitle={isAdmin ? 'Todos los errores reportados por los usuarios (fecha, usuario, subcuenta y tipo).' : 'Cuéntanos qué falló y lo revisamos. Puedes adjuntar una captura.'} />
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="p-5 lg:col-span-1">
+        <Card data-tour="bugs-form" className="p-5 lg:col-span-1">
           <h3 className="mb-3 text-sm font-semibold text-slate-700">Nuevo reporte</h3>
           <form onSubmit={submit} className="space-y-3">
             <Select label="¿Qué tipo de error es?" value={tipo} onChange={(e) => setTipo(e.target.value)}>
@@ -102,14 +115,21 @@ export default function Bugs() {
                 className="scroll-thin w-full resize-none rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm leading-relaxed outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
               />
             </div>
-            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { addImage(e.target.files?.[0]); e.target.value = ''; }} />
-            {imagen ? (
-              <div className="relative inline-block">
-                <img src={imagen} alt="captura" className="h-24 rounded-xl border border-slate-200 object-cover" />
-                <button type="button" onClick={() => setImagen('')} className="absolute -right-1.5 -top-1.5 rounded-full bg-slate-700 p-0.5 text-white"><X size={12} /></button>
+            <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => { const files = Array.from(e.target.files || []); const libres = Math.max(0, 5 - imagenes.length); files.slice(0, libres).forEach(addImage); if (files.length > libres) setError(`Máximo 5 capturas por reporte: se descartaron ${files.length - libres}.`); e.target.value = ''; }} />
+            {imagenes.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {imagenes.map((img, idx) => (
+                  <div key={idx} className="relative inline-block">
+                    <img src={img} alt={`captura ${idx + 1}`} className="h-20 rounded-xl border border-slate-200 object-cover" />
+                    <button type="button" onClick={() => setImagenes((list) => list.filter((_, j) => j !== idx))} className="absolute -right-1.5 -top-1.5 rounded-full bg-slate-700 p-0.5 text-white"><X size={12} /></button>
+                  </div>
+                ))}
               </div>
-            ) : (
-              <Button type="button" variant="secondary" onClick={() => fileRef.current?.click()}><Image size={15} /> Adjuntar captura</Button>
+            )}
+            {imagenes.length < 5 && (
+              <Button type="button" variant="secondary" onClick={() => fileRef.current?.click()}>
+                <Image size={15} /> {imagenes.length ? `Añadir otra captura (${imagenes.length}/5)` : 'Adjuntar capturas'}
+              </Button>
             )}
             {error && <Banner tone="error">{error}</Banner>}
             {ok && <p className="text-xs font-medium text-emerald-600">✅ Reporte enviado. ¡Gracias!</p>}
@@ -117,9 +137,15 @@ export default function Bugs() {
           </form>
         </Card>
 
-        <Card className="overflow-hidden lg:col-span-2">
-          <div className="border-b border-slate-100 px-5 py-3.5">
+        <Card data-tour="bugs-lista" className="overflow-hidden lg:col-span-2">
+          <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
             <h3 className="text-sm font-semibold text-slate-700">{isAdmin ? 'Reportes de todos los usuarios' : 'Tus reportes'}</h3>
+            {isAdmin && almacen && almacen.bytes > 0 && (
+              <button onClick={purgarImagenes} disabled={purgando} title="Borra TODAS las capturas de todos los reportes (los textos se conservan) para liberar espacio en disco"
+                className="shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 disabled:opacity-50">
+                {purgando ? 'Liberando…' : `🧹 Liberar espacio (${(almacen.bytes / 1e6).toFixed(1)} MB en capturas)`}
+              </button>
+            )}
           </div>
           <div className="scroll-thin max-h-[70vh] overflow-y-auto">
             {bugs === null && <p className="px-5 py-10 text-center text-sm text-slate-400">Cargando…</p>}
@@ -166,7 +192,7 @@ export default function Bugs() {
                 )}
 
                 <div className="mt-1.5 flex items-center gap-3">
-                  {b.tiene_imagen && <button onClick={() => openImage(b)} className="text-xs font-semibold text-violet-600 hover:underline">📷 Ver captura</button>}
+                  {Number(b.n_imagenes) > 0 && <button onClick={() => openImages(b)} className="text-xs font-semibold text-violet-600 hover:underline">📷 Ver capturas ({b.n_imagenes})</button>}
                   {isAdmin && replying?.id !== b.id && (
                     <button onClick={() => setReplying({ id: b.id, texto: b.respuesta || '' })} className="flex items-center gap-1 text-xs font-semibold text-violet-600 hover:underline">
                       <MessageCircle size={13} /> {b.respuesta ? 'Editar respuesta' : 'Responder'}
@@ -184,9 +210,14 @@ export default function Bugs() {
         </Card>
       </div>
 
-      {viewImg && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setViewImg(null)}>
-          <img src={viewImg} alt="captura del error" className="max-h-[90vh] max-w-full rounded-xl shadow-2xl" />
+      {viewImgs && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setViewImgs(null)}>
+          <div className="scroll-thin max-h-[92vh] w-full max-w-3xl space-y-3 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            {viewImgs.map((img, idx) => (
+              <img key={idx} src={img} alt={`captura ${idx + 1}`} className="w-full rounded-xl shadow-2xl" />
+            ))}
+            <button onClick={() => setViewImgs(null)} className="mx-auto block rounded-xl bg-white/90 px-4 py-2 text-sm font-semibold text-slate-700">Cerrar</button>
+          </div>
         </div>
       )}
     </div>
