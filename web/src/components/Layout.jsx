@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Database, Swords, Bug } from 'lucide-react';
+import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Database, Swords, Bug, Compass } from 'lucide-react';
 import { api } from '../api.js';
 import { ThemeToggle } from './ui.jsx';
+import { Tour, TourInvite } from './Tour.jsx';
 
 const AuthContext = createContext(null);
 export function useMe() {
@@ -62,9 +63,19 @@ export default function Layout() {
   const navigate = useNavigate();
   const [me, setMe] = useState(null);
   const [renaming, setRenaming] = useState(false);
+  // 🧭 Tutorial guiado: la PRIMERA vez se ofrece (nunca obligatorio); después vive en el botón del menú.
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourInvite, setTourInvite] = useState(false);
 
   useEffect(() => {
-    api.get('/api/auth/me').then(setMe).catch(() => {});
+    api.get('/api/auth/me').then((m) => {
+      setMe(m);
+      const key = `hermes_tour_v1_${m?.username || m?.account_id || 'x'}`;
+      if (!localStorage.getItem(key)) {
+        localStorage.setItem(key, '1'); // se pregunta UNA sola vez
+        setTourInvite(true);
+      }
+    }).catch(() => {});
   }, []);
 
   if (!me) return <div className="py-24 text-center text-sm text-slate-400">Cargando…</div>;
@@ -105,6 +116,13 @@ export default function Layout() {
       {renaming && me.account_id && (
         <RenameModal me={me} onClose={() => setRenaming(false)} onSaved={() => { setRenaming(false); api.get('/api/auth/me').then(setMe); }} />
       )}
+      {tourInvite && (
+        <TourInvite
+          onStart={() => { setTourInvite(false); setTourOpen(true); }}
+          onDismiss={() => setTourInvite(false)}
+        />
+      )}
+      {tourOpen && <Tour me={me} onClose={() => setTourOpen(false)} />}
       <div className="flex min-h-screen">
         <aside className="fixed inset-y-0 left-0 z-20 flex w-60 flex-col border-r border-slate-200 bg-white px-4 py-5">
           <div className="mb-8 flex items-center gap-2.5 px-2">
@@ -124,9 +142,17 @@ export default function Layout() {
             </div>
             <ThemeToggle className="-mr-1" />
           </div>
-          <nav className="flex flex-col gap-1">{nav.map((n) => <NavItem key={n.to} {...n} />)}</nav>
+          <nav className="flex flex-col gap-1">{nav.map((n) => <div key={n.to} data-tour={`nav:${n.to}`}><NavItem {...n} /></div>)}</nav>
           <div className="mt-auto flex flex-col gap-1 border-t border-slate-100 pt-4">
-            {navBottom.map((n) => <NavItem key={n.to} {...n} />)}
+            {/* 🧭 Tutorial guiado: minimalista, siempre disponible */}
+            <button
+              data-tour="tour-btn"
+              onClick={() => setTourOpen(true)}
+              className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium text-slate-500 transition hover:bg-slate-100 hover:text-violet-600"
+            >
+              <Compass size={18} /> Tutorial
+            </button>
+            {navBottom.map((n) => <div key={n.to} data-tour={`nav:${n.to}`}><NavItem {...n} /></div>)}
             {!me.portal && (
               <button
                 onClick={async () => { await api.post('/api/auth/logout'); navigate('/login'); }}
