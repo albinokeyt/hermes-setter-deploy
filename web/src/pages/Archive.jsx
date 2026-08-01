@@ -136,6 +136,7 @@ export default function Archive() {
   return (
     <div>
       <SectionTitle
+        tour="page:archivo"
         title="Archivo de mensajes"
         subtitle={`Todo lo que entra y sale (IA o humano), con fecha, quién y contenido${restricted ? '' : ' — y una IA para preguntar sobre ello'}`}
         actions={
@@ -175,7 +176,7 @@ export default function Archive() {
       <div className={restricted ? '' : 'grid gap-4 lg:grid-cols-3'}>
         {/* Columna mensajes */}
         <div className={restricted ? '' : 'lg:col-span-2'}>
-          <div className="mb-4 flex flex-wrap items-center gap-3">
+          <div data-tour="archivo-filtros" className="mb-4 flex flex-wrap items-center gap-3">
             <div className="relative">
               <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input

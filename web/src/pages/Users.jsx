@@ -95,6 +95,7 @@ export default function UsersPage() {
   return (
     <div>
       <SectionTitle
+        tour="page:usuarios"
         title="Usuarios"
         subtitle={isAdmin ? 'Tu acceso, el equipo del panel y los accesos desde GHL' : 'Tu acceso al panel'}
         actions={isAdmin && <Button onClick={() => setForm({ username: '', password: '', role: 'user', account_id: '', can_manage_agents: true })}><Plus size={16} /> Nuevo usuario</Button>}
@@ -212,9 +213,57 @@ export default function UsersPage() {
                 </div>
               )}
             </Card>
+
+            <TourProgressCard />
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+// 🧭 Quién ha hecho el tutorial guiado y hasta dónde llegó (el progreso lo reporta el propio tour).
+function TourProgressCard() {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    api.get('/api/tour/progress').then((r) => setRows(r.progreso || [])).catch(() => setRows([]));
+  }, []);
+  return (
+    <Card className="overflow-hidden" data-tour="users-tour">
+      <div className="border-b border-slate-100 px-5 py-3.5">
+        <h3 className="text-sm font-bold text-slate-800">🧭 Progreso del tutorial</h3>
+        <p className="mt-0.5 text-xs text-slate-400">Qué usuarios han hecho el recorrido guiado y hasta dónde llegaron.</p>
+      </div>
+      {rows === null && <p className="px-5 py-6 text-center text-xs text-slate-400">Cargando…</p>}
+      {rows?.length === 0 && <p className="px-5 py-6 text-center text-xs text-slate-400">Nadie ha empezado el tutorial todavía.</p>}
+      {rows?.length > 0 && (
+        <div className="divide-y divide-slate-50">
+          {rows.map((r) => (
+            <div key={r.user_key} className="flex items-center gap-3 px-5 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                  <span className="truncate">{r.label || r.user_key}</span>
+                  {r.role === 'admin' && <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-600">ADMIN</span>}
+                </div>
+                <div className="truncate text-xs text-slate-400">
+                  {r.account_name ? `${r.account_name} · ` : ''}última vez {timeAgo(r.updated_at)}
+                </div>
+              </div>
+              <div className="w-32">
+                <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className={`h-full rounded-full ${r.pct >= 100 ? 'bg-emerald-500' : 'bg-violet-500'}`}
+                    style={{ width: `${Math.max(3, r.pct)}%` }}
+                  />
+                </div>
+              </div>
+              <span className={`w-12 text-right text-xs font-bold ${r.pct >= 100 ? 'text-emerald-600' : 'text-slate-600'}`}>
+                {r.pct >= 100 ? '✅ 100%' : `${r.pct}%`}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }

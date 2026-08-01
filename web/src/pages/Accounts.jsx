@@ -73,10 +73,11 @@ export default function Accounts() {
   return (
     <div>
       <SectionTitle
+        tour="page:cuentas"
         title={isAdmin ? 'Conexiones' : 'Mis agentes'}
         subtitle={isAdmin ? 'Cada conexión es una subcuenta de GHL. Dentro viven sus setters (bots), que se reparten los leads por etiqueta.' : 'Cada conexión es una de tus subcuentas de GHL. Dentro creas y configuras tus setters (agentes).'}
         actions={
-          <div className="flex items-center gap-2">
+          <div data-tour="cuentas-acciones" className="flex items-center gap-2">
             <Button variant="secondary" onClick={() => { setSetterForm(true); setConnForm(false); setConnFor(null); setName(''); }} disabled={!accounts.length}><Bot size={16} /> Nuevo setter</Button>
             <Button onClick={() => { if (isAdmin) { setConnForm(true); setSetterForm(false); setName(''); } else { setConnInfo(true); } }}><Plus size={16} /> Nueva conexión</Button>
           </div>

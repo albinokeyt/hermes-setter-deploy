@@ -20,13 +20,13 @@ export function ThemeToggle({ className = '' }) {
   );
 }
 
-export function Card({ children, className = '', onClick }) {
-  return <div onClick={onClick} className={`bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(16,24,40,.04)] ${className}`}>{children}</div>;
+export function Card({ children, className = '', onClick, ...rest }) {
+  return <div onClick={onClick} className={`bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(16,24,40,.04)] ${className}`} {...rest}>{children}</div>;
 }
 
-export function SectionTitle({ title, subtitle, actions }) {
+export function SectionTitle({ title, subtitle, actions, tour }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-3 mb-6">
+    <div data-tour={tour} className="flex flex-wrap items-end justify-between gap-3 mb-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">{title}</h1>
         {subtitle && <p className="text-sm text-slate-500 mt-1">{subtitle}</p>}

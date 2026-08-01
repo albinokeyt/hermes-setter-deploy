@@ -102,6 +102,7 @@ export default function Providers() {
   return (
     <div>
       <SectionTitle
+        tour="page:apis"
         title="APIs de IA"
         subtitle="Conecta los proveedores que quieras — cualquiera compatible con /chat/completions — y elige cuál usa cada cuenta"
         actions={<Button onClick={() => { setForm({ ...EMPTY }); setEditingId(null); }}><Plus size={16} /> Añadir API</Button>}

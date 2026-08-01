@@ -42,7 +42,7 @@ export default function SettingsPage() {
 
   return (
     <div>
-      <SectionTitle title="Configuración" subtitle="Conexión con GoHighLevel, seguridad de la IA y registro de actividad" />
+      <SectionTitle tour="page:config" title="Configuración" subtitle="Conexión con GoHighLevel, seguridad de la IA y registro de actividad" />
 
       {prompts && (
         <div className="mb-4 grid gap-4 lg:grid-cols-2">

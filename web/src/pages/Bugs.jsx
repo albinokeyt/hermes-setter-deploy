@@ -83,7 +83,7 @@ export default function Bugs() {
 
   return (
     <div>
-      <SectionTitle title="🐞 Reportar errores" subtitle={isAdmin ? 'Todos los errores reportados por los usuarios (fecha, usuario, subcuenta y tipo).' : 'Cuéntanos qué falló y lo revisamos. Puedes adjuntar una captura.'} />
+      <SectionTitle tour="page:errores" title="🐞 Reportar errores" subtitle={isAdmin ? 'Todos los errores reportados por los usuarios (fecha, usuario, subcuenta y tipo).' : 'Cuéntanos qué falló y lo revisamos. Puedes adjuntar una captura.'} />
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="p-5 lg:col-span-1">

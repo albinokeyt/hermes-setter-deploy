@@ -46,9 +46,9 @@ export default function Conversations() {
 
   return (
     <div>
-      <SectionTitle title="Conversaciones" subtitle="Todo lo que está hablando tu setter, en tiempo real" />
+      <SectionTitle tour="page:conv" title="Conversaciones" subtitle="Todo lo que está hablando tu setter, en tiempo real" />
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      <div data-tour="conv-filtros" className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative">
           <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
           <input

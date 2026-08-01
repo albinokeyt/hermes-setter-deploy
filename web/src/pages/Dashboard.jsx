@@ -53,6 +53,7 @@ export default function Dashboard() {
   return (
     <div>
       <SectionTitle
+        tour="page:dash"
         title="Dashboard"
         subtitle={`Datos del ${short(from)} al ${short(to)}`}
         actions={
@@ -66,7 +67,7 @@ export default function Dashboard() {
       />
 
       {/* Rango de fechas */}
-      <div className="mb-5 flex flex-wrap items-center gap-2">
+      <div data-tour="dash-rango" className="mb-5 flex flex-wrap items-center gap-2">
         {PRESETS.map((p) => (
           <button
             key={p.key}

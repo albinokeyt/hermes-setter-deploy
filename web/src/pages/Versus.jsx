@@ -28,6 +28,7 @@ export default function Versus() {
   return (
     <div>
       <SectionTitle
+        tour="page:versus"
         title="⚔️ Versus"
         subtitle="Enfrenta setters (de cualquier conexión) sobre la misma audiencia y mira cuál rinde mejor"
         actions={<Button onClick={() => setCreating(true)}><Plus size={16} /> Nuevo versus</Button>}

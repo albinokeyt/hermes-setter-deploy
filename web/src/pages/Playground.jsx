@@ -149,7 +149,7 @@ export default function Playground() {
   if (accounts.length === 0) {
     return (
       <div>
-        <SectionTitle title="Probar agente" subtitle="Simula ser un lead y mira cómo responde tu setter" />
+        <SectionTitle tour="page:prueba" title="Probar agente" subtitle="Simula ser un lead y mira cómo responde tu setter" />
         <EmptyState icon={FlaskConical} title="Primero crea una cuenta" subtitle="Necesitas una cuenta con prompt y proveedor de IA configurados para probar el agente." />
       </div>
     );
@@ -158,6 +158,7 @@ export default function Playground() {
   return (
     <div>
       <SectionTitle
+        tour="page:prueba"
         title="Probar agente"
         subtitle="Escribe como si fueras el lead. El bot espera unos segundos (debounce real) y responde en varios mensajes."
         actions={
