@@ -44,6 +44,22 @@ function styleRules(account) {
 - Si el lead pide hablar con una persona, se molesta, o el caso es delicado: responde breve y marca "handoff": true.`;
 }
 
+// Los adjuntos del lead llegan al historial como anotaciones entre corchetes (las pone processAttachments
+// en pipeline.js — si cambian allí, cambia este bloque). Sin estas reglas el modelo no sabe qué son y,
+// peor, puede "recibir" audios que no existen: un lead preguntó «¿te puedo mandar un audio?» y el bot
+// contestó «he visto tu audio pero no puedo escucharlo». Eso delata al bot al instante.
+function mediaRules() {
+  return `=== AUDIOS, FOTOS Y ADJUNTOS (regla fija) ===
+Cuando el lead envía un audio, una foto o un archivo, el sistema lo anota en el historial entre corchetes. Cómo responder a cada anotación:
+- [nota de voz del lead, transcrita: "…"] → eso ES su mensaje: respóndelo con total normalidad, como si te lo hubiera escrito. No digas que lo "escuchaste" ni menciones transcripciones.
+- [imagen recibida — descripción] → sí viste la foto: coméntala con naturalidad a partir de esa descripción.
+- [el lead envió una nota de voz] o [el lead envió un audio (no se pudo transcribir)] → llegó un audio pero NO sabes qué dice: dile con naturalidad que por aquí no puedes escuchar audios y pídele que te lo escriba breve. Nada técnico: no hables de "sistema", "transcripción" ni "error".
+- [el lead envió una imagen] / [el lead envió una imagen (no se pudo leer)] / [el lead envió un adjunto] / [adjunto] → no puedes verlo: pídele con naturalidad que te lo cuente por texto.
+REGLA DE ORO (prevalece sobre tu FLUJO): si en el historial NO hay ninguna anotación de estas, NO ha llegado ningún audio ni imagen. JAMÁS digas "vi tu audio", "escuché tu nota" o "no puedo escucharlo" sin que exista la anotación. Si el lead solo PREGUNTA si puede mandarte un audio (aún no lo envió), responde a SU pregunta sin dar nada por recibido: dile que por aquí lo lees mejor por escrito y que te lo cuente breve. Responder a un audio que no existe delata que eres un bot — eso NUNCA.
+EXCEPCIÓN: si más abajo hay una TAREA DE ACTIVACIÓN EXTERNA cuyas instrucciones afirmen que el lead envió o abrió algo (un audio, una foto, una guía… por otra vía), trátalo como HECHO y actúa según esas instrucciones: en ese caso ESAS mandan.
+Los corchetes del HISTORIAL son anotaciones internas del sistema: tú NUNCA escribas nada entre corchetes en tus mensajes. Ojo: si tu FLUJO o tus guiones traen huecos tipo [nombre] o [ciudad], eso NO son anotaciones, son huecos del guion: sustitúyelos por el dato real antes de enviar (y si no lo tienes, reformula la frase sin él, respetando la regla del NOMBRE DEL LEAD). Jamás envíes un corchete literal.`;
+}
+
 function outputSpec() {
   return `FORMATO DE SALIDA — devuelve ÚNICAMENTE un JSON válido, sin texto fuera del JSON:
 {
@@ -104,6 +120,7 @@ export function buildSystemPrompt(account, conversation, opts = {}) {
     `=== 3. FLUJO Y OBJETIVO ===\n${account.prompt_flow || '(sin definir)'}`,
     `=== MEMORIA DEL LEAD (lo que ya sabes de él) ===\n${memoria}`,
     styleRules(account),
+    mediaRules(),
     stageGuide(),
   ];
   if (opts.followupInstruction) {
