@@ -68,16 +68,27 @@ function leadNameForPrompt(raw) {
 
 function leadNameBlock(conversation) {
   const name = leadNameForPrompt(conversation?.lead_name);
-  const cierre = 'Esta regla del nombre es FIJA y prevalece: se combina con tu flujo (si el negocio te pide pedir el nombre, hazlo tal cual dice aquí). Jamás inventes ni adivines un nombre; en cuanto el lead te diga cómo se llama, guárdalo en "memoria" y úsalo.\nEXCEPCIÓN: si más abajo hay una TAREA DE ACTIVACIÓN EXTERNA con instrucciones de cómo entrar, ESAS mandan en ese mensaje: no lo gastes preguntando el nombre (ya lo preguntarás más adelante).';
+  const cierre = `REGLA DE ORO (prevalece sobre tu FLUJO): JAMÁS preguntes un nombre que ya conoces, y JAMÁS uses un nombre que el lead no te haya dado o que no venga reconocible en su perfil. Preguntar el nombre y luego decirlo tú solo (sin que el lead responda) delata que eres un bot — eso NUNCA.
+Jamás inventes ni adivines un nombre; cuando el lead te diga cómo se llama, guárdalo en "memoria" y usa ESE (aunque sea distinto al del perfil).
+EXCEPCIÓN: si más abajo hay una TAREA DE ACTIVACIÓN EXTERNA con instrucciones de cómo entrar, ESAS mandan en ese mensaje: no lo gastes preguntando el nombre (ya lo preguntarás más adelante).`;
+  // Si el lead YA dijo su nombre (está en la memoria), esa es la verdad: ni preguntarlo otra vez ni
+  // usar el del perfil. (Sin esto, en conversaciones retomadas el bloque decía «no sabemos su nombre».)
+  const rawMem = conversation?.memory?.nombre ?? conversation?.memory?.name;
+  const memName = typeof rawMem === 'string' ? leadNameForPrompt(rawMem) : ''; // un objeto daría «[object Object]»
+  if (memName) {
+    return `=== NOMBRE DEL LEAD (regla fija) ===
+El lead ya te dijo su nombre y está en la MEMORIA: «${memName}». Usa ESE (solo el nombre de pila), no lo vuelvas a preguntar y no uses el del perfil.
+${cierre}`;
+  }
   if (!name) {
     return `=== NOMBRE DEL LEAD (regla fija) ===
-No sabemos su nombre. En un momento natural y temprano de la conversación, pregúntaselo con amabilidad (sin sonar a formulario). Mientras no lo sepas, no le pongas ningún nombre.
+No sabemos su nombre. En un momento natural y temprano, pregúntaselo con amabilidad (sin sonar a formulario). Hasta que el lead RESPONDA con su nombre, no uses ninguno: nada de adivinar ni de sacarlo de otro lado.
 ${cierre}`;
   }
   return `=== NOMBRE DEL LEAD (regla fija) ===
 Su perfil/usuario dice: «${name}».
-- Si ahí se reconoce un nombre de persona real, ese ES su nombre: úsalo con naturalidad (solo el nombre de pila, p. ej. «Lucía García» → "Lucía"; corrige mayúsculas). No necesitas preguntárselo.
-- Si NO parece un nombre humano (números o rarezas tipo "user345", "wanderlust_92", apodos o nombres claramente falsos), NO lo reconozcas ni lo saludes por ahí: trátalo sin nombre y, en un momento natural, pregúntale con amabilidad cómo se llama.
+- Si ahí se reconoce un nombre de persona real, ese ES su nombre: úsalo con naturalidad desde el primer mensaje (solo el nombre de pila, p. ej. «Lucía García» → "Lucía"; corrige mayúsculas) y NO se lo preguntes — aunque tu FLUJO diga "pregunta el nombre", SALTA ese paso: ya lo sabes, y preguntarlo para luego usarlo queda falso.
+- Si NO parece un nombre humano (números o rarezas tipo "user345", "wanderlust_92", apodos o nombres claramente falsos): trátalo SIN nombre y pregúntaselo en un momento natural. Mientras no responda, cero nombres — y NUNCA uses el texto del perfil como nombre.
 ${cierre}`;
 }
 
@@ -213,28 +224,60 @@ export async function generateReply({ account, provider, conversation, history, 
   const guardrail = await getGuardrail();
   const system = `${guardrail}\n\n${buildSystemPrompt(account, conversation, { followupInstruction, followupNumber, activation })}`;
   const messages = [{ role: 'system', content: system }, ...historyToMessages(history)];
-  if (messages.length === 1 || messages[messages.length - 1].role !== 'user') {
-    // El empujón final también manda: si es una ACTIVACIÓN, no se le puede decir "genera el mensaje de
-    // seguimiento" (contradice sus instrucciones y es falso: el lead puede no haber callado).
-    const ctx = String(activation?.contexto || '').trim();
+  if (activation) {
+    // ACTIVACIÓN: la orden va SIEMPRE como ÚLTIMO mensaje, con el texto de la etiqueta LITERAL.
+    // Antes solo se añadía si el último mensaje no era del lead, y las instrucciones quedaban lejos
+    // (solo en el sistema) compitiendo con el historial — p. ej. la etiqueta decía «ya abrieron el
+    // lead magnet» y el setter contestaba al historial («vi que pediste la guía»). La última orden
+    // es lo que más pesa para el modelo: aquí no se puede ignorar.
+    const ctx = String(activation.contexto || '').trim();
     messages.push({
       role: 'user',
-      content: activation
-        ? `(te han activado desde el flujo del negocio; escribe ahora el mensaje${ctx ? ' siguiendo AL PIE DE LA LETRA las instrucciones de esta activación' : ''})`
-        : followupInstruction
-          ? '(el lead no ha respondido; genera ahora el mensaje de seguimiento)'
-          : '(continúa la conversación de forma natural)',
+      content: ctx
+        ? `[ORDEN DEL NEGOCIO — te acaban de activar con una etiqueta] Antes de redactar, asume como HECHOS y cumple AL PIE DE LA LETRA estas instrucciones (mandan sobre el historial y sobre tu flujo para este mensaje): «${ctx}». Escribe ahora el mensaje.`
+        : '(te han activado desde el flujo del negocio; escribe ahora el mensaje según tu FLUJO)',
+    });
+  } else if (messages.length === 1 || messages[messages.length - 1].role !== 'user') {
+    messages.push({
+      role: 'user',
+      content: followupInstruction
+        ? '(el lead no ha respondido; genera ahora el mensaje de seguimiento)'
+        : '(continúa la conversación de forma natural)',
     });
   }
   const modelUsed = account.model || provider.default_model;
-  const { content, usage } = await chatCompletion({
+  // maxTokens holgado: la respuesta es UN JSON con los 2-3 mensajes + memoria + etiqueta, y en los
+  // modelos razonadores (OpenRouter) el razonamiento interno TAMBIÉN consume este límite. Con 900 el
+  // JSON llegaba cortado a mitad del array: el rescate descartaba el mensaje a medias y el lead
+  // recibía solo el primero (o uno cortado) sin la 2ª ni la 3ª parte.
+  let { content, usage, finish } = await chatCompletion({
     provider,
     model: modelUsed,
     temperature: account.temperature ?? 0.8,
     messages,
-    maxTokens: 900,
+    maxTokens: 2500,
     json: true,
   });
+  if (finish === 'length') {
+    // se cortó igualmente (razonador muy hablador): un único reintento con techo y timeout altos.
+    // Si el reintento FALLA, seguimos con el contenido truncado de la primera llamada: el rescate de
+    // parseAgentJson recupera los mensajes completos que sí llegaron (mejor eso que tirarlo todo).
+    try {
+      const retry = await chatCompletion({
+        provider, model: modelUsed, temperature: account.temperature ?? 0.8, messages, maxTokens: 8000, json: true, timeoutMs: 120_000,
+      });
+      content = retry.content;
+      // el gasto de AMBAS llamadas se suma (si se pisara, la facturación perdería la primera)
+      const a = usage || {}, b = retry.usage || {};
+      usage = {
+        ...b,
+        prompt_tokens: (Number(a.prompt_tokens) || 0) + (Number(b.prompt_tokens) || 0),
+        completion_tokens: (Number(a.completion_tokens) || 0) + (Number(b.completion_tokens) || 0),
+        total_tokens: (Number(a.total_tokens) || 0) + (Number(b.total_tokens) || 0),
+        cost: (Number(a.cost) || 0) + (Number(b.cost) || 0) || undefined,
+      };
+    } catch { /* nos quedamos con la primera llamada (y su usage intacto) */ }
+  }
   const parsed = parseAgentJson(content, account);
   if (!parsed.mensajes.length) throw new Error('el agente no generó mensajes');
   return { ...parsed, usage, model: modelUsed };

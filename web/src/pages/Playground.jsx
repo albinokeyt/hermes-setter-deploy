@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Send, RotateCcw, FlaskConical, Wand2, X } from 'lucide-react';
+import { Send, RotateCcw, FlaskConical, Wand2, X, Plus, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
 import { Card, SectionTitle, Button, Select, StagePill, Banner, EmptyState } from '../components/ui.jsx';
 import { PromptArchitect } from '../components/PromptArchitect.jsx';
@@ -24,6 +24,75 @@ export default function Playground() {
   const memoryRef = useRef({});
   memoryRef.current = memory;
 
+  // 🗂️ Conversaciones de prueba guardadas (con sus correcciones y la versión del prompt)
+  const [chats, setChats] = useState([]);
+  const [chatId, setChatId] = useState(null);
+  const [chatCorr, setChatCorr] = useState([]); // correcciones de la prueba seleccionada
+  const chatIdRef = useRef(null);
+  chatIdRef.current = chatId;
+  // Token de generación: reiniciar / abrir otra prueba / cambiar de setter ABORTA la respuesta y el
+  // guardado en vuelo (si no, los mensajes del setter anterior caían en la prueba nueva).
+  const genRef = useRef(0);
+
+  const loadChats = () => {
+    if (!setterId) { setChats([]); return; }
+    api.get(`/api/setters/${setterId}/playground-chats`).then(setChats).catch(() => setChats([]));
+  };
+  useEffect(() => { genRef.current++; clearTimeout(timerRef.current); loadChats(); setChatId(null); setChatCorr([]); }, [setterId]);
+
+  const persistChat = async (hist, mem, sid, gen) => {
+    if (genRef.current !== gen) return; // ya no es la prueba/setter activo
+    if (!hist.some((m) => m.role === 'lead')) return; // nada que guardar (evita pruebas fantasma)
+    try {
+      let id = chatIdRef.current;
+      if (!id) {
+        const firstLead = hist.find((m) => m.role === 'lead');
+        const created = await api.post(`/api/setters/${sid}/playground-chats`, { name: String(firstLead?.text || 'Prueba').slice(0, 40) });
+        if (genRef.current !== gen) return;
+        id = created.id;
+        chatIdRef.current = id;
+        setChatId(id);
+      }
+      await api.put(`/api/playground-chats/${id}`, { history: hist, memory: mem });
+      loadChats();
+    } catch { /* best-effort */ }
+  };
+
+  const openChat = async (id) => {
+    genRef.current++;
+    const gen = genRef.current;
+    clearTimeout(timerRef.current); // ANTES del await: un debounce pendiente no debe disparar durante la carga
+    try {
+      const c = await api.get(`/api/playground-chats/${id}`);
+      if (genRef.current !== gen) return;
+      setHistory(Array.isArray(c.history) ? c.history : []);
+      setMemory(c.memory && typeof c.memory === 'object' ? c.memory : {});
+      setChatCorr(Array.isArray(c.corrections) ? c.corrections : []);
+      setChatId(c.id);
+      chatIdRef.current = c.id;
+      setMeta(null); setError('');
+    } catch (err) { setError(err.message); }
+  };
+  const renameChat = async (c) => {
+    const name = window.prompt('Nombre de la prueba:', c.name);
+    if (!name?.trim()) return;
+    try { await api.put(`/api/playground-chats/${c.id}`, { name: name.trim() }); loadChats(); } catch (err) { setError(err.message); }
+  };
+  const deleteChat = async (c) => {
+    if (!window.confirm(`¿Borrar la prueba «${c.name}»?`)) return;
+    try { await api.del(`/api/playground-chats/${c.id}`); if (c.id === chatIdRef.current) reset(); loadChats(); } catch (err) { setError(err.message); }
+  };
+  // el corrector aplicó un cambio: se registra en la prueba activa y se refrescan las versiones
+  const onCorrectionApplied = async (resumen) => {
+    try {
+      if (chatIdRef.current) {
+        const upd = await api.put(`/api/playground-chats/${chatIdRef.current}`, { add_correction: resumen || 'cambio aplicado' });
+        setChatCorr(Array.isArray(upd.corrections) ? upd.corrections : []);
+      }
+      loadChats();
+    } catch { /* best-effort */ }
+  };
+
   const loadSpend = () => api.get('/api/playground/spend').then(setSpend).catch(() => {});
   useEffect(() => {
     api.get('/api/accounts').then((a) => { setAccounts(a); if (a[0]) setAccountId(String(a[0].id)); }).catch(() => {});
@@ -43,17 +112,23 @@ export default function Playground() {
   const askBot = async () => {
     setThinking(true);
     setError('');
+    const gen = genRef.current;
+    const sid = setterId;
     try {
       const r = await api.post('/api/playground/reply', { account_id: Number(accountId), setter_id: setterId ? Number(setterId) : undefined, history: historyRef.current, memory: memoryRef.current });
+      if (genRef.current !== gen) return; // reiniciaron / cambiaron de prueba mientras respondía
       loadSpend();
       setMemory(r.memoria_final || {});
       setMeta({ etiqueta: r.etiqueta, motivo: r.motivo, handoff: r.handoff });
       for (let i = 0; i < r.mensajes.length; i++) {
         await new Promise((res) => setTimeout(res, Math.min(r.delays?.[i] || 1500, 3500)));
+        if (genRef.current !== gen) return;
         setHistory((h) => [...h, { role: 'bot', text: r.mensajes[i] }]);
       }
+      // guardar la prueba (historial + memoria) para poder retomarla aunque navegues a otra sección
+      setTimeout(() => persistChat(historyRef.current, memoryRef.current, sid, gen), 100);
     } catch (err) {
-      setError(err.message);
+      if (genRef.current === gen) setError(err.message);
     } finally {
       setThinking(false);
     }
@@ -69,7 +144,7 @@ export default function Playground() {
     timerRef.current = setTimeout(askBot, 4000);
   };
 
-  const reset = () => { clearTimeout(timerRef.current); setHistory([]); setMemory({}); setMeta(null); setError(''); };
+  const reset = () => { genRef.current++; clearTimeout(timerRef.current); setHistory([]); setMemory({}); setMeta(null); setError(''); setChatId(null); chatIdRef.current = null; setChatCorr([]); };
 
   if (accounts.length === 0) {
     return (
@@ -102,7 +177,32 @@ export default function Playground() {
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-4">
+        {/* 🗂️ Pruebas guardadas de este setter: retomar, renombrar, borrar; vN = versión del prompt */}
+        <Card className="flex h-[65vh] flex-col overflow-hidden">
+          <button onClick={reset} className="flex items-center justify-center gap-1.5 border-b border-slate-100 px-2 py-2.5 text-xs font-semibold text-violet-600 hover:bg-violet-50">
+            <Plus size={14} /> Nueva prueba
+          </button>
+          <div className="scroll-thin flex-1 overflow-y-auto">
+            {chats.length === 0 && <p className="px-3 py-6 text-center text-[11px] text-slate-400">Aún no hay pruebas guardadas de este setter.</p>}
+            {chats.map((c) => (
+              <div key={c.id} className={`group flex items-center gap-1 border-b border-slate-50 px-2.5 py-2 text-[11px] ${c.id === chatId ? 'bg-violet-50' : 'hover:bg-slate-50'}`}>
+                <button onClick={() => openChat(c.id)} className="min-w-0 flex-1 text-left">
+                  <span className={`block truncate font-medium ${c.id === chatId ? 'text-violet-700' : 'text-slate-700'}`}>{c.name}</span>
+                  <span className="text-[10px] text-slate-400">
+                    {new Date(c.updated_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })} · {c.n} msg
+                    {c.version_num > 0 && <span className="ml-1 rounded bg-violet-100 px-1 font-semibold text-violet-600">v{c.version_num}</span>}
+                    {c.n_corr > 0 && <span className="ml-1 rounded bg-amber-100 px-1 font-semibold text-amber-600">✏️{c.n_corr}</span>}
+                  </span>
+                </button>
+                <button onClick={() => renameChat(c)} title="Renombrar" className="hidden shrink-0 text-slate-300 hover:text-violet-600 group-hover:block"><Pencil size={12} /></button>
+                <button onClick={() => deleteChat(c)} title="Borrar" className="hidden shrink-0 text-slate-300 hover:text-red-500 group-hover:block"><Trash2 size={12} /></button>
+              </div>
+            ))}
+          </div>
+          <p className="border-t border-slate-100 px-2.5 py-1.5 text-[10px] text-slate-400">vN = versión del prompt con la que quedó esa prueba.</p>
+        </Card>
+
         <Card className="flex h-[65vh] flex-col lg:col-span-2">
           <div className="scroll-thin flex-1 space-y-3 overflow-y-auto bg-slate-50/50 px-5 py-4">
             {history.length === 0 && (
@@ -183,6 +283,19 @@ export default function Playground() {
             )}
           </Card>
 
+          {chatCorr.length > 0 && (
+            <Card className="p-5">
+              <h3 className="mb-2 text-sm font-semibold text-slate-700">✏️ Correcciones de esta prueba</h3>
+              <ul className="scroll-thin max-h-40 space-y-1.5 overflow-y-auto">
+                {chatCorr.map((c, i) => (
+                  <li key={i} className="text-[11px] text-slate-600">
+                    <span className="text-slate-400">{new Date(c.fecha).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}</span> · {c.texto}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+
           <Card className="p-5">
             <h3 className="mb-1 text-sm font-semibold text-slate-700">Ajustar el prompt</h3>
             <p className="mb-3 text-xs text-slate-400">¿Ves algo que mejorar mientras pruebas? Dile los cambios (con imágenes si quieres) y los aplica a los 3 bloques.</p>
@@ -195,7 +308,7 @@ export default function Playground() {
 
       {importOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setImportOpen(false)}>
-          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
               <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Wand2 size={16} className="text-violet-600" /> Importar cambio al prompt</h3>
               <button onClick={() => setImportOpen(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
@@ -203,7 +316,7 @@ export default function Playground() {
             <div className="p-3">
               <PromptArchitect
                 targetPath={`/api/setters/${setterId}`}
-                mode="edit" compact onApplied={() => { /* prompts guardados en el setter */ }}
+                mode="edit" compact onApplied={onCorrectionApplied}
               />
             </div>
           </div>

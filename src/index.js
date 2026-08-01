@@ -23,6 +23,7 @@ import portalRoutes from './routes/portal.js';
 import versusRoutes from './routes/versus.js';
 import archiveRoutes from './routes/archive.js';
 import promptEditorRoutes from './routes/promptEditor.js';
+import bugRoutes from './routes/bugs.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -63,6 +64,7 @@ async function main() {
   await app.register(versusRoutes);
   await app.register(archiveRoutes);
   await app.register(promptEditorRoutes);
+  await app.register(bugRoutes);
 
   // frontend compilado (SPA)
   const webDist = path.join(__dirname, '..', 'web', 'dist');

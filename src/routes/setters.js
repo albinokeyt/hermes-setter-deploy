@@ -172,6 +172,129 @@ export default async function setterRoutes(app) {
     return { activaciones: rows };
   });
 
+  // ── 💬 CHATS PERSISTENTES del arquitecto/corrector (tipo ChatGPT) ─────────────────────────────
+  // Conversaciones con nombre que sobreviven al navegar; se retoman desde donde quedaron.
+  const sanitizeMsgs = (v) => (Array.isArray(v) ? v.slice(-80).map((m) => ({
+    role: m?.role === 'assistant' ? 'assistant' : 'user',
+    text: String(m?.text || '').slice(0, 20000),
+  })) : []);
+
+  app.get('/api/setters/:id/editor-chats', async (req, reply) => {
+    const { setter, code, error } = await loadSetterScoped(req, req.params.id);
+    if (code) return reply.code(code).send({ error });
+    const mode = req.query?.mode === 'edit' ? 'edit' : 'architect';
+    return q(`SELECT id, name, updated_at, jsonb_array_length(messages) AS n FROM editor_chats
+              WHERE setter_id = $1 AND mode = $2 ORDER BY updated_at DESC LIMIT 30`, [setter.id, mode]);
+  });
+  app.post('/api/setters/:id/editor-chats', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
+    const { setter, code, error } = await loadSetterScoped(req, req.params.id);
+    if (code) return reply.code(code).send({ error });
+    const mode = req.body?.mode === 'edit' ? 'edit' : 'architect';
+    const name = String(req.body?.name || '').trim().slice(0, 80) || 'Nueva conversación';
+    return one(`INSERT INTO editor_chats (setter_id, mode, name) VALUES ($1,$2,$3) RETURNING *`, [setter.id, mode, name]);
+  });
+  // Carga/edición de un chat concreto, siempre comprobando que su setter es accesible.
+  async function loadEditorChat(req, chatId) {
+    const idNum = Number(chatId);
+    if (!Number.isInteger(idNum) || idNum <= 0 || idNum > 2147483647) return { code: 404, error: 'Conversación no encontrada' }; // 'abc' o fuera de int4 darían un 500 de pg
+    const chat = await one(`SELECT * FROM editor_chats WHERE id = $1`, [idNum]);
+    if (!chat) return { code: 404, error: 'Conversación no encontrada' };
+    const { code, error } = await loadSetterScoped(req, chat.setter_id);
+    if (code) return { code, error };
+    return { chat };
+  }
+  app.get('/api/editor-chats/:chatId', async (req, reply) => {
+    const { chat, code, error } = await loadEditorChat(req, req.params.chatId);
+    if (code) return reply.code(code).send({ error });
+    return chat;
+  });
+  app.put('/api/editor-chats/:chatId', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
+    const { chat, code, error } = await loadEditorChat(req, req.params.chatId);
+    if (code) return reply.code(code).send({ error });
+    const b = req.body || {};
+    // SET dinámico solo con lo que viene: un rename concurrente NO debe pisar mensajes recién guardados
+    const sets = ['updated_at = now()'];
+    const vals = [chat.id];
+    if ('name' in b) { vals.push(String(b.name || '').trim().slice(0, 80) || chat.name); sets.push(`name = $${vals.length}`); }
+    if ('messages' in b) { vals.push(JSON.stringify(sanitizeMsgs(b.messages))); sets.push(`messages = $${vals.length}::jsonb`); }
+    return one(`UPDATE editor_chats SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, vals);
+  });
+  app.delete('/api/editor-chats/:chatId', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
+    const { chat, code, error } = await loadEditorChat(req, req.params.chatId);
+    if (code) return reply.code(code).send({ error });
+    await q(`DELETE FROM editor_chats WHERE id = $1`, [chat.id]);
+    return { ok: true };
+  });
+
+  // ── 🧪 CONVERSACIONES DE PRUEBA del playground (con correcciones y versión del prompt) ────────
+  app.get('/api/setters/:id/playground-chats', async (req, reply) => {
+    const { setter, code, error } = await loadSetterScoped(req, req.params.id);
+    if (code) return reply.code(code).send({ error });
+    // version_num se guardó al estampar (no se recalcula: prompt_versions se poda y el número bailaría)
+    return q(
+      `SELECT pc.id, pc.name, pc.updated_at, jsonb_array_length(pc.history) AS n,
+              jsonb_array_length(pc.corrections) AS n_corr, pc.version_num
+       FROM playground_chats pc WHERE pc.setter_id = $1 ORDER BY pc.updated_at DESC LIMIT 30`,
+      [setter.id]
+    );
+  });
+  app.post('/api/setters/:id/playground-chats', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
+    const { setter, code, error } = await loadSetterScoped(req, req.params.id);
+    if (code) return reply.code(code).send({ error });
+    const name = String(req.body?.name || '').trim().slice(0, 80) || 'Prueba nueva';
+    return one(`INSERT INTO playground_chats (setter_id, name) VALUES ($1,$2) RETURNING *`, [setter.id, name]);
+  });
+  async function loadPlayChat(req, chatId) {
+    const idNum = Number(chatId);
+    if (!Number.isInteger(idNum) || idNum <= 0 || idNum > 2147483647) return { code: 404, error: 'Prueba no encontrada' };
+    const chat = await one(`SELECT * FROM playground_chats WHERE id = $1`, [idNum]);
+    if (!chat) return { code: 404, error: 'Prueba no encontrada' };
+    const { code, error } = await loadSetterScoped(req, chat.setter_id);
+    if (code) return { code, error };
+    return { chat };
+  }
+  app.get('/api/playground-chats/:chatId', async (req, reply) => {
+    const { chat, code, error } = await loadPlayChat(req, req.params.chatId);
+    if (code) return reply.code(code).send({ error });
+    return chat;
+  });
+  app.put('/api/playground-chats/:chatId', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
+    const { chat, code, error } = await loadPlayChat(req, req.params.chatId);
+    if (code) return reply.code(code).send({ error });
+    const b = req.body || {};
+    // SET dinámico: un rename NO pisa el historial ni re-estampa la versión de una prueba vieja.
+    const sets = ['updated_at = now()'];
+    const vals = [chat.id];
+    if ('name' in b) { vals.push(String(b.name || '').trim().slice(0, 80) || chat.name); sets.push(`name = $${vals.length}`); }
+    if ('history' in b) { vals.push(JSON.stringify(Array.isArray(b.history) ? b.history.slice(-120) : [])); sets.push(`history = $${vals.length}::jsonb`); }
+    if ('memory' in b) { vals.push(JSON.stringify(b.memory && typeof b.memory === 'object' ? b.memory : {})); sets.push(`memory = $${vals.length}::jsonb`); }
+    if (b.add_correction) {
+      // concat atómico en SQL: no pisa correcciones añadidas por otra petición concurrente
+      vals.push(JSON.stringify([{ texto: String(b.add_correction).slice(0, 2000), fecha: new Date().toISOString() }]));
+      sets.push(`corrections = (CASE WHEN jsonb_array_length(corrections) >= 50 THEN corrections - 0 ELSE corrections END) || $${vals.length}::jsonb`);
+    }
+    // la versión solo se estampa cuando hay CONTENIDO nuevo (interacción o corrección), nunca en un rename
+    if ('history' in b || b.add_correction) {
+      const lv = await one(`SELECT MAX(id) AS v FROM prompt_versions WHERE setter_id = $1`, [chat.setter_id]);
+      const seq = await one(`SELECT prompt_version_seq AS n FROM setters WHERE id = $1`, [chat.setter_id]);
+      vals.push(lv?.v ?? null); sets.push(`last_version = $${vals.length}`);
+      vals.push(Number(seq?.n) || null); sets.push(`version_num = $${vals.length}`);
+    }
+    return one(`UPDATE playground_chats SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, vals);
+  });
+  app.delete('/api/playground-chats/:chatId', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
+    const { chat, code, error } = await loadPlayChat(req, req.params.chatId);
+    if (code) return reply.code(code).send({ error });
+    await q(`DELETE FROM playground_chats WHERE id = $1`, [chat.id]);
+    return { ok: true };
+  });
+
   // Guarda la versión ANTERIOR de los 3 prompts antes de sobrescribirlos (historial para volver atrás).
   async function savePromptVersion(setter, source) {
     await q(
@@ -179,6 +302,8 @@ export default async function setterRoutes(app) {
        VALUES ($1, $2, $3, $4, $5)`,
       [setter.id, setter.prompt_identity || '', setter.prompt_business || '', setter.prompt_flow || '', String(source || 'manual').slice(0, 40)]
     );
+    // contador monótono para el «vN» de las pruebas (no se desinfla con la poda de abajo)
+    await q(`UPDATE setters SET prompt_version_seq = prompt_version_seq + 1 WHERE id = $1`, [setter.id]);
     // tope de historial por setter
     await q(
       `DELETE FROM prompt_versions WHERE setter_id = $1 AND id NOT IN
@@ -301,6 +426,9 @@ export default async function setterRoutes(app) {
     const { n } = await one(`SELECT COUNT(*)::int AS n FROM setters WHERE account_id = $1`, [setter.account_id]);
     if (n <= 1) return reply.code(400).send({ error: 'No puedes borrar el único setter de la conexión' });
     await q(`DELETE FROM setters WHERE id = $1`, [req.params.id]);
+    // limpiar lo que cuelga del setter (las tablas nuevas no tienen FK): chats y pruebas guardadas
+    await q(`DELETE FROM editor_chats WHERE setter_id = $1`, [req.params.id]).catch(() => {});
+    await q(`DELETE FROM playground_chats WHERE setter_id = $1`, [req.params.id]).catch(() => {});
     // si borramos el setter por defecto, ascendemos otro para no dejar a la conexión sin default
     if (setter.is_default) {
       await q(

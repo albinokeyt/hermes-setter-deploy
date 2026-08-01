@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Database, Swords } from 'lucide-react';
+import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Database, Swords, Bug } from 'lucide-react';
 import { api } from '../api.js';
 import { ThemeToggle } from './ui.jsx';
 
@@ -93,6 +93,7 @@ export default function Layout() {
     ...(restricted ? [] : [{ to: '/prueba', label: 'Probar agente', icon: FlaskConical }]),
     // Archivo (mensajes entrantes/salientes + comentarios + descargar) NO depende de la IA → siempre visible.
     { to: '/archivo', label: 'Archivo', icon: Database },
+    { to: '/errores', label: 'Reportar error', icon: Bug },
   ];
   const navBottom = [
     ...(isAdmin ? [{ to: '/configuracion', label: 'Configuración', icon: Settings }] : []),

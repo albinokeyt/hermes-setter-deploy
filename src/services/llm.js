@@ -13,7 +13,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Devuelve { content, usage } y reintenta solo (3 intentos) ante respuestas
 // vacías, errores 429/5xx o fallos de red — el lead nunca se queda sin respuesta
 // por un fallo puntual del proveedor.
-export async function chatCompletion({ provider, model, temperature = 0.8, messages, maxTokens = 900, json = true }) {
+export async function chatCompletion({ provider, model, temperature = 0.8, messages, maxTokens = 900, json = true, timeoutMs = 60_000, attempts = 3 }) {
   const baseUrl = String(provider.base_url || '').replace(/\/+$/, '');
   const isOpenRouter = baseUrl.includes('openrouter.ai');
 
@@ -28,7 +28,7 @@ export async function chatCompletion({ provider, model, temperature = 0.8, messa
         authorization: `Bearer ${provider.api_key}`,
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await res.text();
     let data = {};
@@ -37,7 +37,7 @@ export async function chatCompletion({ provider, model, temperature = 0.8, messa
   };
 
   let lastErr = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       let { res, data, text } = await doRequest(json);
       if (!res.ok && json && (res.status === 400 || res.status === 422)) {
@@ -52,7 +52,8 @@ export async function chatCompletion({ provider, model, temperature = 0.8, messa
       } else {
         const content = data?.choices?.[0]?.message?.content;
         if (typeof content === 'string' && content.trim()) {
-          return { content, usage: data?.usage || null };
+          // finish: 'length' = la respuesta se CORTÓ por max_tokens (el llamador puede reintentar más alto)
+          return { content, usage: data?.usage || null, finish: data?.choices?.[0]?.finish_reason || null };
         }
         lastErr = new LlmError(`LLM ${provider.name} devolvió una respuesta vacía`, 502, data);
       }
