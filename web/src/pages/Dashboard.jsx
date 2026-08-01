@@ -92,7 +92,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
+      <div data-tour="dash-stats" className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Conversaciones nuevas" value={t.nuevas ?? 0} sub={`${t.conversaciones_total ?? 0} en total`} icon={MessagesSquare} tone="violet" />
         <StatCard label="Activas" value={t.activas ?? 0} sub="con actividad en el rango" icon={Flame} tone="amber" />
         <StatCard label="Recibidos" value={t.recibidos ?? 0} sub="mensajes de leads" icon={ArrowDownToLine} tone="blue" />
@@ -133,7 +133,7 @@ export default function Dashboard() {
         </Card>
       )}
 
-      <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+      <div data-tour="dash-etapas" className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
         {STAGES.map((s) => {
           const alerta = s.key === 'atencion_humana';
           const n = stageCount[s.key] || 0;
@@ -173,7 +173,7 @@ export default function Dashboard() {
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-5">
-        <Card className="p-5 lg:col-span-3">
+        <Card data-tour="dash-grafica" className="p-5 lg:col-span-3">
           <h3 className="mb-4 text-sm font-semibold text-slate-700">Actividad · {rango}</h3>
           <div className="h-60">
             <ResponsiveContainer width="100%" height="100%">

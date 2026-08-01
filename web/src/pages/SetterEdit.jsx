@@ -132,7 +132,7 @@ export default function SetterEdit() {
         title={<input value={s.name} onChange={(e) => set({ name: e.target.value })} className="rounded-lg border border-transparent bg-transparent text-2xl font-bold tracking-tight text-slate-900 hover:border-slate-200 focus:border-violet-300 focus:outline-none" />}
         subtitle="Prompt, IA, comportamiento y seguimientos de este setter"
         actions={
-          <div className="flex items-center gap-3">
+          <div data-tour="setter-estado" className="flex items-center gap-3">
             <Toggle checked={s.bot_enabled} onChange={(v) => set({ bot_enabled: v })} label={s.bot_enabled ? 'Setter activo' : 'Setter apagado'} />
             <Button onClick={save} loading={saving}>{saved ? '✓ Guardado' : 'Guardar cambios'}</Button>
           </div>
@@ -141,9 +141,9 @@ export default function SetterEdit() {
 
       {error && <div className="mb-4"><Banner tone="error">{error}</Banner></div>}
 
-      <div className="mb-5 flex gap-1 rounded-2xl border border-slate-200 bg-white p-1.5 w-fit">
+      <div data-tour="setter-tabs" className="mb-5 flex gap-1 rounded-2xl border border-slate-200 bg-white p-1.5 w-fit">
         {tabs.map((t) => (
-          <button key={t.key} onClick={() => setTab(t.key)}
+          <button key={t.key} data-tour={`setter-tab-${t.key}`} onClick={() => setTab(t.key)}
             className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${tab === t.key ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>
             {t.label}
           </button>
@@ -152,17 +152,17 @@ export default function SetterEdit() {
 
       {tab === 'prompt' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3">
+          <div data-tour="setter-prompt-intro" className="flex items-center justify-between gap-3">
             <Banner tone="info">El prompt se divide en 3 partes. El agente las combina con la memoria del lead y las reglas de humanización automáticamente.</Banner>
             <Button variant="secondary" className="shrink-0" onClick={openHistory}>🕘 Historial</Button>
           </div>
-          <Card className="p-5">
+          <Card data-tour="setter-prompt-identidad" className="p-5">
             <Textarea label="1 · Identidad y personalidad" rows={8} value={s.prompt_identity} onChange={(e) => set({ prompt_identity: e.target.value })} placeholder="Eres Sofía, setter del centro..." hint="Quién es el setter: nombre, tono, forma de escribir, qué haría y qué jamás diría." />
           </Card>
-          <Card className="p-5">
+          <Card data-tour="setter-prompt-negocio" className="p-5">
             <Textarea label="2 · Negocio y oferta" rows={8} value={s.prompt_business} onChange={(e) => set({ prompt_business: e.target.value })} placeholder="El negocio es..." hint="Qué se vende, a quién, precios, beneficios, preguntas frecuentes, enlaces permitidos." />
           </Card>
-          <Card className="p-5">
+          <Card data-tour="setter-prompt-flujo" className="p-5">
             <Textarea label="3 · Flujo y objetivo" rows={8} value={s.prompt_flow} onChange={(e) => set({ prompt_flow: e.target.value })} placeholder="1. Saluda... 2. Cualifica... 3. Si cumple el filtro, propone..." hint="El paso a paso y el OBJETIVO (agendar una cita, o enviar un enlace de venta / recurso gratis / agenda — la agenda no es obligatoria)." />
           </Card>
         </div>
@@ -171,7 +171,7 @@ export default function SetterEdit() {
       {tab === 'ia' && (
         <div className="max-w-2xl space-y-4">
           {providers.length === 0 && <Banner tone="warn">Aún no tienes APIs. Créalas en <b>APIs de IA</b>.</Banner>}
-          <Card className="space-y-5 p-6">
+          <Card data-tour="setter-ia-texto" className="space-y-5 p-6">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-800">💬 API de texto (el chat del agente)</div>
             <div>
               <Select label="Modelo de IA (elige una API que ya creaste)" value={s.provider_id || ''} onChange={(e) => set({ provider_id: e.target.value ? Number(e.target.value) : null, model: '' })}>
@@ -189,7 +189,7 @@ export default function SetterEdit() {
               </Select>
             </div>
           </Card>
-          <Card className="space-y-4 p-6">
+          <Card data-tour="setter-ia-imagen" className="space-y-4 p-6">
             <Toggle checked={s.vision_enabled} onChange={(v) => set({ vision_enabled: v })} label="👁️ API de imagen (leer fotos)" description="Cuando el lead envía una imagen, este setter la lee y la usa en la conversación" />
             {s.vision_enabled && (
               <div className="pl-1">
@@ -201,7 +201,7 @@ export default function SetterEdit() {
               </div>
             )}
           </Card>
-          <Card className="space-y-4 p-6">
+          <Card data-tour="setter-ia-audio" className="space-y-4 p-6">
             <Toggle checked={s.audio_enabled} onChange={(v) => set({ audio_enabled: v })} label="🎤 API de audio (transcribir notas de voz)" description="Convierte las notas de voz del lead en texto para este setter" />
             {s.audio_enabled && (
               <div className="pl-1">
@@ -217,8 +217,8 @@ export default function SetterEdit() {
       )}
 
       {tab === 'comportamiento' && (
-        <Card className="max-w-2xl space-y-6 p-6">
-          <div>
+        <Card data-tour="setter-comportamiento" className="max-w-2xl space-y-6 p-6">
+          <div data-tour="setter-canales">
             <span className="mb-2 block text-sm font-medium text-slate-700">Canales que atiende este setter</span>
             <div className="flex flex-wrap gap-2">
               {CHANNELS.map((ch) => {
@@ -240,7 +240,7 @@ export default function SetterEdit() {
 
           <Input label="Espera antes de responder (debounce, segundos)" type="number" min="5" max="3600" step="5" value={s.debounce_seconds} onChange={(e) => set({ debounce_seconds: Math.min(3600, Math.max(5, Number(e.target.value) || 5)) })} className="!w-48" hint="El bot espera este silencio tras el último mensaje del lead y responde a todo junto, como una persona. Puedes poner desde 5 s hasta 1 h (3600 s). El bot siempre lee la conversación completa antes de responder." />
 
-          <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
+          <div data-tour="setter-insercion" className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
             <span className="block text-sm font-bold text-slate-800">⏳ Tiempo de inserción</span>
             <p className="-mt-1 text-xs text-slate-500">Cuando un lead <b>entra por primera vez</b>, el setter espera estos segundos <b>antes de procesar</b> su primer mensaje. El mensaje entra al sistema pero aún no se responde: pasado ese tiempo se validan <b>todas las reglas</b> (etiquetas incluidas). Sirve para dar margen a que una automatización de GHL que pone una etiqueta (p. ej. para que el setter NO responda) se asigne antes de que el setter decida. La <b>activación por etiqueta</b> se salta esta espera.</p>
             <div className="flex flex-wrap gap-4">
@@ -250,7 +250,7 @@ export default function SetterEdit() {
             <p className="text-[11px] text-slate-400">Si lo dejas en 0, se usa el tiempo de inserción de la conexión (Ajustes). El del setter, si es mayor que 0, manda.</p>
           </div>
 
-          <div className="border-t border-slate-100 pt-5">
+          <div data-tour="setter-calendarios" className="border-t border-slate-100 pt-5">
             <span className="mb-1 block text-sm font-medium text-slate-700">📅 Calendarios que cuentan como «agenda» de este setter</span>
             <p className="mb-2 text-xs text-slate-400">Si el objetivo de este setter es <b>agendar</b>, marca SUS calendarios: solo esas reservas cuentan como agenda para él. Si su objetivo es otro (enviar un link, etc.), déjalo <b>vacío</b> → este setter no mide agendas. La agenda la reclama el setter que atendió la conversación, solo si la reserva cae en un calendario suyo.</p>
             {(() => {
@@ -274,7 +274,7 @@ export default function SetterEdit() {
             })()}
           </div>
 
-          <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+          <div data-tour="setter-test" className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
             <Toggle
               checked={Boolean(s.test_mode)}
               onChange={(v) => set({ test_mode: v })}
@@ -293,7 +293,7 @@ export default function SetterEdit() {
             </div>
           )}
 
-          <div className="border-t border-slate-100 pt-5">
+          <div data-tour="setter-filtro-tags" className="border-t border-slate-100 pt-5">
             <button type="button" onClick={() => setShowTags((v) => !v)} className="mb-2 text-sm font-semibold text-violet-700 hover:underline">
               {showTags ? '▾' : '▸'} 🏷️ Función avanzada: filtrar por etiquetas (responder solo / no responder)
             </button>
@@ -359,7 +359,7 @@ export default function SetterEdit() {
 
       {tab === 'activaciones' && (
         <div className="max-w-2xl">
-          <div className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/40 p-4">
+          <div data-tour="setter-activaciones" className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/40 p-4">
             <Toggle
               checked={Boolean(s.activation_enabled)}
               onChange={(v) => set({ activation_enabled: v })}
@@ -412,7 +412,7 @@ export default function SetterEdit() {
                 {tagMsg && <p className={`text-xs font-medium ${tagMsg.ok ? 'text-emerald-600' : 'text-red-500'}`}>{tagMsg.text}</p>}
 
                 {/* URL DEDICADA para el evento ContactTagUpdate (aparte del webhook de mensajes) */}
-                <div className="rounded-xl border border-violet-200 bg-white p-3">
+                <div data-tour="setter-activ-webhook" className="rounded-xl border border-violet-200 bg-white p-3">
                   <span className="block text-sm font-bold text-slate-800">🔗 Webhook de la etiqueta (ContactTagUpdate)</span>
                   <p className="mt-1 text-xs text-slate-400">
                     En <b>marketplace.gohighlevel.com → tu app → Advanced Settings → Webhooks</b>, busca la fila <b>ContactTagUpdate</b>, actívala y pega esta URL en su campo <b>«Custom webhook URL»</b> (así va por una URL <b>aparte</b> de tus mensajes y no se mezcla). Es la <b>misma URL para todas las subcuentas</b>: el sistema detecta a quién pertenece por el <code>locationId</code> del evento.
@@ -451,7 +451,7 @@ export default function SetterEdit() {
                 </div>
 
                 {/* 📋 Registro de activaciones EN VIVO: quién se activó, cuánto falta para que hable, y el mensaje */}
-                <div className="rounded-xl border border-slate-200 p-3">
+                <div data-tour="setter-activ-registro" className="rounded-xl border border-slate-200 p-3">
                   <div className="mb-2 flex items-center justify-between">
                     <span className="text-xs font-semibold text-slate-600">📋 Registro de activaciones</span>
                     <Button variant="secondary" className="!py-1 text-xs" onClick={loadActivaciones}>Actualizar</Button>
@@ -503,7 +503,7 @@ export default function SetterEdit() {
       )}
 
       {tab === 'seguimientos' && (
-        <div className="max-w-2xl space-y-4">
+        <div data-tour="setter-seguimientos" className="max-w-2xl space-y-4">
           <Banner tone="info">Si el lead deja de responder, el setter retoma la conversación solo. Cada paso se cancela si el lead contesta. Instagram/WhatsApp solo permiten responder dentro de las 24 h del último mensaje del lead.</Banner>
           <Card className="p-5">
             <Toggle
@@ -532,7 +532,7 @@ export default function SetterEdit() {
       )}
 
       {tab === 'arquitecto' && (
-        <div className="max-w-3xl space-y-4">
+        <div data-tour="setter-arquitecto" className="max-w-3xl space-y-4">
           <Banner tone="info">Habla con la IA arquitecta y arma los 3 bloques del prompt. Cuando te proponga la versión final, pulsa «Aplicar» y se guarda en ESTE setter.</Banner>
           <Card className="overflow-hidden p-0">
             <PromptArchitect targetPath={`/api/setters/${id}`} mode="architect" onApplied={load} />

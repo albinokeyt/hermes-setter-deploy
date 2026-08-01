@@ -93,8 +93,8 @@ export default function ConversationDetail() {
       </Link>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="flex h-[70vh] flex-col lg:col-span-2">
-          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
+        <Card data-tour="chat-historial" className="flex h-[70vh] flex-col lg:col-span-2">
+          <div data-tour="chat-cabecera" className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
             <div className="min-w-0">
               <div className="truncate text-sm font-bold text-slate-900">{conv.lead_name || 'Lead sin nombre'}</div>
               <div className="truncate text-xs text-slate-400">
@@ -138,7 +138,7 @@ export default function ConversationDetail() {
             {conv.messages.map((m) => <Bubble key={m.id} m={m} />)}
             <div ref={bottomRef} />
           </div>
-          <form onSubmit={sendManual} className="flex items-center gap-2 border-t border-slate-100 px-4 py-3">
+          <form data-tour="chat-escribir" onSubmit={sendManual} className="flex items-center gap-2 border-t border-slate-100 px-4 py-3">
             <input
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -151,7 +151,7 @@ export default function ConversationDetail() {
 
         <div className="space-y-4">
           {error && <Banner tone="error">{error}</Banner>}
-          <Card className="space-y-4 p-5">
+          <Card data-tour="chat-control" className="space-y-4 p-5">
             <h3 className="text-sm font-semibold text-slate-700">Control</h3>
             <Toggle
               checked={!conv.bot_paused}
@@ -173,7 +173,7 @@ export default function ConversationDetail() {
             )}
           </Card>
 
-          <Card className="p-5">
+          <Card data-tour="chat-memoria" className="p-5">
             <h3 className="mb-2 text-sm font-semibold text-slate-700">Memoria del lead</h3>
             {Object.keys(conv.memory || {}).length === 0 ? (
               <p className="text-xs text-slate-400">El agente aún no ha guardado datos de este lead.</p>
@@ -189,7 +189,7 @@ export default function ConversationDetail() {
             )}
           </Card>
 
-          <Card className="p-5">
+          <Card data-tour="chat-etiquetas-hist" className="p-5">
             <h3 className="mb-2 text-sm font-semibold text-slate-700">Historial de etiquetas</h3>
             {(conv.stage_history || []).length === 0 ? (
               <p className="text-xs text-slate-400">Sin cambios aún.</p>

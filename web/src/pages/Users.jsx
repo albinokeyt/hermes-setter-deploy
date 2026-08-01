@@ -33,7 +33,7 @@ function MyProfile() {
   };
 
   return (
-    <Card className="p-6">
+    <Card data-tour="users-mi-acceso" className="p-6">
       <h3 className="mb-4 text-sm font-bold text-slate-800">Mi acceso</h3>
       <form onSubmit={save} className="space-y-4">
         {msg && <Banner tone={msg.tone}>{msg.text}</Banner>}
@@ -98,7 +98,7 @@ export default function UsersPage() {
         tour="page:usuarios"
         title="Usuarios"
         subtitle={isAdmin ? 'Tu acceso, el equipo del panel y los accesos desde GHL' : 'Tu acceso al panel'}
-        actions={isAdmin && <Button onClick={() => setForm({ username: '', password: '', role: 'user', account_id: '', can_manage_agents: true })}><Plus size={16} /> Nuevo usuario</Button>}
+        actions={isAdmin && <div data-tour="users-nuevo"><Button onClick={() => setForm({ username: '', password: '', role: 'user', account_id: '', can_manage_agents: true })}><Plus size={16} /> Nuevo usuario</Button></div>}
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -143,7 +143,7 @@ export default function UsersPage() {
 
         {isAdmin && (
           <div className="space-y-4">
-            <Card className="overflow-hidden">
+            <Card data-tour="users-panel" className="overflow-hidden">
               <div className="border-b border-slate-100 px-5 py-3.5"><h3 className="text-sm font-bold text-slate-800">Usuarios del panel</h3></div>
               <div className="divide-y divide-slate-50">
                 {(data?.panel || []).map((u) => (
@@ -187,7 +187,7 @@ export default function UsersPage() {
               </div>
             </Card>
 
-            <Card className="overflow-hidden">
+            <Card data-tour="users-portal" className="overflow-hidden">
               <div className="border-b border-slate-100 px-5 py-3.5">
                 <h3 className="text-sm font-bold text-slate-800">Accesos desde GHL (portal)</h3>
                 <p className="mt-0.5 text-xs text-slate-400">Entran con el enlace del menú de GHL; su vista es la de su subcuenta.</p>

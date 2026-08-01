@@ -222,7 +222,7 @@ export default function Archive() {
             {filters.kind === 'messages' && <Button variant="secondary" onClick={download}><Download size={15} /> Descargar CSV</Button>}
           </div>
 
-          <Card className="overflow-hidden">
+          <Card data-tour="archivo-lista" className="overflow-hidden">
             {(() => {
               const isComments = data.kind === 'comments';
               const items = isComments ? (data.comments || []) : (data.messages || []);

@@ -86,7 +86,7 @@ export default function Conversations() {
           subtitle="En cuanto un lead escriba por Instagram o WhatsApp a una cuenta conectada, aparecerá aquí."
         />
       ) : (
-        <Card className="divide-y divide-slate-50 overflow-hidden">
+        <Card data-tour="conv-lista" className="divide-y divide-slate-50 overflow-hidden">
           {rows.map((c) => {
             const ghlUrl = ghlContactUrl(c.location_id, c.ghl_contact_id);
             return (

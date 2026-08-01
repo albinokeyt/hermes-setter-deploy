@@ -121,7 +121,7 @@ export default function Accounts() {
       {accounts.length === 0 && !connForm ? (
         <EmptyState icon={Building2} title="Aún no tienes conexiones" subtitle="Crea una conexión por cada subcuenta de GHL; dentro pondrás sus setters." action={<Button onClick={() => setConnForm(true)}><Plus size={16} /> Crear la primera</Button>} />
       ) : (
-        <div className="space-y-3">
+        <div data-tour="cuentas-lista" className="space-y-3">
           {accounts.map((a) => {
             const connected = a.mode === 'pit' ? Boolean(a.pit_token) : a.oauth_connected;
             const isOpen = open[a.id];

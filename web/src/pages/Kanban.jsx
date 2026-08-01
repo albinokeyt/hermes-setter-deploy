@@ -68,7 +68,7 @@ export default function Kanban() {
         <div style={{ width: boardWidth || '100%', height: 1 }} />
       </div>
 
-      <div ref={boardRef} onScroll={syncFromBoard} className="no-scrollbar -mx-2 flex gap-4 overflow-x-auto px-2">
+      <div data-tour="tags-board" ref={boardRef} onScroll={syncFromBoard} className="no-scrollbar -mx-2 flex gap-4 overflow-x-auto px-2">
         {STAGES.map((s) => {
           const c = col(s.key);
           const total = counts[s.key] ?? c.cards.length;

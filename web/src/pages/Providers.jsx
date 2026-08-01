@@ -191,7 +191,7 @@ export default function Providers() {
           action={<Button onClick={() => setForm({ ...EMPTY })}><Plus size={16} /> Añadir la primera</Button>}
         />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div data-tour="apis-lista" className="grid gap-4 sm:grid-cols-2">
           {providers.map((p) => (
             <Card key={p.id} className="fade-up p-5">
               <div className="flex items-start justify-between">

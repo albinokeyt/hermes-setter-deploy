@@ -46,7 +46,7 @@ export default function SettingsPage() {
 
       {prompts && (
         <div className="mb-4 grid gap-4 lg:grid-cols-2">
-          <Card className="space-y-3 p-6">
+          <Card data-tour="config-guardarrail" className="space-y-3 p-6">
             <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><ShieldHalf size={16} className="text-emerald-600" /> Guardarraíl de seguridad</h3>
             <p className="text-xs text-slate-500">Regla inquebrantable que se aplica a TODOS los setters: evita que inventen datos o actúen como chatbot general. Va por encima de sus prompts.</p>
             <Textarea rows={7} value={prompts.guardrail} onChange={(e) => setPrompts({ ...prompts, guardrail: e.target.value })} />
@@ -55,7 +55,7 @@ export default function SettingsPage() {
               <Button variant="ghost" onClick={() => setPrompts({ ...prompts, guardrail: prompts.guardrail_default })}>Restaurar por defecto</Button>
             </div>
           </Card>
-          <Card className="space-y-3 p-6">
+          <Card data-tour="config-arquitecto" className="space-y-3 p-6">
             <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Wand2 size={16} className="text-violet-600" /> Arquitecto de prompts</h3>
             <p className="text-xs text-slate-500">El "prompt que ayuda a crear los prompts". Define cómo entrevista la IA arquitecta para armar los 3 bloques de cada setter.</p>
             <Textarea rows={7} value={prompts.architect} onChange={(e) => setPrompts({ ...prompts, architect: e.target.value })} />
@@ -64,7 +64,7 @@ export default function SettingsPage() {
               <Button variant="ghost" onClick={() => setPrompts({ ...prompts, architect: prompts.architect_default })}>Restaurar por defecto</Button>
             </div>
           </Card>
-          <Card className="space-y-3 p-6">
+          <Card data-tour="config-corrector" className="space-y-3 p-6">
             <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Wrench size={16} className="text-violet-600" /> Ingeniero / corrector de prompts</h3>
             <p className="text-xs text-slate-500">Cómo el "Importar cambio" del playground AJUSTA un prompt ya existente (ediciones quirúrgicas, sin reescribir de más). Es distinto del arquitecto, que crea desde cero.</p>
             <Textarea rows={7} value={prompts.corrector} onChange={(e) => setPrompts({ ...prompts, corrector: e.target.value })} />
@@ -74,7 +74,7 @@ export default function SettingsPage() {
             </div>
           </Card>
 
-          <Card className="space-y-4 p-6 lg:col-span-2">
+          <Card data-tour="config-modelos" className="space-y-4 p-6 lg:col-span-2">
             <h3 className="text-sm font-bold text-slate-800">Modelos de IA del arquitecto y del corrector</h3>
             <p className="text-xs text-slate-500">Con qué modelo trabaja cada uno (independiente del modelo de chat de cada setter). Si lo dejas vacío, usa el del setter.</p>
             <div className="grid gap-4 sm:grid-cols-2">
@@ -102,7 +102,7 @@ export default function SettingsPage() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="space-y-4">
-          <Card className="space-y-4 p-6">
+          <Card data-tour="config-app" className="space-y-4 p-6">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-slate-800">App de Marketplace de GHL</h3>
               <button onClick={() => setShowGuide(!showGuide)} className="text-xs font-semibold text-violet-600 hover:underline">
@@ -141,7 +141,7 @@ export default function SettingsPage() {
             <Button onClick={save}>{saved ? '✓ Guardado' : 'Guardar credenciales'}</Button>
           </Card>
 
-          <Card className="space-y-3 p-6">
+          <Card data-tour="config-instalacion" className="space-y-3 p-6">
             <h3 className="text-sm font-bold text-slate-800">🔌 Enlace de instalación</h3>
             <p className="text-xs text-slate-500">
               Este es el <b>"clic para instalar"</b>: quien lo abre llega a la pantalla de GoHighLevel para <b>elegir la subcuenta</b> y autorizar; al aceptar, la app queda <b>instalada y conectada</b> en esa subcuenta. Sirve para instalarla tú en un cliente, o para compartírselo a un cliente para que la instale él.
@@ -151,7 +151,7 @@ export default function SettingsPage() {
               : <Banner tone="warn">Primero guarda el <b>Client ID</b> arriba para generar el enlace de instalación.</Banner>}
           </Card>
 
-          <Card className="space-y-4 p-6">
+          <Card data-tour="config-agencia" className="space-y-4 p-6">
             <h3 className="text-sm font-bold text-slate-800">🔗 Enlace de agencia (autoservicio)</h3>
             <p className="text-xs text-slate-500">
               Pégalo <b>UNA vez</b> como <b>Custom Menu Link a nivel agencia</b> en GHL: aparece en todas las subcuentas. Al abrirlo, GHL rellena la subcuenta y el usuario, y Hermes decide solo: si la app no está conectada la manda a instalarla, si está conectada pero sin setter lo crea (pide nombre y correo la primera vez), y si ya existe entra a su panel.
@@ -163,7 +163,7 @@ export default function SettingsPage() {
             <p className="text-xs text-slate-400">Alternativa más estricta: el enlace <b>por setter</b> (en cada setter → Conexión GHL) usa una clave única por subcuenta.</p>
           </Card>
 
-          <Card className="space-y-4 p-6">
+          <Card data-tour="config-urls" className="space-y-4 p-6">
             <h3 className="text-sm font-bold text-slate-800">URLs para pegar en la app de GHL</h3>
             <CopyField
               label="Custom Page URL (acceso blindado con SSO)"
@@ -182,7 +182,7 @@ export default function SettingsPage() {
           </Card>
         </div>
 
-        <Card className="p-6">
+        <Card data-tour="config-eventos" className="p-6">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-bold text-slate-800">Registro de eventos (webhooks)</h3>
             <Button variant="secondary" className="!py-1.5 text-xs" onClick={loadLog}><RefreshCw size={13} /> Actualizar</Button>

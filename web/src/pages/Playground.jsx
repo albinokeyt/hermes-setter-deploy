@@ -162,7 +162,7 @@ export default function Playground() {
         title="Probar agente"
         subtitle="Escribe como si fueras el lead. El bot espera unos segundos (debounce real) y responde en varios mensajes."
         actions={
-          <div className="flex items-center gap-2">
+          <div data-tour="prueba-selector" className="flex items-center gap-2">
             {accounts.length > 1 && (
               <Select value={accountId} onChange={(e) => { setAccountId(e.target.value); setSetterId(''); reset(); }} className="!w-44" title="Conexión">
                 {accounts.map((a) => <option key={a.id} value={a.id}>{a.alias || a.name}</option>)}
@@ -180,7 +180,7 @@ export default function Playground() {
 
       <div className="grid gap-4 lg:grid-cols-4">
         {/* 🗂️ Pruebas guardadas de este setter: retomar, renombrar, borrar; vN = versión del prompt */}
-        <Card className="flex h-[65vh] flex-col overflow-hidden">
+        <Card data-tour="prueba-pruebas" className="flex h-[65vh] flex-col overflow-hidden">
           <button onClick={reset} className="flex items-center justify-center gap-1.5 border-b border-slate-100 px-2 py-2.5 text-xs font-semibold text-violet-600 hover:bg-violet-50">
             <Plus size={14} /> Nueva prueba
           </button>
@@ -204,7 +204,7 @@ export default function Playground() {
           <p className="border-t border-slate-100 px-2.5 py-1.5 text-[10px] text-slate-400">vN = versión del prompt con la que quedó esa prueba.</p>
         </Card>
 
-        <Card className="flex h-[65vh] flex-col lg:col-span-2">
+        <Card data-tour="prueba-chat" className="flex h-[65vh] flex-col lg:col-span-2">
           <div className="scroll-thin flex-1 space-y-3 overflow-y-auto bg-slate-50/50 px-5 py-4">
             {history.length === 0 && (
               <p className="py-16 text-center text-sm text-slate-400">
@@ -244,7 +244,7 @@ export default function Playground() {
 
         <div className="space-y-4">
           {error && <Banner tone="error">{error}</Banner>}
-          <Card className="p-5">
+          <Card data-tour="prueba-decision" className="p-5">
             <h3 className="mb-3 text-sm font-semibold text-slate-700">Decisión del agente</h3>
             {meta ? (
               <div className="space-y-2.5">
@@ -256,7 +256,7 @@ export default function Playground() {
               <p className="text-xs text-slate-400">Habla con el bot y aquí verás qué etiqueta decide y por qué.</p>
             )}
           </Card>
-          <Card className="p-5">
+          <Card data-tour="prueba-memoria" className="p-5">
             <h3 className="mb-3 text-sm font-semibold text-slate-700">Memoria que va construyendo</h3>
             {Object.keys(memory).length === 0 ? (
               <p className="text-xs text-slate-400">Vacía. Cuéntale cosas (tu nombre, tu negocio…) y mira cómo las guarda.</p>
@@ -272,7 +272,7 @@ export default function Playground() {
             )}
           </Card>
 
-          <Card className="p-5">
+          <Card data-tour="prueba-gasto" className="p-5">
             <h3 className="mb-2 text-sm font-semibold text-slate-700">💸 Gastado en pruebas</h3>
             {spend ? (
               <div className="flex items-baseline justify-between">
@@ -297,7 +297,7 @@ export default function Playground() {
             </Card>
           )}
 
-          <Card className="p-5">
+          <Card data-tour="prueba-corregir" className="p-5">
             <h3 className="mb-1 text-sm font-semibold text-slate-700">Ajustar el prompt</h3>
             <p className="mb-3 text-xs text-slate-400">¿Ves algo que mejorar mientras pruebas? Dile los cambios (con imágenes si quieres) y los aplica a los 3 bloques.</p>
             <Button variant="secondary" className="w-full" onClick={() => setImportOpen(true)} disabled={!setterId}>

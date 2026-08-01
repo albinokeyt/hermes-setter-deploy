@@ -106,7 +106,7 @@ export default function AccountEdit() {
         title={isAdmin ? (acc.alias || acc.name) : `Mi panel · ${acc.alias || acc.name}`}
         subtitle={acc.location_id ? `Subcuenta GHL: ${acc.location_id}` : 'Todavía sin subcuenta de GHL conectada'}
         actions={
-          <div className="flex items-center gap-3">
+          <div data-tour="conexion-estado" className="flex items-center gap-3">
             <Toggle checked={acc.bot_enabled} onChange={(v) => set({ bot_enabled: v })} label={acc.bot_enabled ? 'Conexión activa' : 'Conexión apagada'} />
             <Button onClick={save} loading={saving}>{saved ? '✓ Guardado' : 'Guardar'}</Button>
           </div>
@@ -118,9 +118,9 @@ export default function AccountEdit() {
       {searchParams.get('conectada') !== null && searchParams.get('conectada') && <div className="mb-4"><Banner tone="ok">Subcuenta conectada por OAuth correctamente 🎉</Banner></div>}
       {acc.test_mode && <div className="mb-4"><Banner tone="warn">🧪 <b>Modo test activo</b>: los setters solo responden a contactos con la etiqueta <b>{acc.test_tag || 'hermes-test'}</b>.</Banner></div>}
 
-      <div className="mb-5 flex gap-1 rounded-2xl border border-slate-200 bg-white p-1.5 w-fit">
+      <div data-tour="conexion-tabs" className="mb-5 flex gap-1 rounded-2xl border border-slate-200 bg-white p-1.5 w-fit">
         {tabs.map((t) => (
-          <button key={t.key} onClick={() => setTab(t.key)}
+          <button key={t.key} data-tour={`conexion-tab-${t.key}`} onClick={() => setTab(t.key)}
             className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${tab === t.key ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>
             {t.label}
           </button>
@@ -128,7 +128,7 @@ export default function AccountEdit() {
       </div>
 
       {tab === 'setters' && (
-        <div className="max-w-2xl space-y-3">
+        <div data-tour="conexion-setters" className="max-w-2xl space-y-3">
           <Banner tone="info">Los setters de esta conexión se reparten los leads por etiqueta (función avanzada dentro de cada setter). El «principal» atiende a quien no case con ninguno específico.</Banner>
           {!setters ? (
             <div className="py-6 text-center text-sm text-slate-400">Cargando…</div>
@@ -158,7 +158,7 @@ export default function AccountEdit() {
       )}
 
       {tab === 'ajustes' && (
-        <Card className="max-w-2xl space-y-6 p-6">
+        <Card data-tour="conexion-ajustes" className="max-w-2xl space-y-6 p-6">
           {isAdmin && (
             <Input label="Nombre de la conexión (técnico)" value={acc.name} onChange={(e) => set({ name: e.target.value })} hint="Nombre base. Si pones un alias abajo, se muestra el alias en todo el panel." />
           )}
@@ -171,7 +171,7 @@ export default function AccountEdit() {
             </div>
           </div>
           <p className="text-xs text-slate-400">📡 <b>Canales de atención</b>: se eligen <b>por setter</b> (cada setter marca los suyos en su pestaña <b>Comportamiento</b>). Los mensajes de todos los canales se archivan igual; el canal solo decide qué setter responde dónde.</p>
-          <div className="space-y-4 border-t border-slate-100 pt-5">
+          <div data-tour="conexion-horario" className="space-y-4 border-t border-slate-100 pt-5">
             <Toggle checked={!(activeHours.always !== false)} onChange={(v) => set({ active_hours: { ...activeHours, always: !v } })} label="Limitar horario de respuesta" description="Fuera del horario, el bot espera a la próxima apertura" />
             {activeHours.always === false && (
               <div className="grid grid-cols-3 gap-3">
@@ -181,7 +181,7 @@ export default function AccountEdit() {
               </div>
             )}
           </div>
-          <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
+          <div data-tour="conexion-insercion" className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
             <span className="block text-sm font-bold text-slate-800">⏳ Tiempo de inserción (toda la conexión)</span>
             <p className="-mt-1 text-xs text-slate-500">Cuando un lead <b>entra por primera vez</b>, los setters de esta conexión esperan estos segundos <b>antes de procesar</b> su primer mensaje. Así, si una automatización de GHL le pone una etiqueta (p. ej. para que el bot NO responda), da tiempo a que se asigne antes de que el setter valide las reglas. La <b>activación por etiqueta</b> se salta esta espera. Cada setter puede fijar el suyo propio (si es mayor, manda).</p>
             <div className="flex flex-wrap gap-4">
@@ -189,13 +189,13 @@ export default function AccountEdit() {
               <Input label="Reaplicar tras inactividad (horas)" type="number" min="0" max="720" step="1" value={acc.insertion_idle_hours ?? 0} onChange={(e) => set({ insertion_idle_hours: Math.min(720, Math.max(0, Number(e.target.value) || 0)) })} className="!w-56" hint="Si el lead vuelve tras estas horas, se aplica otra vez. 0 = solo la 1ª vez." />
             </div>
           </div>
-          <div className="space-y-4 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+          <div data-tour="conexion-test" className="space-y-4 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
             <Toggle checked={acc.test_mode} onChange={(v) => set({ test_mode: v })} label="🧪 Modo test" description="Los setters SOLO responden a contactos con la etiqueta de prueba" />
             {acc.test_mode && (
               <Input label="Etiqueta de prueba (tag de GHL)" value={acc.test_tag || ''} onChange={(e) => set({ test_tag: e.target.value })} placeholder="hermes-test" hint="Añade este tag a tu contacto en GHL y chatéale: solo los contactos con el tag reciben respuesta." />
             )}
           </div>
-          <div className="border-t border-slate-100 pt-5">
+          <div data-tour="conexion-exclusion" className="border-t border-slate-100 pt-5">
             <Input
               label="🚫 Etiqueta para excluir de las IAs"
               value={acc.exclude_tag || ''}
@@ -204,7 +204,7 @@ export default function AccountEdit() {
               hint="Lo contrario de «responder solo a»: si un contacto de GHL tiene esta etiqueta, NINGÚN setter de esta conexión le responde. Vacío = sin exclusión (al sacar a alguien desde un chat se usa «sin-ia» por defecto)."
             />
           </div>
-          <div className="space-y-4 border-t border-slate-100 pt-5">
+          <div data-tour="conexion-pausa-humano" className="space-y-4 border-t border-slate-100 pt-5">
             <Toggle checked={acc.auto_handoff} onChange={(v) => set({ auto_handoff: v })} label="Pausar bot si un humano interviene" description="Si alguien responde manual desde GHL, el bot se aparta en ese chat" />
             {acc.auto_handoff && (
               <div className="pl-1">
@@ -215,7 +215,7 @@ export default function AccountEdit() {
           </div>
           <p className="border-t border-slate-100 pt-4 text-xs text-slate-400">La lectura de imágenes y la transcripción de audios se configuran <b>por setter</b> (pestaña IA de cada setter), porque cada agente puede usar su propio modelo.</p>
 
-          <div className="space-y-2 border-t border-slate-100 pt-5">
+          <div data-tour="conexion-comentarios" className="space-y-2 border-t border-slate-100 pt-5">
             <span className="block text-sm font-bold text-slate-800">💬 Comentarios de Instagram</span>
             <p className="-mt-1 text-xs text-slate-400">
               En esta subcuenta de GHL crea una automatización con el <b>trigger de comentario de Instagram</b> y un nodo <b>Webhook (POST)</b> a esta URL (no el «Custom Webhook» de pago). <b>No tienes que configurar campos</b>: GHL ya manda el comentario, el autor y el post, y el sistema detecta la subcuenta solo. Es la <b>misma URL para todas las conexiones</b>. Aparecen en <b>Archivo → 💬 Comentarios entrantes</b>.
@@ -263,7 +263,7 @@ export default function AccountEdit() {
         const ctas = Array.isArray(acc.ctas) ? acc.ctas : [];
         const setCta = (i, patch) => set({ ctas: ctas.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
         return (
-          <div className="max-w-2xl space-y-4">
+          <div data-tour="conexion-ctas" className="max-w-2xl space-y-4">
             <Banner tone="info">
               Para anuncios/citas de Instagram: si el <b>primer mensaje</b> del lead <b>contiene</b> una palabra o frase (pueden llevar emojis), el setter <b>espera</b> el tiempo que definas antes de entrar a responder — para no contestar de golpe. Deja la palabra <b>vacía</b> para aplicar la espera a <b>cualquier</b> conversación nueva.
             </Banner>
@@ -286,10 +286,10 @@ export default function AccountEdit() {
         );
       })()}
 
-      {tab === 'accesos' && <AccessManager accountId={id} />}
+      {tab === 'accesos' && <div data-tour="conexion-accesos"><AccessManager accountId={id} /></div>}
 
       {tab === 'conexion' && isAdmin && (
-        <div className="max-w-2xl space-y-4">
+        <div data-tour="conexion-ghl" className="max-w-2xl space-y-4">
           <Card className="space-y-4 p-6">
             <Select label="Modo de conexión" value={acc.mode} onChange={(e) => set({ mode: e.target.value })}>
               <option value="oauth">App de Marketplace (OAuth) — recomendado</option>
