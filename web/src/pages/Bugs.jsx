@@ -27,7 +27,7 @@ const hoy = () => dstrLocal(new Date());
 const hace = (dias) => dstrLocal(new Date(Date.now() - dias * 86400000));
 
 // 📈 Incidencias y resoluciones por día — o por HORAS si el rango es un solo día (solo admin)
-function BugsChart({ from, to, setFrom, setTo, refreshKey }) {
+function BugsChart({ from, to, setFrom, setTo, refreshKey, accountId }) {
   const [data, setData] = useState(null);
   const [preset, setPreset] = useState('30d');
 
@@ -35,7 +35,7 @@ function BugsChart({ from, to, setFrom, setTo, refreshKey }) {
     if (!from || !to || from > to) return;
     let vivo = true; // dos cambios de rango seguidos: la respuesta vieja no debe pisar a la nueva
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    api.get(`/api/bugs/stats?from=${from}&to=${to}&tz=${encodeURIComponent(tz)}`)
+    api.get(`/api/bugs/stats?from=${from}&to=${to}&tz=${encodeURIComponent(tz)}${accountId ? `&account_id=${accountId}` : ''}`)
       .then((r) => {
         if (!vivo) return;
         // eje continuo: horas 00-23 del día, o cada día del rango (los huecos, a 0)
@@ -59,7 +59,7 @@ function BugsChart({ from, to, setFrom, setTo, refreshKey }) {
       })
       .catch(() => { if (vivo) setData([]); });
     return () => { vivo = false; };
-  }, [from, to, refreshKey]);
+  }, [from, to, refreshKey, accountId]);
 
   const aplicar = (key, f, t) => { setPreset(key); setFrom(f); setTo(t); };
 
@@ -124,13 +124,15 @@ export default function Bugs() {
   const [from, setFrom] = useState(hace(29));
   const [to, setTo] = useState(hoy());
   const [fEstado, setFEstado] = useState('');
+  const [fConexion, setFConexion] = useState('');
+  const [cuentas, setCuentas] = useState([]);
   const [fTipo, setFTipo] = useState('');
   const [statsKey, setStatsKey] = useState(0); // re-pinta el gráfico tras resolver/crear
   const fileRef = useRef(null);
 
   const load = () => api.get('/api/bugs').then((r) => { setBugs(r.bugs || []); setStatsKey((k) => k + 1); }).catch(() => setBugs([]));
   const loadAlmacen = () => { if (isAdmin) api.get('/api/bugs/almacen').then(setAlmacen).catch(() => {}); };
-  useEffect(() => { load(); loadAlmacen(); }, [isAdmin]);
+  useEffect(() => { load(); loadAlmacen(); if (isAdmin) api.get('/api/accounts').then(setCuentas).catch(() => {}); }, [isAdmin]);
 
   // comprime la captura en el navegador (máx 1400px) para que suba rápido y no pese
   const addImage = (file) => {
@@ -205,6 +207,8 @@ export default function Bugs() {
     if (to && dia > to) return false;
     if (fEstado && b.status !== fEstado) return false;
     if (fTipo && b.tipo !== fTipo) return false;
+    if (fConexion === 'sin' && b.account_id != null) return false;
+    if (fConexion && fConexion !== 'sin' && String(b.account_id) !== fConexion) return false;
     return true;
   });
 
@@ -212,11 +216,16 @@ export default function Bugs() {
     <div>
       <SectionTitle tour="page:errores" title="🐞 Reportar errores" subtitle={isAdmin ? 'Todos los errores reportados por los usuarios, con su gráfico de incidencias y resoluciones.' : 'Cuéntanos qué falló y lo revisamos. Puedes adjuntar capturas.'} />
 
-      {isAdmin && <BugsChart from={from} to={to} setFrom={setFrom} setTo={setTo} refreshKey={statsKey} />}
+      {isAdmin && <BugsChart from={from} to={to} setFrom={setFrom} setTo={setTo} refreshKey={statsKey} accountId={fConexion} />}
 
       {isAdmin && (
         <div data-tour="bugs-filtros" className="mb-4 flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold text-slate-500">Filtrar:</span>
+          <Select value={fConexion} onChange={(e) => setFConexion(e.target.value)} className="!w-48 !py-2 text-xs" title="Ver solo los reportes de una conexión (a quién solventarle los problemas)">
+            <option value="">Todas las conexiones</option>
+            {cuentas.map((c) => <option key={c.id} value={String(c.id)}>{c.alias || c.name}</option>)}
+            <option value="sin">— Sin conexión (admin) —</option>
+          </Select>
           <Select value={fEstado} onChange={(e) => setFEstado(e.target.value)} className="!w-40 !py-2 text-xs">
             <option value="">Todos los estados</option>
             {ESTADOS.map((e2) => <option key={e2.value} value={e2.value}>{e2.label}</option>)}
@@ -225,8 +234,8 @@ export default function Bugs() {
             <option value="">Todos los tipos</option>
             {TIPOS.map((t) => <option key={t.value} value={t.value}>{TIPO_CORTO[t.value]}</option>)}
           </Select>
-          {(fEstado || fTipo) && (
-            <button onClick={() => { setFEstado(''); setFTipo(''); }} className="text-xs font-semibold text-violet-600 hover:underline">Quitar filtros</button>
+          {(fEstado || fTipo || fConexion) && (
+            <button onClick={() => { setFEstado(''); setFTipo(''); setFConexion(''); }} className="text-xs font-semibold text-violet-600 hover:underline">Quitar filtros</button>
           )}
           <span className="ml-auto text-[11px] text-slate-400">{visibles.length} reporte{visibles.length === 1 ? '' : 's'} en el rango</span>
         </div>

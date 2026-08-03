@@ -74,14 +74,19 @@ export default async function bugRoutes(app) {
     const porHoras = from === to;
     const unit = porHoras ? 'hour' : 'day';
     const fmt = porHoras ? 'HH24:00' : 'YYYY-MM-DD';
+    // filtro opcional por conexion: numero = esa cuenta; 'sin' = reportes sin conexion (del admin)
+    const accRaw = String(req.query?.account_id || '');
+    const accSql = accRaw === 'sin' ? 'AND account_id IS NULL' : /^\d+$/.test(accRaw) ? 'AND account_id = $6' : '';
+    const params = [unit, tz, fmt, from, to, ...(accSql.includes('$6') ? [Number(accRaw)] : [])];
     const bucketsDe = (col) => q(
       `SELECT to_char(date_trunc($1, ${col} AT TIME ZONE $2), $3) AS bucket, COUNT(*)::int AS n
          FROM bug_reports
         WHERE ${col} IS NOT NULL
           AND (${col} AT TIME ZONE $2) >= $4::timestamp
           AND (${col} AT TIME ZONE $2) < (($5::date + 1)::timestamp)
+          ${accSql}
         GROUP BY bucket`,
-      [unit, tz, fmt, from, to]
+      params
     );
     try {
       const [incidencias, resoluciones] = await Promise.all([bucketsDe('created_at'), bucketsDe('resuelto_at')]);
