@@ -8,7 +8,7 @@ export const STAGES = [
   { key: 'agendado', label: 'Agendado', dot: 'bg-teal-500', pill: 'bg-teal-50 text-teal-700 ring-teal-200', hex: '#14b8a6', desc: 'Reservó una cita en el calendario de GHL. Solo aplica si el objetivo del setter es agendar; lo detecta el sistema.' },
   { key: 'agenda_cancelada', label: 'Agenda cancelada', dot: 'bg-rose-400', pill: 'bg-rose-50 text-rose-600 ring-rose-200', hex: '#fb7185', desc: 'Su cita fue cancelada en el calendario de GHL.' },
   { key: 'descartado', label: 'Descartado', dot: 'bg-red-400', pill: 'bg-red-50 text-red-600 ring-red-200', hex: '#f87171', desc: 'No cumple el filtro, no le interesa o es spam; el setter deja de perseguirlo.' },
-  { key: 'atencion_humana', label: 'Requiere atención humana', dot: 'bg-orange-500', pill: 'bg-orange-100 text-orange-700 ring-orange-300', hex: '#f97316', desc: 'La IA detectó que necesita a una persona. Mientras tenga esta etiqueta el bot NO responde; un humano lo atiende y luego lo mueve a otra etiqueta para reactivar.' },
+  { key: 'atencion_humana', label: 'Requiere atención humana', dot: 'bg-orange-500', pill: 'bg-orange-100 text-orange-700 ring-orange-300', hex: '#f97316', desc: 'La IA detectó que necesita a una persona. Mientras tenga este status el bot NO responde; un humano lo atiende y luego lo mueve a otro status para reactivar.' },
 ];
 
 export const stageByKey = (key) => STAGES.find((s) => s.key === key) || STAGES[0];

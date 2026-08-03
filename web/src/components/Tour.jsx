@@ -28,7 +28,7 @@ function buildSteps(me, ctx) {
     { route: '/', sel: 'page:dash', title: 'Dashboard', text: 'Tu resumen general: cuántas personas han escrito, mensajes enviados y recibidos, citas agendadas y lo que llevas gastado en IA.' },
     { route: '/', sel: 'dash-rango', title: 'Elige el periodo', text: 'Con estos botones cambias el rango de fechas (hoy, 7, 30, 90 días o uno personalizado). Todo lo de abajo se recalcula para ese periodo.' },
     { route: '/', sel: 'dash-stats', title: 'Los números clave', text: `Conversaciones nuevas y activas, mensajes recibidos y enviados, y agendas conseguidas.${isAdmin ? ' Como admin también ves el costo de IA (lo que pagas) y lo facturado (lo que cobras): pulsa la tarjeta de costo para ver el desglose.' : ''}` },
-    { route: '/', sel: 'dash-etapas', title: 'Tus leads por etapa', text: 'Cuántos leads hay en cada etapa (nuevo, en conversación, calificado, agendado…). La tarjeta 🚨 avisa si alguien pidió hablar con una persona. Pulsa cualquiera para ir al tablero.' },
+    { route: '/', sel: 'dash-etapas', title: 'Tus leads por status', text: 'Cuántos leads hay en cada status (nuevo, en conversación, calificado, agendado…). La tarjeta 🚨 avisa si alguien pidió hablar con una persona. Pulsa cualquiera para ir al tablero.' },
     { route: '/', sel: 'dash-grafica', title: 'La actividad día a día', text: 'Mensajes recibidos y enviados, leads nuevos y agendas de cada día. De un vistazo ves si la máquina está funcionando.' },
 
     // ── Paso 1 (admin): APIs ──
@@ -86,31 +86,31 @@ function buildSteps(me, ctx) {
     // ── Paso 3: Probar agente ──
     { route: '/prueba', sel: 'page:prueba', title: 'Paso 3: pruébalo aquí', text: 'Antes de soltar a tu asistente, chatea con él como si fueras un cliente. No gasta leads reales y se comporta exactamente igual que en producción.' },
     { route: '/prueba', sel: 'prueba-selector', title: 'Elige a quién probar', text: 'Si tienes varias conexiones o setters, aquí eliges cuál pruebas. «Reiniciar» empieza una conversación de cero.' },
-    { route: '/prueba', sel: 'prueba-pruebas', title: 'Tus pruebas guardadas', text: 'Cada conversación de prueba se guarda: retómala, renómbrala o bórrala. La etiqueta vN te dice con qué versión del prompt quedó — así comparas antes y después.' },
+    { route: '/prueba', sel: 'prueba-pruebas', title: 'Tus pruebas guardadas', text: 'Cada conversación de prueba se guarda: retómala, renómbrala o bórrala. La marca vN te dice con qué versión del prompt quedó — así comparas antes y después.' },
     { route: '/prueba', sel: 'prueba-chat', title: 'El chat de prueba', text: 'Habla aquí como el lead. Prueba a mandar varios mensajes seguidos («hola» … «quería info»): espera unos segundos y responde a todo junto, como hará en la vida real.' },
-    { route: '/prueba', sel: 'prueba-decision', title: 'Qué decidió y por qué', text: 'Tras cada respuesta ves qué etiqueta le puso al lead (nuevo, calificado…) y el motivo. Es la «mente» del asistente en vivo.' },
+    { route: '/prueba', sel: 'prueba-decision', title: 'Qué decidió y por qué', text: 'Tras cada respuesta ves qué status le puso al lead (nuevo, calificado…) y el motivo. Es la «mente» del asistente en vivo.' },
     { route: '/prueba', sel: 'prueba-memoria', title: 'La memoria que construye', text: 'Los datos que va guardando del lead (nombre, negocio, dolor, presupuesto…). Esa memoria la usa en toda la conversación — cuéntale cosas y mira cómo las apunta.' },
     { route: '/prueba', sel: 'prueba-corregir', title: 'Corrígelo con tus palabras', text: '¿Algo no te gustó? Pulsa «Importar cambio» y dile la corrección como a un empleado («no ofrezcas descuento tan pronto»). Reescribe el prompt él solo, con cada versión guardada en el historial.' },
     { route: '/prueba', sel: 'prueba-gasto', title: 'Lo gastado en pruebas', text: 'Las pruebas también consumen IA: aquí ves cuánto llevas gastado en probar y ajustar.' },
 
     // ── Paso 4: Conversaciones ──
     { route: '/conversaciones', sel: 'page:conv', title: 'Paso 4: míralo trabajar', text: 'Todos los chats reales, en tiempo real: qué dijo el lead, qué respondió el asistente y en qué punto va cada uno.' },
-    { route: '/conversaciones', sel: 'conv-filtros', title: 'Encuentra cualquier chat', text: 'Busca por nombre o correo, o filtra por conexión, asistente o etapa. También puedes ver solo los chats donde intervino un humano.' },
-    { route: '/conversaciones', sel: 'conv-lista', title: 'La lista de chats', text: 'Cada fila: quién es, su última actividad, su etapa y quién lo atiende. Pulsa cualquiera para entrar — vamos a entrar a uno.' },
+    { route: '/conversaciones', sel: 'conv-filtros', title: 'Encuentra cualquier chat', text: 'Busca por nombre o correo, o filtra por conexión, asistente o status. También puedes ver solo los chats donde intervino un humano.' },
+    { route: '/conversaciones', sel: 'conv-lista', title: 'La lista de chats', text: 'Cada fila: quién es, su última actividad, su status y quién lo atiende. Pulsa cualquiera para entrar — vamos a entrar a uno.' },
 
     // ── Dentro de un CHAT (real) ──
     ...(convRoute ? [
       { route: convRoute, gate: '/conversaciones', sel: 'chat-cabecera', title: 'Dentro de un chat: la cabecera', text: 'Quién es el lead, por qué canal habla y qué setter lo atiende. «Ir a GHL» abre su ficha en GoHighLevel, y el botón «IA» saca a este contacto de las IAs para siempre (o lo devuelve).' },
       { route: convRoute, gate: '/conversaciones', sel: 'chat-historial', title: 'La conversación completa', text: 'Cada burbuja dice quién habló: el lead, el 🤖 asistente, un 👤 humano o una ⚙️ automatización de GHL. Nada se pierde.' },
       { route: convRoute, gate: '/conversaciones', sel: 'chat-escribir', title: 'Escribir tú, en persona', text: 'Escribe aquí y el mensaje sale como humano: el asistente se aparta automáticamente en este chat para no pisarte.' },
-      { route: convRoute, gate: '/conversaciones', sel: 'chat-control', title: 'El control del chat', text: 'Pausa o reactiva el asistente solo en esta conversación, y cámbiale la etiqueta al lead a mano si hace falta.' },
+      { route: convRoute, gate: '/conversaciones', sel: 'chat-control', title: 'El control del chat', text: 'Pausa o reactiva el asistente solo en esta conversación, y cámbiale el status al lead a mano si hace falta.' },
       { route: convRoute, gate: '/conversaciones', sel: 'chat-memoria', title: 'Su memoria de este lead', text: 'Lo que el asistente sabe de esta persona: nombre, negocio, dolor, acuerdos… Lo usa para no repetir preguntas y sonar humano.' },
-      { route: convRoute, gate: '/conversaciones', sel: 'chat-etiquetas-hist', title: 'El camino del lead', text: 'Por qué etapas pasó y por qué: cada cambio de etiqueta queda registrado con su motivo. Abajo puedes borrar la conversación para que el contacto entre de cero (útil al probar).' },
+      { route: convRoute, gate: '/conversaciones', sel: 'chat-etiquetas-hist', title: 'El camino del lead', text: 'Por qué status pasó y por qué: cada cambio de status queda registrado con su motivo. Abajo puedes borrar la conversación para que el contacto entre de cero (útil al probar).' },
     ] : []),
 
     // ── Etiquetas ──
-    { route: '/etiquetas', sel: 'page:tags', title: 'Etiquetas: tu embudo', text: 'El tablero de leads: el asistente los clasifica solo y aquí los ves por columnas, de nuevo a convertido.' },
-    { route: '/etiquetas', sel: 'tags-board', title: 'El tablero', text: 'Cada columna es una etapa y cada tarjeta un lead. Puedes arrastrar o mover cualquiera a mano, y entrar a su chat desde la tarjeta.' },
+    { route: '/etiquetas', sel: 'page:tags', title: 'Status: tu embudo', text: 'El tablero de leads: el asistente le pone el status a cada uno solo y aquí los ves por columnas, de nuevo a convertido.' },
+    { route: '/etiquetas', sel: 'tags-board', title: 'El tablero', text: 'Cada columna es un status y cada tarjeta un lead. Puedes arrastrar o mover cualquiera a mano, y entrar a su chat desde la tarjeta.' },
 
     // ── Archivo ──
     { route: '/archivo', sel: 'page:archivo', title: 'Archivo', text: 'El historial completo de TODO: mensajes del asistente, de humanos y de automatizaciones, y los comentarios de Instagram. Aunque el bot esté apagado, aquí se guarda todo.' },

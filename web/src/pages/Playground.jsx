@@ -253,7 +253,7 @@ export default function Playground() {
                 {meta.handoff && <Banner tone="warn">El agente pidió pasar a un humano</Banner>}
               </div>
             ) : (
-              <p className="text-xs text-slate-400">Habla con el bot y aquí verás qué etiqueta decide y por qué.</p>
+              <p className="text-xs text-slate-400">Habla con el bot y aquí verás qué status decide y por qué.</p>
             )}
           </Card>
           <Card data-tour="prueba-memoria" className="p-5">

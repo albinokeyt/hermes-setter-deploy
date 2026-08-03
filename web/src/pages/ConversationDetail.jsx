@@ -189,7 +189,7 @@ export default function ConversationDetail() {
               label={conv.bot_paused ? 'Bot en pausa' : 'Bot activo'}
               description={conv.bot_paused ? 'Un humano está al mando de este chat' : 'El setter responde automáticamente'}
             />
-            <Select label="Etiqueta" value={conv.stage} onChange={(e) => update({ stage: e.target.value })}>
+            <Select label="Status" value={conv.stage} onChange={(e) => update({ stage: e.target.value })}>
               {STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
             </Select>
             <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -220,7 +220,7 @@ export default function ConversationDetail() {
           </Card>
 
           <Card data-tour="chat-etiquetas-hist" className="p-5">
-            <h3 className="mb-2 text-sm font-semibold text-slate-700">Historial de etiquetas</h3>
+            <h3 className="mb-2 text-sm font-semibold text-slate-700">Historial de status</h3>
             {(conv.stage_history || []).length === 0 ? (
               <p className="text-xs text-slate-400">Sin cambios aún.</p>
             ) : (

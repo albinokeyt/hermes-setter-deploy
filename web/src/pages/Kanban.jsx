@@ -61,7 +61,7 @@ export default function Kanban() {
 
   return (
     <div>
-      <SectionTitle tour="page:tags" title="Etiquetas" subtitle="Tu pipeline de leads: de nuevo a convertido" />
+      <SectionTitle tour="page:tags" title="Status" subtitle="Tu pipeline de leads: de nuevo a convertido" />
 
       {/* Barra de desplazamiento horizontal ARRIBA (para no perseguirla cuando hay muchos leads) */}
       <div ref={topRef} onScroll={syncFromTop} className="scroll-thin mb-2 overflow-x-auto overflow-y-hidden">

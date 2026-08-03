@@ -69,7 +69,7 @@ export default function Conversations() {
           </Select>
         )}
         <Select value={filters.stage} onChange={(e) => setFilters({ ...filters, stage: e.target.value })} className="!w-44">
-          <option value="">Todas las etiquetas</option>
+          <option value="">Todos los status</option>
           {STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
         </Select>
         <Select value={filters.human} onChange={(e) => setFilters({ ...filters, human: e.target.value })} className="!w-44" title="Quién ha hablado">

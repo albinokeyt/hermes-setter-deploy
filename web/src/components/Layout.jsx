@@ -88,7 +88,7 @@ export default function Layout() {
   const nav = [
     { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
     { to: '/conversaciones', label: 'Conversaciones', icon: MessagesSquare },
-    { to: '/etiquetas', label: 'Etiquetas', icon: Tags },
+    { to: '/etiquetas', label: 'Status', icon: Tags },
     ...(isAdmin
       ? [
           { to: '/cuentas', label: 'Conexiones', icon: Building2 },
