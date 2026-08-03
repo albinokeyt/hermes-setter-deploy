@@ -123,6 +123,8 @@ function buildSteps(me, ctx) {
 
     // ── Errores ──
     { route: '/errores', sel: 'page:errores', title: 'Reportar error', text: '¿Algo falló? Cuéntanoslo aquí. Nada se pierde: cada reporte queda registrado con su estado.' },
+    { route: '/errores', sel: 'bugs-grafico', adminOnly: true, title: 'El pulso de las incidencias', text: 'Incidencias que entran y resoluciones que salen, por día — y si eliges un solo día, por horas. Cambia el rango con los botones o las fechas.' },
+    { route: '/errores', sel: 'bugs-filtros', adminOnly: true, title: 'Filtra los reportes', text: 'Por estado (abierto, en curso, resuelto) y por tipo de error. El rango de fechas del gráfico también filtra la lista de abajo.' },
     { route: '/errores', sel: 'bugs-form', title: 'El formulario', text: 'Elige el tipo de error, cuenta qué pasó y adjunta capturas de pantalla si quieres. Cuantos más detalles, más rápido se arregla.' },
     { route: '/errores', sel: 'bugs-lista', title: 'Tus reportes y las respuestas', text: 'Aquí ves cada reporte, su estado (abierto o resuelto) y la 💬 respuesta del equipo cuando llegue — todo dentro del propio reporte.' },
 

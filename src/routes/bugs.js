@@ -5,6 +5,7 @@ import { accessibleAccountIds, requireAdmin } from '../lib/session.js';
 // (los de su conexión). El admin los ve todos (fecha, usuario, subcuenta, tipo), responde,
 // los marca resueltos y puede VACIAR todas las capturas para liberar espacio en disco.
 const TIPOS = new Set(['sistema', 'setter', 'facturacion', 'otro']);
+const ESTADOS = new Set(['abierto', 'en_curso', 'resuelto']);
 const MAX_IMGS = 5;
 const MAX_IMG_BYTES = 2_500_000; // por captura (el cliente ya comprime)
 
@@ -49,8 +50,8 @@ export default async function bugRoutes(app) {
   app.get('/api/bugs', async (req) => {
     const ids = await accessibleAccountIds(req); // null = admin (todos)
     const rows = await q(
-      `SELECT b.id, b.account_id, b.reporter, b.tipo, b.descripcion, b.status, b.created_at,
-              b.respuesta, b.respondida_at,
+      `SELECT b.id, b.account_id, b.reporter, b.tipo, b.tipo_original, b.descripcion, b.status, b.created_at,
+              b.respuesta, b.respondida_at, b.resuelto_at,
               (jsonb_array_length(b.imagenes) + CASE WHEN b.imagen <> '' THEN 1 ELSE 0 END) AS n_imagenes,
               COALESCE(NULLIF(a.alias, ''), a.name) AS account_name
          FROM bug_reports b LEFT JOIN accounts a ON a.id = b.account_id
@@ -59,6 +60,36 @@ export default async function bugRoutes(app) {
       ids ? [ids] : []
     );
     return { bugs: rows };
+  });
+
+  // 📈 gráfico del admin: incidencias (creadas) y resoluciones por día — o por HORAS si el rango
+  // es un solo día. Las fechas llegan como YYYY-MM-DD en la zona horaria del panel (param tz).
+  app.get('/api/bugs/stats', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return reply;
+    const okDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d);
+    const from = String(req.query?.from || '');
+    const to = String(req.query?.to || '');
+    if (!okDate(from) || !okDate(to) || from > to) return reply.code(400).send({ error: 'Rango de fechas inválido' });
+    const tz = /^[A-Za-z0-9_/+-]{1,50}$/.test(String(req.query?.tz || '')) ? String(req.query.tz) : 'UTC';
+    const porHoras = from === to;
+    const unit = porHoras ? 'hour' : 'day';
+    const fmt = porHoras ? 'HH24:00' : 'YYYY-MM-DD';
+    const bucketsDe = (col) => q(
+      `SELECT to_char(date_trunc($1, ${col} AT TIME ZONE $2), $3) AS bucket, COUNT(*)::int AS n
+         FROM bug_reports
+        WHERE ${col} IS NOT NULL
+          AND (${col} AT TIME ZONE $2) >= $4::timestamp
+          AND (${col} AT TIME ZONE $2) < (($5::date + 1)::timestamp)
+        GROUP BY bucket`,
+      [unit, tz, fmt, from, to]
+    );
+    try {
+      const [incidencias, resoluciones] = await Promise.all([bucketsDe('created_at'), bucketsDe('resuelto_at')]);
+      return { por_horas: porHoras, incidencias, resoluciones };
+    } catch {
+      // una tz con forma valida pero inexistente ('Foo/Bar') hace que Postgres lance: 400, no 500
+      return reply.code(400).send({ error: 'Zona horaria no válida' });
+    }
   });
 
   // 🧹 espacio que ocupan las capturas (solo admin) + vaciado total para liberar disco
@@ -121,14 +152,28 @@ export default async function bugRoutes(app) {
     // SET dinámico: cambiar el estado no pisa la respuesta, y responder no pisa el estado.
     const sets = [];
     const vals = [id];
-    if ('status' in b) { vals.push(b.status === 'resuelto' ? 'resuelto' : 'abierto'); sets.push(`status = $${vals.length}`); }
+    if ('status' in b) {
+      if (!ESTADOS.has(b.status)) return reply.code(400).send({ error: 'Estado no válido' });
+      vals.push(b.status);
+      sets.push(`status = $${vals.length}`);
+      // resuelto_at alimenta el gráfico de resoluciones: se fija al resolver y se limpia al reabrir
+      sets.push(`resuelto_at = CASE WHEN $${vals.length} = 'resuelto' THEN COALESCE(resuelto_at, now()) ELSE NULL END`);
+    }
+    // reclasificar: el admin corrige el tipo (p. ej. llegó como "sistema" y era "setter").
+    // La PRIMERA vez se guarda el tipo original para que se vea que se cambió.
+    if ('tipo' in b) {
+      if (!TIPOS.has(b.tipo)) return reply.code(400).send({ error: 'Tipo de error no válido' });
+      vals.push(b.tipo);
+      sets.push(`tipo_original = CASE WHEN tipo_original = '' AND tipo <> $${vals.length} THEN tipo ELSE tipo_original END`);
+      sets.push(`tipo = $${vals.length}`);
+    }
     if ('respuesta' in b) {
       vals.push(String(b.respuesta || '').trim().slice(0, 4000));
       sets.push(`respuesta = $${vals.length}`);
       sets.push(`respondida_at = CASE WHEN $${vals.length} = '' THEN NULL ELSE now() END`);
     }
     if (!sets.length) return reply.code(400).send({ error: 'Nada que actualizar' });
-    const row = await one(`UPDATE bug_reports SET ${sets.join(', ')} WHERE id = $1 RETURNING id, status, respuesta, respondida_at`, vals);
+    const row = await one(`UPDATE bug_reports SET ${sets.join(', ')} WHERE id = $1 RETURNING id, status, tipo, tipo_original, respuesta, respondida_at, resuelto_at`, vals);
     if (!row) return reply.code(404).send({ error: 'No encontrado' });
     return row;
   });
