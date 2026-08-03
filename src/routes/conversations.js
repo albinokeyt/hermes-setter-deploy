@@ -75,8 +75,20 @@ export default async function conversationRoutes(app) {
     // también debe (mismo criterio que dashboard.js) — un cliente vería el margen en devtools.
     const visibles = req.auth?.role === 'admin'
       ? messages
-      : messages.map(({ gasto_prompt_tokens, gasto_completion_tokens, gasto_usd, gasto_modelo, ...m }) => m);
+      : messages.map(({ gasto_prompt_tokens, gasto_completion_tokens, gasto_usd, gasto_modelo, gasto_debug_id, ...m }) => m);
     return { ...conv, messages: visibles, stage_history: history };
+  });
+
+  // 🔍 detalle de la llamada de IA que generó un mensaje (input completo + respuesta cruda): SOLO admin
+  app.get('/api/mensajes/:id/ia-debug', async (req, reply) => {
+    if (req.auth?.role !== 'admin') return reply.code(403).send({ error: 'Solo para administradores' });
+    const mid = Number(req.params.id);
+    if (!Number.isInteger(mid) || mid <= 0 || mid > 2147483647) return reply.code(404).send({ error: 'No encontrado' });
+    const m = await one(`SELECT gasto_debug_id FROM messages WHERE id = $1`, [mid]);
+    if (!m?.gasto_debug_id) return reply.code(404).send({ error: 'Este mensaje no tiene detalle de IA guardado' });
+    const d = await one(`SELECT * FROM llm_debug WHERE id = $1`, [m.gasto_debug_id]);
+    if (!d) return reply.code(404).send({ error: 'El detalle ya fue podado (se guarda 30 días)' });
+    return d;
   });
 
   app.put('/api/conversations/:id', async (req, reply) => {

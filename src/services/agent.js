@@ -302,7 +302,9 @@ export async function generateReply({ account, provider, conversation, history, 
   }
   const parsed = parseAgentJson(content, account);
   if (!parsed.mensajes.length) throw new Error('el agente no generó mensajes');
-  return { ...parsed, usage, model: modelUsed };
+  // debug: el INPUT completo tal cual se envió y la respuesta CRUDA — el admin lo inspecciona por
+  // burbuja (🔍) para analizar el gasto y entender por qué respondió así
+  return { ...parsed, usage, model: modelUsed, debug: { input: messages, raw: String(content || '') } };
 }
 
 // Antes de enviar un seguimiento: mira los últimos mensajes y decide si aún tiene sentido.

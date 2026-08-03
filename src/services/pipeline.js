@@ -445,6 +445,33 @@ export async function recordUsage(accountId, conversationId, provider, model, us
   }
 }
 
+// 🔍 Detalle completo de la llamada de IA (input íntegro + respuesta cruda): el admin lo abre por
+// burbuja para analizar el gasto y entender la respuesta. Se poda a 30 días.
+async function saveLlmDebug({ convId, source, result, activacion = '', historyCount = null, cost = null }) {
+  try {
+    if (!result?.debug) return null;
+    const u = result.usage || {};
+    const row = await one(
+      `INSERT INTO llm_debug (conversation_id, source, model, prompt_tokens, completion_tokens, cost_usd, history_count, activacion, input, output)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) RETURNING id`,
+      [
+        convId, source, result.model || '',
+        Number(u.prompt_tokens ?? u.input_tokens) || null,
+        Number(u.completion_tokens ?? u.output_tokens) || null,
+        cost, historyCount, String(activacion || '').slice(0, 1500),
+        JSON.stringify(result.debug.input || []),
+        String(result.debug.raw || '').slice(0, 100_000),
+      ]
+    );
+    // poda en su propio try: si fallara, el id recién insertado se devuelve igual (el enlace vive)
+    try { await q(`DELETE FROM llm_debug WHERE created_at < now() - interval '30 days'`); } catch { /* se poda en la siguiente */ }
+    return row?.id || null;
+  } catch (err) {
+    await logEvent('error_debug_ia', { conv: convId, error: err.message }).catch(() => {});
+    return null;
+  }
+}
+
 // ─── Entrada de mensajes del lead ────────────────────────────────────────────
 
 export async function handleInbound(account, evt) {
@@ -1220,6 +1247,14 @@ export async function processDebounce(job) {
     return;
   }
   const gasto = await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'reply', variantId, setterId);
+  const debugId = await saveLlmDebug({
+    convId: conv.id,
+    source: activacion ? 'activacion' : 'reply',
+    result,
+    activacion: activacion ? activContexto || '' : '',
+    historyCount: Array.isArray(history) ? history.length : null,
+    cost: gasto?.cost ?? null,
+  });
 
   // ¿escribió algo nuevo mientras pensábamos? → re-debounce, no enviamos nada
   if ((await lastInboundId(conversationId)) !== snapshotId) {
@@ -1244,7 +1279,7 @@ export async function processDebounce(job) {
       'send',
       {
         conversationId, body: result.mensajes[i], snapshotId, source: 'bot', bypassPause: result.handoff,
-        gasto: i === 0 && gasto ? { pt: gasto.pt, ct: gasto.ct, usd: gasto.cost, modelo: result.model || '' } : null,
+        gasto: i === 0 && (gasto || debugId) ? { pt: gasto?.pt, ct: gasto?.ct, usd: gasto?.cost, modelo: result.model || '', debugId } : null,
       },
       { delay: cursor }
     );
@@ -1298,10 +1333,10 @@ export async function processSend(job) {
     if (!ghlMessageId) await logEvent('envio_sin_message_id', { conv: conv.id, keys: Object.keys(res || {}) });
     if (ghlMessageId) await redis.setex(`sent:${ghlMessageId}`, 86400, '1');
     await q(
-      `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id, gasto_prompt_tokens, gasto_completion_tokens, gasto_usd, gasto_modelo)
-       VALUES ($1, 'outbound', $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id, gasto_prompt_tokens, gasto_completion_tokens, gasto_usd, gasto_modelo, gasto_debug_id)
+       VALUES ($1, 'outbound', $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (ghl_message_id) WHERE ghl_message_id IS NOT NULL DO NOTHING`,
-      [conv.id, source || 'bot', body, ghlMessageId, gasto?.pt ?? null, gasto?.ct ?? null, gasto?.usd ?? null, gasto?.modelo || null]
+      [conv.id, source || 'bot', body, ghlMessageId, gasto?.pt ?? null, gasto?.ct ?? null, gasto?.usd ?? null, gasto?.modelo || null, gasto?.debugId ?? null]
     );
     await q(`UPDATE conversations SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
   } catch (err) {
@@ -1441,6 +1476,11 @@ export async function processFollowup(job) {
   }
   await redis.del(`furetry:${conversationId}`);
   const gastoFu = await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'seguimiento', variantId, setterId);
+  const debugIdFu = await saveLlmDebug({
+    convId: conv.id, source: 'seguimiento', result,
+    historyCount: Array.isArray(history) ? history.length : null,
+    cost: gastoFu?.cost ?? null,
+  });
 
   // ¿el lead respondió mientras generábamos? → el ciclo normal (debounce) responde; este seguimiento sobra
   if ((await lastInboundId(conversationId)) !== snapshotId) return;
@@ -1450,7 +1490,7 @@ export async function processFollowup(job) {
     cursor += typingDelayMs(result.mensajes[i], i);
     await sendQueue.add('send', {
       conversationId, body: result.mensajes[i], snapshotId, source: 'seguimiento',
-      gasto: i === 0 && gastoFu ? { pt: gastoFu.pt, ct: gastoFu.ct, usd: gastoFu.cost, modelo: result.model || '' } : null,
+      gasto: i === 0 && (gastoFu || debugIdFu) ? { pt: gastoFu?.pt, ct: gastoFu?.ct, usd: gastoFu?.cost, modelo: result.model || '', debugId: debugIdFu } : null,
     }, { delay: cursor });
   }
 

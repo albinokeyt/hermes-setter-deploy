@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Send, Bot, User, Clock, ExternalLink, Ban, X, Trash2 } from 'lucide-react';
+import { ArrowLeft, Send, Clock, ExternalLink, Ban, X, Trash2 } from 'lucide-react';
 import { api, timeAgo, ghlContactUrl } from '../api.js';
 import { useMe } from '../components/Layout.jsx';
 import { STAGES, CHANNEL_LABEL, stageByKey } from '../stages.js';
@@ -16,7 +16,7 @@ function costeLinea(m) {
   return `${pt.toLocaleString('es-ES')}→${ct.toLocaleString('es-ES')} tok${fmt ? ` · ${fmt}` : ''}${m.gasto_modelo ? ` · ${m.gasto_modelo}` : ''}`;
 }
 
-function Bubble({ m, showCost }) {
+function Bubble({ m, showCost, onDebug }) {
   const mine = m.direction === 'outbound';
   const human = m.source === 'humano';
   const auto = m.source === 'automatizacion'; // workflow de GHL: ni el setter ni una persona
@@ -37,9 +37,14 @@ function Bubble({ m, showCost }) {
           {sourceLabel && <span>{sourceLabel} ·</span>}
           <span>{new Date(m.created_at).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
         </div>
-        {showCost && mine && !human && !auto && costeLinea(m) && (
-          <div className={`mt-0.5 text-[10px] ${meta}`} title="Tokens de entrada→salida y costo de la llamada de IA que generó esta tanda de mensajes">
-            🔢 {costeLinea(m)}
+        {showCost && mine && !human && !auto && (costeLinea(m) || m.gasto_debug_id) && (
+          <div className={`mt-0.5 flex items-center gap-1.5 text-[10px] ${meta}`} title="Tokens de entrada→salida y costo de la llamada de IA que generó esta tanda de mensajes">
+            {costeLinea(m) && <span>🔢 {costeLinea(m)}</span>}
+            {m.gasto_debug_id && onDebug && (
+              <button onClick={() => onDebug(m)} className="rounded bg-black/15 px-1 font-semibold hover:bg-black/25" title="Ver el input completo a la IA, su respuesta cruda y el detalle del gasto">
+                🔍 detalle
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -56,6 +61,7 @@ export default function ConversationDetail() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [excludeOpen, setExcludeOpen] = useState(false);
+  const [iaDebug, setIaDebug] = useState(null); // detalle de la llamada de IA abierta en modal
   const [excluding, setExcluding] = useState(false);
   const bottomRef = useRef(null);
 
@@ -85,6 +91,13 @@ export default function ConversationDetail() {
     } finally {
       setExcluding(false);
     }
+  };
+
+  // 🔍 detalle de la llamada de IA que generó esa burbuja (input completo, respuesta cruda, gasto)
+  const openDebug = async (m) => {
+    setIaDebug({ cargando: true });
+    try { setIaDebug(await api.get(`/api/mensajes/${m.id}/ia-debug`)); }
+    catch (err) { setIaDebug({ error: err.message }); }
   };
 
   const sendManual = async (e) => {
@@ -152,7 +165,7 @@ export default function ConversationDetail() {
             </div>
           </div>
           <div className="scroll-thin flex-1 space-y-3 overflow-y-auto bg-slate-50/50 px-5 py-4">
-            {conv.messages.map((m) => <Bubble key={m.id} m={m} showCost={me?.role === 'admin'} />)}
+            {conv.messages.map((m) => <Bubble key={m.id} m={m} showCost={me?.role === 'admin'} onDebug={me?.role === 'admin' ? openDebug : null} />)}
             <div ref={bottomRef} />
           </div>
           <form data-tour="chat-escribir" onSubmit={sendManual} className="flex items-center gap-2 border-t border-slate-100 px-4 py-3">
@@ -228,6 +241,60 @@ export default function ConversationDetail() {
           </button>
         </div>
       </div>
+
+      {iaDebug && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setIaDebug(null)}>
+          <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
+              <h3 className="text-sm font-bold text-slate-800">🔍 Detalle de la llamada de IA</h3>
+              <button onClick={() => setIaDebug(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
+            </div>
+            <div className="scroll-thin flex-1 space-y-3 overflow-y-auto p-5">
+              {iaDebug.cargando && <p className="py-8 text-center text-sm text-slate-400">Cargando…</p>}
+              {iaDebug.error && <Banner tone="error">{iaDebug.error}</Banner>}
+              {!iaDebug.cargando && !iaDebug.error && (
+                <>
+                  <div className="flex flex-wrap gap-2 text-[11px]">
+                    <span className="rounded-md bg-violet-50 px-2 py-1 font-semibold text-violet-700">
+                      {iaDebug.source === 'seguimiento' ? '🔁 Seguimiento' : iaDebug.source === 'activacion' ? '⚡ Activación por etiqueta' : '💬 Respuesta al lead'}
+                    </span>
+                    {iaDebug.model && <span className="rounded-md bg-slate-100 px-2 py-1 font-semibold text-slate-600">{iaDebug.model}</span>}
+                    <span className="rounded-md bg-blue-50 px-2 py-1 font-semibold text-blue-700">
+                      {Number(iaDebug.prompt_tokens || 0).toLocaleString('es-ES')} tok entrada → {Number(iaDebug.completion_tokens || 0).toLocaleString('es-ES')} salida
+                    </span>
+                    {iaDebug.cost_usd != null && <span className="rounded-md bg-emerald-50 px-2 py-1 font-semibold text-emerald-700">${Number(iaDebug.cost_usd).toFixed(4)}</span>}
+                    {iaDebug.history_count != null && <span className="rounded-md bg-amber-50 px-2 py-1 font-semibold text-amber-700">📜 leyó {iaDebug.history_count} mensajes de historial</span>}
+                    <span className="px-1 py-1 text-slate-400">{new Date(iaDebug.created_at).toLocaleString('es-ES')}</span>
+                  </div>
+                  {iaDebug.activacion && (
+                    <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3 text-xs text-slate-700">
+                      <b>🧠 Contexto de la etiqueta activadora:</b> {iaDebug.activacion}
+                    </div>
+                  )}
+                  <details className="rounded-xl border border-slate-200">
+                    <summary className="cursor-pointer px-3 py-2 text-xs font-bold text-slate-700">📥 Input completo enviado a la IA ({(iaDebug.input || []).length} bloques)</summary>
+                    <div className="scroll-thin max-h-[45vh] space-y-2 overflow-y-auto border-t border-slate-100 p-3">
+                      {(iaDebug.input || []).map((b, i) => (
+                        <details key={i} open={b.role !== 'system'} className="rounded-lg bg-slate-50">
+                          <summary className="cursor-pointer px-2.5 py-1.5 text-[11px] font-bold text-slate-600">
+                            {b.role === 'system' ? '🧠 Sistema (prompt completo del setter)' : b.role === 'assistant' ? '🤖 Setter (mensaje previo)' : '👤 Lead / orden'}
+                            <span className="ml-2 font-normal text-slate-400">{String(b.content || '').length.toLocaleString('es-ES')} caracteres</span>
+                          </summary>
+                          <pre className="scroll-thin max-h-72 overflow-auto whitespace-pre-wrap border-t border-slate-200/60 px-2.5 py-2 text-[10px] leading-relaxed text-slate-700">{String(b.content || '')}</pre>
+                        </details>
+                      ))}
+                    </div>
+                  </details>
+                  <details className="rounded-xl border border-slate-200">
+                    <summary className="cursor-pointer px-3 py-2 text-xs font-bold text-slate-700">📤 Respuesta cruda de la IA (el JSON del que salieron los mensajes)</summary>
+                    <pre className="scroll-thin max-h-72 overflow-auto whitespace-pre-wrap border-t border-slate-100 px-3 py-2 text-[10px] leading-relaxed text-slate-700">{iaDebug.output || '(vacía)'}</pre>
+                  </details>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {excludeOpen && (() => {
         const excluded = conv.paused_by === 'excluido';
