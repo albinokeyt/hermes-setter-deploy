@@ -67,8 +67,10 @@ function outputSpec() {
   "etiqueta": "en_conversacion",
   "motivo": "una frase corta de por qué esa etiqueta",
   "memoria": { "campo": "solo datos NUEVOS o cambiados del lead (nombre, negocio, dolor, presupuesto, objeciones, acuerdos)" },
-  "handoff": false
-}`;
+  "handoff": false,
+  "proximo_contacto_horas": null
+}
+Sobre "proximo_contacto_horas": si en la conversación queda COMPROMETIDO un momento concreto para que TÚ vuelvas a escribirle (lo prometes tú o lo pide el lead: «te escribo mañana» → 24, «hablamos esta tarde» → 5, «la semana que viene» → 168), pon el número de HORAS desde ahora hasta ese momento — el sistema reprogramará tu siguiente mensaje para CUMPLIRLO (si prometes un tiempo y escribes antes, quedas fatal). Sin compromiso de tiempo → null.`;
 }
 
 // Limpia el nombre del perfil del lead para el prompt: fuera emojis/símbolos decorativos.
@@ -228,12 +230,15 @@ export function parseAgentJson(content, account) {
   }
   const etiqueta = STAGE_KEYS.includes(parsed.etiqueta) && !SYSTEM_STAGES.includes(parsed.etiqueta) ? parsed.etiqueta : null;
   const memoria = parsed.memoria && typeof parsed.memoria === 'object' && !Array.isArray(parsed.memoria) ? parsed.memoria : {};
+  // compromiso de recontacto («te escribo mañana» → 24): entre 15 min y 30 días, si no null
+  const pch = Number(parsed.proximo_contacto_horas);
   return {
     mensajes,
     etiqueta,
     motivo: String(parsed.motivo || '').slice(0, 300),
     memoria,
     handoff: Boolean(parsed.handoff),
+    proximoContactoHoras: Number.isFinite(pch) && pch >= 0.25 && pch <= 720 ? pch : null,
   };
 }
 

@@ -396,8 +396,10 @@ export async function invalidateContactTags(accountId, contactId) {
 // Registra tokens y coste de cada llamada al LLM. OpenRouter devuelve el coste
 // real (usage.cost, USD); para el resto se estima con los precios opcionales
 // del proveedor ($ por 1M de tokens).
+// Devuelve { pt, ct, cost, billed } para que el llamador pueda estampar el gasto en el propio
+// mensaje (el admin lo ve por burbuja en el chat y decide si el modelo le da la talla).
 export async function recordUsage(accountId, conversationId, provider, model, usage, source, variantId = null, setterId = null) {
-  if (!usage) return;
+  if (!usage) return null;
   try {
     // el audio reporta input_tokens/output_tokens; el chat prompt_tokens/completion_tokens
     const pt = Number(usage.prompt_tokens ?? usage.input_tokens) || 0;
@@ -436,8 +438,10 @@ export async function recordUsage(accountId, conversationId, provider, model, us
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [accountId, conversationId, variantId, setterId, model || '', pt, ct, cost, billed, source]
     );
+    return { pt, ct, cost, billed };
   } catch (err) {
     console.error('[usage]', err.message);
+    return null;
   }
 }
 
@@ -1215,7 +1219,7 @@ export async function processDebounce(job) {
     }
     return;
   }
-  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'reply', variantId, setterId);
+  const gasto = await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'reply', variantId, setterId);
 
   // ¿escribió algo nuevo mientras pensábamos? → re-debounce, no enviamos nada
   if ((await lastInboundId(conversationId)) !== snapshotId) {
@@ -1234,10 +1238,14 @@ export async function processDebounce(job) {
   let cursor = 0;
   for (let i = 0; i < result.mensajes.length; i++) {
     cursor += typingDelayMs(result.mensajes[i], i);
-    // bypassPause: los mensajes de despedida del handoff deben salir aunque el bot ya esté en pausa
+    // bypassPause: los mensajes de despedida del handoff deben salir aunque el bot ya esté en pausa.
+    // El gasto de la llamada LLM viaja SOLO en el primer mensaje de la tanda (una llamada = una tanda).
     await sendQueue.add(
       'send',
-      { conversationId, body: result.mensajes[i], snapshotId, source: 'bot', bypassPause: result.handoff },
+      {
+        conversationId, body: result.mensajes[i], snapshotId, source: 'bot', bypassPause: result.handoff,
+        gasto: i === 0 && gasto ? { pt: gasto.pt, ct: gasto.ct, usd: gasto.cost, modelo: result.model || '' } : null,
+      },
       { delay: cursor }
     );
   }
@@ -1256,12 +1264,12 @@ export async function processDebounce(job) {
     // lead descartado: no programamos seguimientos ni lo perseguimos
     await redis.del(fuKey(conv.id));
   } else {
-    await scheduleNextFollowup(account, { ...conv, followup_step: 0 }, cursor);
+    await scheduleNextFollowup(account, { ...conv, followup_step: 0 }, cursor, result.proximoContactoHoras || null);
   }
 }
 
 export async function processSend(job) {
-  const { conversationId, body, snapshotId, source, bypassPause } = job.data;
+  const { conversationId, body, snapshotId, source, bypassPause, gasto } = job.data;
 
   // idempotencia: sendQueue reintenta (attempts: 2); si ya enviamos en el intento
   // anterior y falló solo la contabilidad, no volvemos a mandar el mensaje al lead
@@ -1290,9 +1298,10 @@ export async function processSend(job) {
     if (!ghlMessageId) await logEvent('envio_sin_message_id', { conv: conv.id, keys: Object.keys(res || {}) });
     if (ghlMessageId) await redis.setex(`sent:${ghlMessageId}`, 86400, '1');
     await q(
-      `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id) VALUES ($1, 'outbound', $2, $3, $4)
+      `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id, gasto_prompt_tokens, gasto_completion_tokens, gasto_usd, gasto_modelo)
+       VALUES ($1, 'outbound', $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (ghl_message_id) WHERE ghl_message_id IS NOT NULL DO NOTHING`,
-      [conv.id, source || 'bot', body, ghlMessageId]
+      [conv.id, source || 'bot', body, ghlMessageId, gasto?.pt ?? null, gasto?.ct ?? null, gasto?.usd ?? null, gasto?.modelo || null]
     );
     await q(`UPDATE conversations SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
   } catch (err) {
@@ -1303,13 +1312,44 @@ export async function processSend(job) {
 
 // ─── Seguimientos ────────────────────────────────────────────────────────────
 
-export async function scheduleNextFollowup(account, conv, extraMs = 0) {
+export async function scheduleNextFollowup(account, conv, extraMs = 0, acordadoHoras = null) {
   const steps = Array.isArray(account.followups) ? account.followups : [];
   const next = steps[conv.followup_step || 0];
-  if (!next || !next.hours) return;
+  if (!next || !next.hours) {
+    // sin paso disponible (sin seguimientos configurados o cadena agotada) el compromiso no se puede
+    // programar: al menos que quede TRAZADO — el prompt le prometió al modelo que se cumpliría
+    if (acordadoHoras) await logEvent('seguimiento_acuerdo_sin_paso', { conv: conv.id, horas_acordadas: acordadoHoras });
+    return;
+  }
+  let hours = Number(next.hours);
+  // La IA acordó un momento con el lead («te escribo mañana» → 24h): ese compromiso MANDA sobre la
+  // cadencia configurada — escribir antes de lo prometido delata al bot y quema al lead.
+  if (acordadoHoras) {
+    let efectivas = acordadoHoras;
+    if (WINDOWED_CHANNELS.includes(conv.channel)) {
+      // La ventana de Meta (~24h) se mide desde el ÚLTIMO MENSAJE DEL LEAD, no desde ahora: el tope
+      // es lo que quede de ventana. Si ya no queda hueco, programar el acuerdo sería un job condenado
+      // (processFollowup lo bloquearía por ventana y se perdería en silencio): se cae a la cadencia
+      // configurada y queda trazado.
+      const desdeInboundH = conv.last_inbound_at ? (Date.now() - new Date(conv.last_inbound_at).getTime()) / 3_600_000 : 0;
+      const restante = 23 - desdeInboundH;
+      if (restante < 0.25) {
+        await logEvent('seguimiento_acuerdo_fuera_ventana', { conv: conv.id, horas_acordadas: acordadoHoras, ventana_restante_h: Math.max(0, restante).toFixed(1) });
+        efectivas = null;
+      } else {
+        efectivas = Math.min(acordadoHoras, restante);
+      }
+    }
+    if (efectivas) {
+      hours = efectivas;
+      await logEvent('seguimiento_reprogramado_acuerdo', { conv: conv.id, horas_acordadas: acordadoHoras, horas_efectivas: Number(hours.toFixed(1)) });
+    }
+  }
   const token = crypto.randomUUID();
-  await redis.set(fuKey(conv.id), token, 'EX', 60 * 60 * 24 * 30);
-  const delay = extraMs + Number(next.hours) * 3_600_000;
+  const delay = extraMs + hours * 3_600_000;
+  // TTL del token en función del delay: con un acuerdo largo («en un mes» = 720h) el TTL fijo de
+  // 30 días caducaba justo antes de disparar y el job se descartaba como viejo.
+  await redis.set(fuKey(conv.id), token, 'EX', Math.max(60 * 60 * 24 * 30, Math.ceil(delay / 1000) + 86_400));
   await followupQueue.add('followup', { conversationId: conv.id, token }, { delay });
 }
 
@@ -1347,6 +1387,9 @@ export async function processFollowup(job) {
 
   if (windowBlocked(conv)) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
+    // trazado: antes era silencioso y un seguimiento (o un compromiso «te escribo mañana») podía
+    // perderse sin que nadie lo viera en el Registro de eventos
+    await logEvent('seguimiento_ventana_cerrada', { conv: conv.id, canal: conv.channel });
     return;
   }
   const windowDelay = delayToActiveWindow(account);
@@ -1397,7 +1440,7 @@ export async function processFollowup(job) {
     return;
   }
   await redis.del(`furetry:${conversationId}`);
-  await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'seguimiento', variantId, setterId);
+  const gastoFu = await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'seguimiento', variantId, setterId);
 
   // ¿el lead respondió mientras generábamos? → el ciclo normal (debounce) responde; este seguimiento sobra
   if ((await lastInboundId(conversationId)) !== snapshotId) return;
@@ -1405,7 +1448,10 @@ export async function processFollowup(job) {
   let cursor = 0;
   for (let i = 0; i < result.mensajes.length; i++) {
     cursor += typingDelayMs(result.mensajes[i], i);
-    await sendQueue.add('send', { conversationId, body: result.mensajes[i], snapshotId, source: 'seguimiento' }, { delay: cursor });
+    await sendQueue.add('send', {
+      conversationId, body: result.mensajes[i], snapshotId, source: 'seguimiento',
+      gasto: i === 0 && gastoFu ? { pt: gastoFu.pt, ct: gastoFu.ct, usd: gastoFu.cost, modelo: result.model || '' } : null,
+    }, { delay: cursor });
   }
 
   const newStep = step + 1;
@@ -1418,5 +1464,6 @@ export async function processFollowup(job) {
   } else if (!['en_conversion', 'descartado', 'agendado', 'agenda_cancelada'].includes(conv.stage)) {
     await applyStage(conv, account, 'en_seguimiento', `seguimiento #${newStep} enviado`);
   }
-  await scheduleNextFollowup(account, { ...conv, followup_step: newStep }, cursor);
+  // un seguimiento también puede prometer tiempo («te escribo mañana») → se respeta en el siguiente
+  await scheduleNextFollowup(account, { ...conv, followup_step: newStep }, cursor, result.proximoContactoHoras || null);
 }

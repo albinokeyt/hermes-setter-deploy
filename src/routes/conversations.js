@@ -71,7 +71,12 @@ export default async function conversationRoutes(app) {
       [conv.id]
     );
     const history = await q(`SELECT * FROM stage_history WHERE conversation_id = $1 ORDER BY id DESC LIMIT 20`, [conv.id]);
-    return { ...conv, messages, stage_history: history };
+    // El COSTO real de IA por mensaje (gasto_*) es SOLO para el admin: la UI lo oculta, pero la API
+    // también debe (mismo criterio que dashboard.js) — un cliente vería el margen en devtools.
+    const visibles = req.auth?.role === 'admin'
+      ? messages
+      : messages.map(({ gasto_prompt_tokens, gasto_completion_tokens, gasto_usd, gasto_modelo, ...m }) => m);
+    return { ...conv, messages: visibles, stage_history: history };
   });
 
   app.put('/api/conversations/:id', async (req, reply) => {

@@ -2,10 +2,21 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Send, Bot, User, Clock, ExternalLink, Ban, X, Trash2 } from 'lucide-react';
 import { api, timeAgo, ghlContactUrl } from '../api.js';
+import { useMe } from '../components/Layout.jsx';
 import { STAGES, CHANNEL_LABEL, stageByKey } from '../stages.js';
 import { Card, Button, StagePill, Toggle, Select, Banner } from '../components/ui.jsx';
 
-function Bubble({ m }) {
+// gasto de la llamada LLM estampado en el 1er mensaje de cada tanda (solo lo ve el admin)
+function costeLinea(m) {
+  const usd = m.gasto_usd == null ? null : Number(m.gasto_usd);
+  const pt = Number(m.gasto_prompt_tokens || 0);
+  const ct = Number(m.gasto_completion_tokens || 0);
+  if (usd == null && !pt && !ct) return null;
+  const fmt = usd == null ? '' : (usd > 0 && usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(3)}`);
+  return `${pt.toLocaleString('es-ES')}→${ct.toLocaleString('es-ES')} tok${fmt ? ` · ${fmt}` : ''}${m.gasto_modelo ? ` · ${m.gasto_modelo}` : ''}`;
+}
+
+function Bubble({ m, showCost }) {
   const mine = m.direction === 'outbound';
   const human = m.source === 'humano';
   const auto = m.source === 'automatizacion'; // workflow de GHL: ni el setter ni una persona
@@ -26,6 +37,11 @@ function Bubble({ m }) {
           {sourceLabel && <span>{sourceLabel} ·</span>}
           <span>{new Date(m.created_at).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
         </div>
+        {showCost && mine && !human && !auto && costeLinea(m) && (
+          <div className={`mt-0.5 text-[10px] ${meta}`} title="Tokens de entrada→salida y costo de la llamada de IA que generó esta tanda de mensajes">
+            🔢 {costeLinea(m)}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -33,6 +49,7 @@ function Bubble({ m }) {
 
 export default function ConversationDetail() {
   const { id } = useParams();
+  const me = useMe();
   const navigate = useNavigate();
   const [conv, setConv] = useState(null);
   const [text, setText] = useState('');
@@ -135,7 +152,7 @@ export default function ConversationDetail() {
             </div>
           </div>
           <div className="scroll-thin flex-1 space-y-3 overflow-y-auto bg-slate-50/50 px-5 py-4">
-            {conv.messages.map((m) => <Bubble key={m.id} m={m} />)}
+            {conv.messages.map((m) => <Bubble key={m.id} m={m} showCost={me?.role === 'admin'} />)}
             <div ref={bottomRef} />
           </div>
           <form data-tour="chat-escribir" onSubmit={sendManual} className="flex items-center gap-2 border-t border-slate-100 px-4 py-3">
