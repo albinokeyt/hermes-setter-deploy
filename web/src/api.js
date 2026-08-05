@@ -10,7 +10,7 @@ async function request(method, url, body) {
     throw new Error('Sesión expirada');
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+  if (!res.ok) { const e = new Error(data.error || `Error ${res.status}`); e.data = data; throw e; }
   return data;
 }
 

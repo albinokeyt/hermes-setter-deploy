@@ -158,4 +158,70 @@ export default async function accountRoutes(app) {
     );
     return { calendars: seen.map((s) => ({ id: s.id, name: s.id })), source: 'historial' };
   });
+
+  // 🪪 Recuperar nombres: repasa las conversaciones SIN nombre de esta conexión y las rellena desde
+  // la API de GHL. Repara el daño de una racha de tokens muertos (p. ej. la app desinstalada): en
+  // ese periodo cada getContact fallaba en silencio y los leads quedaban «Lead sin nombre».
+  app.post('/api/accounts/:id/recuperar-nombres', async (req, reply) => {
+    const accId = Number(req.params.id);
+    if (!Number.isInteger(accId) || accId <= 0 || accId > 2147483647) return reply.code(404).send({ error: 'No existe' });
+    if (!(await canAccessAccount(req, accId))) return reply.code(403).send({ error: 'Sin acceso' });
+    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [accId]);
+    if (!account) return reply.code(404).send({ error: 'No existe' });
+    if (!account.location_id && !account.pit_token) return reply.code(400).send({ error: 'Esta conexión aún no está enlazada con GHL.' });
+
+    const filas = await q(
+      `SELECT id, ghl_contact_id FROM conversations
+        WHERE account_id = $1 AND lead_name = '' AND ghl_contact_id IS NOT NULL AND ghl_contact_id <> ''
+        ORDER BY updated_at DESC LIMIT 500`,
+      [account.id]
+    );
+    let actualizados = 0;
+    let sinNombreEnGhl = 0;
+    let fallos = 0;
+    let fallosSeguidos = 0;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // Lotes de 5 CON pausa entre lotes: el burst limit de GHL es ~100 req/10s por subcuenta y sin
+    // pausa los 429 encadenados dispararían el corte de abajo con un diagnóstico falso de "token
+    // muerto". El 429 se trata aparte (espera extra y NO cuenta como fallo de token); el corte 502
+    // queda para fallos reales (401/403/red) seguidos.
+    for (let i = 0; i < filas.length; i += 5) {
+      const lote = filas.slice(i, i + 5);
+      const resultados = await Promise.all(lote.map(async (f) => {
+        try {
+          const c = await ghl.getContact(account, f.ghl_contact_id);
+          const nombre = [c?.firstName, c?.lastName].filter(Boolean).join(' ') || c?.name || c?.contactName || '';
+          const email = c?.email || '';
+          if (nombre || email) {
+            await q(
+              `UPDATE conversations SET
+                 lead_name = CASE WHEN lead_name = '' THEN $1 ELSE lead_name END,
+                 lead_email = CASE WHEN lead_email = '' THEN $2 ELSE lead_email END
+               WHERE id = $3`,
+              [nombre, email, f.id]
+            );
+            return nombre ? 'ok' : 'sin_nombre';
+          }
+          return 'sin_nombre';
+        } catch (err) {
+          return err?.status === 429 ? 'rate' : 'fallo';
+        }
+      }));
+      let huboRate = false;
+      for (const r of resultados) {
+        if (r === 'ok') { actualizados++; fallosSeguidos = 0; }
+        else if (r === 'sin_nombre') { sinNombreEnGhl++; fallosSeguidos = 0; }
+        else if (r === 'rate') { fallos++; huboRate = true; }
+        else { fallos++; fallosSeguidos++; }
+      }
+      if (i + 5 < filas.length) await sleep(huboRate ? 3000 : 600);
+      if (fallosSeguidos >= 10) {
+        return reply.code(502).send({
+          error: 'GHL no responde para esta conexión (¿token caducado o app sin reinstalar?). Reconecta la subcuenta (pestaña Conexión GHL) y vuelve a intentarlo.',
+          actualizados, sin_nombre_en_ghl: sinNombreEnGhl, fallos, pendientes: filas.length - i - lote.length,
+        });
+      }
+    }
+    return { total: filas.length, actualizados, sin_nombre_en_ghl: sinNombreEnGhl, fallos };
+  });
 }

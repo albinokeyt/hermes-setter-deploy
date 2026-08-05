@@ -593,7 +593,12 @@ export async function handleInbound(account, evt) {
           );
         }
       })
-      .catch(() => {});
+      .catch(async (err) => {
+        // ANTES esto era silencioso: con los tokens muertos (p. ej. app desinstalada) TODOS los
+        // leads quedaban «sin nombre» sin una sola traza. Throttle 1/min por cuenta para no inundar.
+        const fresh = await redis.set(`nomerr:${account.id}`, '1', 'EX', 60, 'NX').catch(() => null);
+        if (fresh) await logEvent('error_nombre_contacto', { account: account.id, contactId: evt.contactId, error: String(err.message || err).slice(0, 200) }).catch(() => {});
+      });
   }
 
   if (respond && account.ai_enabled && account.bot_enabled && !conv.bot_paused) {
@@ -715,7 +720,11 @@ export async function activateSetterForContact(account, setter, contactId, waitS
         await q(`UPDATE conversations SET lead_name = CASE WHEN lead_name = '' THEN $1 ELSE lead_name END WHERE id = $2`, [nombre, conv.id]);
         conv.lead_name = nombre;
       }
-    } catch { /* si GHL falla seguimos sin nombre: la activación no se bloquea por esto */ }
+    } catch (err) {
+      // sin bloquear la activación, pero CON rastro (throttle 1/min por cuenta)
+      const fresh = await redis.set(`nomerr:${account.id}`, '1', 'EX', 60, 'NX').catch(() => null);
+      if (fresh) await logEvent('error_nombre_contacto', { account: account.id, contactId, error: String(err.message || err).slice(0, 200) }).catch(() => {});
+    }
   }
 
   // La conversación puede nacer AQUÍ (todo su historial viene de GHL, no de un webhook entrante), y

@@ -38,6 +38,8 @@ export default function AccountEdit() {
   const [newSetter, setNewSetter] = useState('');
   const [commentLog, setCommentLog] = useState(null);
   const [aliasDraft, setAliasDraft] = useState('');
+  const [recuperando, setRecuperando] = useState(false);
+  const [recupResultado, setRecupResultado] = useState(null); // resultado de «Recuperar nombres»
   const loadCommentLog = () => api.get(`/api/accounts/${id}/comment-log`).then(setCommentLog).catch(() => setCommentLog({ received: [], issues: [] }));
 
   const loadSetters = () => api.get(`/api/accounts/${id}/setters`).then(setSetters).catch(() => setSetters([]));
@@ -80,6 +82,22 @@ export default function AccountEdit() {
       setAliasDraft(updated.alias || '');
       setSaved(true); setTimeout(() => setSaved(false), 2000);
     } catch (err) { setError(err.message); }
+  };
+
+  // 🪪 rellena los «Lead sin nombre» de esta conexión desde la API de GHL (repara rachas de token muerto)
+  const recuperarNombres = async () => {
+    setRecuperando(true); setRecupResultado(null);
+    try {
+      const r = await api.post(`/api/accounts/${id}/recuperar-nombres`, {});
+      const partes = [`✓ ${r.actualizados} nombre${r.actualizados === 1 ? '' : 's'} recuperado${r.actualizados === 1 ? '' : 's'} de ${r.total} conversaciones sin nombre`];
+      if (r.sin_nombre_en_ghl) partes.push(`${r.sin_nombre_en_ghl} tampoco tienen nombre en GHL`);
+      if (r.fallos) partes.push(`${r.fallos} fallos`);
+      setRecupResultado({ tone: 'ok', text: partes.join(' · ') });
+    } catch (err) {
+      const d = err.data || {};
+      const extra = d.actualizados != null ? ` (antes del corte: ${d.actualizados} recuperados${d.pendientes ? `, ${d.pendientes} pendientes` : ''})` : '';
+      setRecupResultado({ tone: 'error', text: err.message + extra });
+    } finally { setRecuperando(false); }
   };
 
   const connectOauth = async () => {
@@ -255,6 +273,12 @@ export default function AccountEdit() {
                 </div>
               )}
             </div>
+          </div>
+          <div className="space-y-2 border-t border-slate-100 pt-5">
+            <span className="block text-sm font-bold text-slate-800">🪪 Nombres de los leads</span>
+            <p className="-mt-1 text-xs text-slate-400">Si una racha de desconexión con GHL dejó conversaciones como «Lead sin nombre», esto las repasa y rellena nombre y email desde GHL (hasta 500 por pasada; puedes repetirla). Los mensajes nuevos ya lo hacen solos.</p>
+            <Button variant="secondary" loading={recuperando} onClick={recuperarNombres}>🪪 Recuperar nombres</Button>
+            {recupResultado && <Banner tone={recupResultado.tone}>{recupResultado.text}</Banner>}
           </div>
         </Card>
       )}
