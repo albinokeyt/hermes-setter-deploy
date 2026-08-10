@@ -101,7 +101,19 @@ export async function markSentMessage(messageId) {
 }
 
 export async function accountByLocation(locationId) {
-  return one(`SELECT * FROM accounts WHERE location_id = $1`, [locationId]);
+  // Determinista y a prueba de DUPLICADOS: si una reinstalación (p. ej. tras la desinstalación
+  // masiva de GHL) creó una segunda fila para la misma location — nacida apagada por el default —
+  // el SELECT sin orden podía entregar la fila muerta y los leads "entraban con el setter apagado".
+  // Gana la conexión ENCENDIDA y, a igualdad, la ORIGINAL (id más bajo).
+  const rows = await q(
+    `SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC`,
+    [locationId]
+  );
+  if (rows.length > 1) {
+    const fresh = await redis.set(`dupacc:${locationId}`, '1', 'EX', 3600, 'NX').catch(() => null);
+    if (fresh) await logEvent('location_duplicada', { locationId, cuentas: rows.map((r) => r.id), usando: rows[0].id }).catch(() => {});
+  }
+  return rows[0] || null;
 }
 
 // Recaudación de mensajes: interruptor global, cacheado. Funciona esté el bot
@@ -483,6 +495,11 @@ export async function handleInbound(account, evt) {
   // Los canales son POR SETTER (quién responde dónde se decide al enrutar/responder);
   // aquí se archiva todo canal conocido para que el cliente vea sus mensajes.
 
+  // Flags de la CONEXIÓN capturados ANTES de cualquier mergeSetter (que pisa bot_enabled con el
+  // AND conexión&&setter): los logs de "nadie responde" deben culpar al culpable correcto.
+  const connAi = Boolean(account.ai_enabled);
+  const connBot = Boolean(account.bot_enabled);
+
   // recaudación desactivada y bot apagado → no guardamos nada (ni procesamos adjuntos)
   if (!(await shouldCollect(account))) return null;
 
@@ -599,6 +616,18 @@ export async function handleInbound(account, evt) {
         const fresh = await redis.set(`nomerr:${account.id}`, '1', 'EX', 60, 'NX').catch(() => null);
         if (fresh) await logEvent('error_nombre_contacto', { account: account.id, contactId: evt.contactId, error: String(err.message || err).slice(0, 200) }).catch(() => {});
       });
+  }
+
+  // Visibilidad: si NADIE va a responder, que quede en el Registro de eventos (1/h por cuenta) y
+  // culpando al CULPABLE correcto — `account` aquí puede venir fusionado con el setter (mergeSetter
+  // pisa bot_enabled con el AND), así que se usan los flags de la conexión capturados al entrar.
+  if (respond && (!connAi || !connBot)) {
+    const fresh = await redis.set(`offlog:${account.id}`, '1', 'EX', 3600, 'NX').catch(() => null);
+    if (fresh) await logEvent('lead_sin_respuesta_conexion_apagada', { account: account.id, ai: connAi, bot: connBot, contactId: evt.contactId }).catch(() => {});
+  } else if (respond && connAi && connBot && !account.bot_enabled) {
+    // la conexión está encendida: lo apagado es el SETTER asignado a esta conversación
+    const fresh = await redis.set(`offlog:${account.id}`, '1', 'EX', 3600, 'NX').catch(() => null);
+    if (fresh) await logEvent('lead_sin_respuesta_setter_apagado', { account: account.id, setter: conv.setter_id || account.setter_id || null, contactId: evt.contactId }).catch(() => {});
   }
 
   if (respond && account.ai_enabled && account.bot_enabled && !conv.bot_paused) {

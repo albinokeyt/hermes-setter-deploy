@@ -95,7 +95,7 @@ export default async function ghlOauthRoutes(app) {
       }
 
       // instalación suelta → reutilizar o crear cuenta para esa subcuenta
-      let account = await one(`SELECT * FROM accounts WHERE location_id = $1`, [locationId]);
+      let account = await one(`SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [locationId]);
       if (!account) {
         const name = (await getLocationName({ mode: 'oauth', location_id: locationId }, locationId)) || `Subcuenta ${locationId.slice(0, 6)}`;
         account = await one(

@@ -112,7 +112,7 @@ async function handleGlobalComment(req) {
       await logEvent('comentario_sin_subcuenta', { nota: 'el payload no trae location.id', keys: Object.keys(p) });
       return;
     }
-    const account = await one(`SELECT id FROM accounts WHERE location_id = $1`, [loc]);
+    const account = await one(`SELECT id FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [loc]);
     if (!account) {
       await logEvent('comentario_subcuenta_desconocida', { locationId: loc });
       return;

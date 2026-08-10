@@ -174,7 +174,7 @@ export default async function portalRoutes(app) {
     // Si venías con sesión de OTRA subcuenta, se borra para no mostrarte la conexión equivocada.
     await clearStaleSession(req, reply, loc);
 
-    let account = await one(`SELECT * FROM accounts WHERE location_id = $1`, [loc]);
+    let account = await one(`SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [loc]);
 
     // Caso 3: setter ya existe → a la app embebida; GHL certifica la identidad por SSO.
     if (account) return reply.redirect('/');
@@ -252,7 +252,7 @@ export default async function portalRoutes(app) {
     if (!email.includes('@') || !locationId) return reply.code(400).send({ error: 'GHL no envió email o subcuenta en el SSO.' });
 
     // Identidad certificada por GHL para ESTA subcuenta → buscar/crear su setter y entrar.
-    let account = await one(`SELECT * FROM accounts WHERE location_id = $1`, [locationId]);
+    let account = await one(`SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [locationId]);
     if (!account) {
       const nm = (await getLocationName({ mode: 'oauth', location_id: locationId }, locationId)) || `Setter ${locationId.slice(0, 6)}`;
       account = await one(
