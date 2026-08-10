@@ -868,6 +868,17 @@ export async function handleOutboundEvent(account, evt) {
 
   const body = String(evt.body || '').trim();
 
+  // SIN TEXTO no seguimos: los anti-ecos de abajo son POR TEXTO y la pausa por intervención externa
+  // también los necesita. Un saliente sin body (adjunto de una automatización, plantilla, evento
+  // fantasma de GHL) se saltaba todos los filtros y PAUSABA conversaciones recién nacidas sin dejar
+  // ni una burbuja: el lead "entraba con el bot en pausa" y el setter no hablaba nunca. Sin texto
+  // no hay evidencia de intervención conversacional — se traza y se sale.
+  if (!body) {
+    const fresh = await redis.set(`outnobody:${account.id}`, '1', 'EX', 60, 'NX').catch(() => null);
+    if (fresh) await logEvent('saliente_sin_texto_ignorado', { conv: conv.id, messageId: evt.messageId || null, keys: Object.keys(evt || {}).slice(0, 20) }).catch(() => {});
+    return;
+  }
+
   // ANTI-ECO: el guard `sent:` de arriba solo funciona si GHL nos devolvió el messageId al enviar.
   // Cuando no lo devuelve (o el envío falló tras entregar), el eco de NUESTRO PROPIO mensaje llegaría
   // como externo y —al pausar ahora con cualquier intervención externa— el setter se pausaría a sí
