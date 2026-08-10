@@ -709,11 +709,17 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   // intervención externa (paused_by='humano'), que es solo una suposición: si el workflow manda un
   // mensaje y acto seguido pone la etiqueta, sin esto el setter no entraría nunca. Se siguen respetando
   // la pausa MANUAL del panel, la que pide la IA y la etiqueta de atención humana.
-  if (!opts.respetarPausaHumano && conv.bot_paused && conv.paused_by === 'humano' && conv.stage !== 'atencion_humana') {
+  // La etiqueta es la orden MÁS RECIENTE y EXPLÍCITA del negocio: gana a la auto-pausa por
+  // intervención externa Y a la pausa manual del panel («si el setter está apagado, la etiqueta lo
+  // enciende»). Solo se respetan la exclusión (sin-ia), la pausa pedida por la IA y atención humana.
+  const pausaSuperable = conv.bot_paused && conv.stage !== 'atencion_humana'
+    && conv.paused_by !== 'excluido' && conv.paused_by !== 'ia';
+  if (!opts.respetarPausaHumano && pausaSuperable) {
     await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
     await cancelReactivate(conv.id);
+    const eraPausa = conv.paused_by || 'auto';
     conv.bot_paused = false;
-    await logEvent('activador_reanuda', { conv: conv.id, setter: setter.id, nota: 'la etiqueta manda sobre la auto-pausa' });
+    await logEvent('activador_reanuda', { conv: conv.id, setter: setter.id, pausa_anterior: eraPausa, nota: 'la etiqueta manda sobre la pausa' });
   }
   if (conv.bot_paused || conv.stage === 'atencion_humana') {
     const motivo = conv.stage === 'atencion_humana' ? 'atencion_humana' : 'pausado';
@@ -922,6 +928,19 @@ export async function handleOutboundEvent(account, evt) {
   // persona de workflow: se pausa con CUALQUIER saliente que no hayamos enviado nosotros. Lo que llega
   // aquí ya está filtrado (guard `sent:` + respaldo anti-eco por texto), así que es intervención ajena.
   if (account.auto_handoff) {
+    // La pausa existe para NO PISAR a quien ya conversa con el lead. Si el setter aún no ha dicho
+    // NADA en esta conversación (lead recién entrado; la automatización del funnel manda su primer
+    // toque con texto), pausar aquí lo dejaba fuera para siempre: el lead "entraba con el bot en
+    // pausa" y el setter no hablaba nunca. Regla: sin mensaje previo del setter, no hay pausa.
+    const setterHablo = await one(
+      `SELECT 1 AS ok FROM messages WHERE conversation_id = $1 AND direction = 'outbound' AND source IN ('bot', 'seguimiento') LIMIT 1`,
+      [conv.id]
+    );
+    if (!setterHablo) {
+      const fresh = await redis.set(`nopause:${conv.id}`, '1', 'EX', 600, 'NX').catch(() => null);
+      if (fresh) await logEvent('externo_sin_pausar_setter_no_hablo', { conv: conv.id }).catch(() => {});
+      return;
+    }
     if (!conv.bot_paused) {
       await q(`UPDATE conversations SET bot_paused = true, paused_by = 'humano', updated_at = now() WHERE id = $1`, [conv.id]);
       await cancelBotJobs(conv.id);
