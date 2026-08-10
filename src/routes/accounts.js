@@ -3,6 +3,9 @@ import { q, one } from '../db.js';
 import { config } from '../config.js';
 import { requireAdmin, scopedAccountId, requireManageAgents, accessibleAccountIds, canAccessAccount } from '../lib/session.js';
 import * as ghl from '../services/ghl.js';
+import { activateSetterForContact, logEvent } from '../services/pipeline.js';
+import { redis } from '../lib/redis.js';
+import { WINDOWED_CHANNELS } from '../config.js';
 
 // URL de comentarios: FIJA y LIMPIA, la misma para todas las conexiones (enruta por location.id).
 const COMMENT_WEBHOOK_URL = `${config.appBaseUrl}/api/webhooks/comentarios`;
@@ -223,5 +226,112 @@ export default async function accountRoutes(app) {
       }
     }
     return { total: filas.length, actualizados, sin_nombre_en_ghl: sinNombreEnGhl, fallos };
+  });
+
+  // 📣 RESCATE: leads que escribieron y NADIE les respondió jamás (ni bot ni humano) — p. ej. por
+  // una racha con la IA apagada. El setter les escribe ÉL, con un contexto del negocio que manda
+  // (misma maquinaria que la activación por etiqueta: respeta ventana de Meta, pausas y registro ⚡).
+  const candidatosRescate = (accId) => q(
+    `SELECT c.id, c.ghl_contact_id, c.channel, c.setter_id, c.last_inbound_at
+       FROM conversations c
+      WHERE c.account_id = $1 AND c.bot_paused = false
+        AND c.stage NOT IN ('descartado', 'atencion_humana')
+        AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'inbound')
+        AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'outbound')
+      ORDER BY c.last_inbound_at DESC NULLS LAST
+      LIMIT 500`,
+    [accId]
+  );
+  // ventana de Meta (~24h desde el último mensaje del lead): fuera de ella es IMPOSIBLE escribirles
+  const enVentana = (c) => !WINDOWED_CHANNELS.includes(c.channel)
+    || (c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < 23 * 3_600_000);
+
+  app.get('/api/accounts/:id/rescate', async (req, reply) => {
+    const accId = Number(req.params.id);
+    if (!Number.isInteger(accId) || accId <= 0) return reply.code(404).send({ error: 'No existe' });
+    if (!(await requireManageAgents(req, reply))) return;
+    if (!(await canAccessAccount(req, accId))) return reply.code(403).send({ error: 'Sin acceso' });
+    const filas = await candidatosRescate(accId);
+    const dentro = filas.filter(enVentana).length;
+    return { total: filas.length, dentro_ventana: dentro, fuera_ventana: filas.length - dentro };
+  });
+
+  app.post('/api/accounts/:id/rescate', async (req, reply) => {
+    const accId = Number(req.params.id);
+    if (!Number.isInteger(accId) || accId <= 0) return reply.code(404).send({ error: 'No existe' });
+    if (!(await requireManageAgents(req, reply))) return;
+    if (!(await canAccessAccount(req, accId))) return reply.code(403).send({ error: 'Sin acceso' });
+    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [accId]);
+    if (!account) return reply.code(404).send({ error: 'No existe' });
+    if (!account.ai_enabled || !account.bot_enabled) return reply.code(400).send({ error: 'La conexión tiene la IA o el bot apagados: enciéndelos antes de rescatar.' });
+    // 🧪 MODO TEST: la activación se salta el filtro de test por diseño (orden explícita) — un
+    // rescate masivo lo heredaría y escribiría a 150 leads REALES de una conexión "en pruebas".
+    if (account.test_mode) return reply.code(400).send({ error: 'La conexión está en 🧪 modo test: desactívalo antes de lanzar un rescate masivo.' });
+
+    const contexto = String(req.body?.contexto || '').trim().slice(0, 1200);
+    if (!contexto) return reply.code(400).send({ error: 'Escribe el contexto del rescate (qué debe decir el setter y cómo entrar).' });
+
+    // candado: un solo rescate en curso por conexión (dos pulsaciones o dos admins = tandas dobles
+    // a los leads "en vuelo"). El EX cubre un proceso muerto; se libera al completar.
+    const lock = await redis.set(`rescate:${accId}`, '1', 'EX', 1800, 'NX');
+    if (!lock) return reply.code(409).send({ error: 'Ya hay un rescate en curso para esta conexión. Espera a que termine (mira el Registro de eventos: rescate_completado).' });
+
+    const setters = await q(`SELECT * FROM setters WHERE account_id = $1`, [accId]);
+    const porId = Object.fromEntries(setters.map((s) => [s.id, s]));
+    const porDefecto = setters.find((s) => s.is_default) || setters[0] || null;
+
+    const filas = await candidatosRescate(accId);
+    const elegibles = [];
+    let fueraVentana = 0;
+    let sinSetter = 0;
+    let setterApagado = 0;
+    for (const c of filas) {
+      if (!enVentana(c)) { fueraVentana++; continue; }
+      const setter = porId[c.setter_id] || porDefecto;
+      if (!setter) { sinSetter++; continue; }
+      if (!setter.bot_enabled) { setterApagado++; continue; } // se autodescartaría: no contarlo como programado
+      elegibles.push({ ...c, setter });
+      if (elegibles.length >= 150) break; // tope por pasada (puede repetirse: cero-outbound es idempotente)
+    }
+
+    // Respondemos YA y programamos en segundo plano: cada activación consulta la API de GHL
+    // (historial + contacto) y con decenas de leads tardaría minutos. Los envíos salen ESPACIADOS
+    // (~8s entre leads) para no parecer una ráfaga; el progreso se ve en ⚡ Activaciones (tag «rescate»).
+    reply.send({ programados: elegibles.length, fuera_de_ventana: fueraVentana, sin_setter: sinSetter, setter_apagado: setterApagado, total_sin_respuesta: filas.length });
+
+    setImmediate(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      let ok = 0;
+      let fallos = 0;
+      let atendidosEntretanto = 0;
+      await logEvent('rescate_iniciado', { account: accId, leads: elegibles.length }).catch(() => {});
+      try {
+        for (let i = 0; i < elegibles.length; i++) {
+          const c = elegibles[i];
+          // la lista se congeló al pulsar y esto tarda minutos: re-verificar que el lead SIGUE sin
+          // respuesta y sin pausar (un humano pudo atenderlo entretanto → no escribir encima)
+          const sigue = await one(
+            `SELECT 1 AS ok FROM conversations c2 WHERE c2.id = $1 AND c2.bot_paused = false
+               AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c2.id AND m.direction = 'outbound')`,
+            [c.id]
+          );
+          if (!sigue) { atendidosEntretanto++; continue; }
+          try {
+            // respetarPausaHumano: el rescate NO levanta la auto-pausa por intervención humana;
+            // canal: ancla la activación a la conversación auditada (contactos multicanal)
+            await activateSetterForContact(account, c.setter, c.ghl_contact_id, 15 + i * 8, contexto, 'rescate', { respetarPausaHumano: true, canal: c.channel });
+            ok++;
+          } catch (err) {
+            fallos++;
+            await logEvent('rescate_error', { account: accId, contactId: c.ghl_contact_id, error: String(err.message || err).slice(0, 200) }).catch(() => {});
+          }
+          if ((i + 1) % 25 === 0) await logEvent('rescate_progreso', { account: accId, hechos: i + 1, de: elegibles.length }).catch(() => {});
+          await sleep(400); // suave con la API de GHL al programar
+        }
+      } finally {
+        await redis.del(`rescate:${accId}`).catch(() => {});
+      }
+      await logEvent('rescate_completado', { account: accId, programados: ok, fallos, atendidos_entretanto: atendidosEntretanto }).catch(() => {});
+    });
   });
 }

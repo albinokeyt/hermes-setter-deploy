@@ -40,6 +40,12 @@ export default function AccountEdit() {
   const [aliasDraft, setAliasDraft] = useState('');
   const [recuperando, setRecuperando] = useState(false);
   const [recupResultado, setRecupResultado] = useState(null); // resultado de «Recuperar nombres»
+  // 📣 Rescate de leads sin responder
+  const [rescInfo, setRescInfo] = useState(null); // { total, dentro_ventana, fuera_ventana }
+  const [rescContexto, setRescContexto] = useState('Este lead escribió y nunca le respondimos. Discúlpate breve y con naturalidad por la demora (sin excusas técnicas ni mencionar sistemas) y retoma tu flujo desde el principio.');
+  const [rescCalculando, setRescCalculando] = useState(false);
+  const [rescEnviando, setRescEnviando] = useState(false);
+  const [rescResultado, setRescResultado] = useState(null);
   const loadCommentLog = () => api.get(`/api/accounts/${id}/comment-log`).then(setCommentLog).catch(() => setCommentLog({ received: [], issues: [] }));
 
   const loadSetters = () => api.get(`/api/accounts/${id}/setters`).then(setSetters).catch(() => setSetters([]));
@@ -98,6 +104,31 @@ export default function AccountEdit() {
       const extra = d.actualizados != null ? ` (antes del corte: ${d.actualizados} recuperados${d.pendientes ? `, ${d.pendientes} pendientes` : ''})` : '';
       setRecupResultado({ tone: 'error', text: err.message + extra });
     } finally { setRecuperando(false); }
+  };
+
+  const calcularRescate = async () => {
+    setRescCalculando(true); setRescResultado(null);
+    try { setRescInfo(await api.get(`/api/accounts/${id}/rescate`)); }
+    catch (err) { setRescResultado({ tone: 'error', text: err.message }); }
+    finally { setRescCalculando(false); }
+  };
+
+  const enviarRescate = async () => {
+    const n = rescInfo?.dentro_ventana || 0;
+    if (!window.confirm(`El setter escribirá a ${n} lead${n === 1 ? '' : 's'} que nunca recibieron respuesta, siguiendo tu contexto y espaciando los mensajes. ¿Continuar?`)) return;
+    if (!window.confirm('Confírmalo de nuevo: se enviarán mensajes REALES a esos leads.')) return;
+    setRescEnviando(true); setRescResultado(null);
+    try {
+      const r = await api.post(`/api/accounts/${id}/rescate`, { contexto: rescContexto.trim() });
+      const partes = [`✓ ${r.programados} rescate${r.programados === 1 ? '' : 's'} programado${r.programados === 1 ? '' : 's'} (salen espaciados ~8s; míralos en ⚡ Activaciones de cada setter, etiqueta «rescate»)`];
+      if (r.fuera_de_ventana) partes.push(`${r.fuera_de_ventana} imposibles: fuera de la ventana de 24h de Meta`);
+      if (r.sin_setter) partes.push(`${r.sin_setter} sin setter`);
+      if (r.setter_apagado) partes.push(`${r.setter_apagado} con su setter apagado`);
+      setRescResultado({ tone: 'ok', text: partes.join(' · ') });
+      setRescInfo(null);
+    } catch (err) {
+      setRescResultado({ tone: 'error', text: err.message });
+    } finally { setRescEnviando(false); }
   };
 
   const connectOauth = async () => {
@@ -279,6 +310,37 @@ export default function AccountEdit() {
             <p className="-mt-1 text-xs text-slate-400">Si una racha de desconexión con GHL dejó conversaciones como «Lead sin nombre», esto las repasa y rellena nombre y email desde GHL (hasta 500 por pasada; puedes repetirla). Los mensajes nuevos ya lo hacen solos.</p>
             <Button variant="secondary" loading={recuperando} onClick={recuperarNombres}>🪪 Recuperar nombres</Button>
             {recupResultado && <Banner tone={recupResultado.tone}>{recupResultado.text}</Banner>}
+          </div>
+
+          <div className="space-y-2 border-t border-slate-100 pt-5">
+            <span className="block text-sm font-bold text-slate-800">📣 Rescatar leads sin responder</span>
+            <p className="-mt-1 text-xs text-slate-400">Leads que escribieron y NADIE les respondió jamás (ni bot ni humano) — p. ej. por una racha con la IA apagada. El setter les escribe él, leyendo cada conversación y siguiendo tu contexto. Ojo: en Instagram/WhatsApp solo es posible dentro de las 24h del último mensaje del lead (los demás quedan fuera por Meta). Repetir la pasada es seguro: solo cuenta a quien SIGUE sin respuesta.</p>
+            {!rescInfo ? (
+              <Button variant="secondary" loading={rescCalculando} onClick={calcularRescate}>Calcular candidatos</Button>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-slate-600">
+                  {rescInfo.total} sin respuesta · <span className="text-emerald-600">{rescInfo.dentro_ventana} rescatables</span>
+                  {rescInfo.fuera_ventana > 0 && <span className="text-slate-400"> · {rescInfo.fuera_ventana} fuera de la ventana de Meta (imposible escribirles)</span>}
+                </p>
+                {rescInfo.dentro_ventana > 0 && (
+                  <>
+                    <textarea
+                      value={rescContexto}
+                      rows={3}
+                      onChange={(e) => setRescContexto(e.target.value)}
+                      placeholder="Qué debe decir el setter y cómo entrar…"
+                      className="scroll-thin w-full resize-none rounded-xl border border-slate-300 px-3 py-2 text-xs leading-relaxed outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                    />
+                    <div className="flex gap-2">
+                      <Button loading={rescEnviando} disabled={!rescContexto.trim()} onClick={enviarRescate}>📣 Programar rescate ({rescInfo.dentro_ventana})</Button>
+                      <Button variant="ghost" onClick={() => setRescInfo(null)}>Cancelar</Button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            {rescResultado && <Banner tone={rescResultado.tone}>{rescResultado.text}</Banner>}
           </div>
         </Card>
       )}

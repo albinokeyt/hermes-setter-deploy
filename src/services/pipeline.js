@@ -678,7 +678,7 @@ export async function handleInbound(account, evt) {
 // ⚡ ACTIVADOR EXTERNO: un workflow de GHL (p. ej. al asignar una etiqueta) activa a ESTE setter
 // para un contacto: importa el historial (entrantes y salientes) desde GHL, reclama la conversación
 // y programa una respuesta proactiva (instrucción de activación en processDebounce).
-export async function activateSetterForContact(account, setter, contactId, waitSeconds = 0, contexto = '', tag = '') {
+export async function activateSetterForContact(account, setter, contactId, waitSeconds = 0, contexto = '', tag = '', opts = {}) {
   const merged = mergeSetter(account, setter);
   if (!account.ai_enabled || !merged.bot_enabled) {
     await logEvent('activador_apagado', { setter: setter.id, contactId, ai: account.ai_enabled, bot: merged.bot_enabled });
@@ -692,7 +692,9 @@ export async function activateSetterForContact(account, setter, contactId, waitS
     await logEvent('activador_sin_historial', { setter: setter.id, contactId, error: String(err.message).slice(0, 200) });
   }
   const last = ghlHistory.messages[ghlHistory.messages.length - 1];
-  const channel = normalizeChannel(last?.type) || (Array.isArray(merged.channels) && merged.channels[0]) || 'IG';
+  // opts.canal ancla la activación a la conversación AUDITADA (rescate): sin esto, un contacto
+  // multicanal podía aterrizar en OTRA conversación suya (p. ej. la de WhatsApp ya atendida).
+  const channel = normalizeChannel(opts.canal) || normalizeChannel(last?.type) || (Array.isArray(merged.channels) && merged.channels[0]) || 'IG';
 
   const conv = await one(
     `INSERT INTO conversations (account_id, ghl_contact_id, ghl_conversation_id, channel, lead_name, updated_at)
@@ -707,7 +709,7 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   // intervención externa (paused_by='humano'), que es solo una suposición: si el workflow manda un
   // mensaje y acto seguido pone la etiqueta, sin esto el setter no entraría nunca. Se siguen respetando
   // la pausa MANUAL del panel, la que pide la IA y la etiqueta de atención humana.
-  if (conv.bot_paused && conv.paused_by === 'humano' && conv.stage !== 'atencion_humana') {
+  if (!opts.respetarPausaHumano && conv.bot_paused && conv.paused_by === 'humano' && conv.stage !== 'atencion_humana') {
     await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
     await cancelReactivate(conv.id);
     conv.bot_paused = false;
@@ -1318,6 +1320,7 @@ export async function processDebounce(job) {
       {
         conversationId, body: result.mensajes[i], snapshotId, source: 'bot', bypassPause: result.handoff,
         gasto: i === 0 && (gasto || debugId) ? { pt: gasto?.pt, ct: gasto?.ct, usd: gasto?.cost, modelo: result.model || '', debugId } : null,
+        deActivacion: Boolean(activacion) && i === 0,
       },
       { delay: cursor }
     );
@@ -1342,7 +1345,7 @@ export async function processDebounce(job) {
 }
 
 export async function processSend(job) {
-  const { conversationId, body, snapshotId, source, bypassPause, gasto } = job.data;
+  const { conversationId, body, snapshotId, source, bypassPause, gasto, deActivacion } = job.data;
 
   // idempotencia: sendQueue reintenta (attempts: 2); si ya enviamos en el intento
   // anterior y falló solo la contabilidad, no volvemos a mandar el mensaje al lead
@@ -1355,6 +1358,11 @@ export async function processSend(job) {
   if (snapshotId && (await lastInboundId(conversationId)) !== snapshotId) return; // el lead volvió a escribir
   if (windowBlocked(conv)) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
+    // una activación al borde de la ventana: el panel ya decía 'respondido' pero el mensaje murió aquí
+    if (deActivacion) {
+      await activationLogDone(conv.id, 'descartado', 'ventana_cerrada_al_enviar').catch(() => {});
+      await logEvent('activacion_ventana_cerrada_al_enviar', { conv: conv.id }).catch(() => {});
+    }
     return;
   }
   // Marcamos el eco ANTES de enviar: si ghl.sendMessage LANZA después de que GHL ya entregó el mensaje
