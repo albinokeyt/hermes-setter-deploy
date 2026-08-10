@@ -23,6 +23,7 @@ const debKey = (id) => `debtoken:${id}`;
 const fuKey = (id) => `futoken:${id}`;
 const ctaKey = (id) => `ctawait:${id}`; // instante (ms) hasta el que el setter espera por un CTA
 const activarKey = (id) => `activar:${id}`; // activación externa pendiente (el setter escribe él solo)
+const rescConvKey = (id) => `rescconv:${id}`; // la activación pendiente es un RESCATE (re-chequear al disparar)
 const insFreshKey = (id) => `insfresh:${id}`; // pendiente de re-leer etiquetas frescas tras la inserción
 // Marca de "este texto lo enviamos NOSOTROS": se pone ANTES de enviar, para reconocer el eco que nos
 // devuelve el webhook aunque el envío falle después y no lleguemos a guardar nada.
@@ -395,6 +396,7 @@ export async function cancelBotJobs(conversationId) {
   // del lead se trataría como «activación» (saltándose modo test y etiquetas requeridas) y entraría
   // con el contexto de una etiqueta vieja.
   await redis.del(activarKey(conversationId));
+  await redis.del(rescConvKey(conversationId));
   // y cerramos su registro (idempotente: solo toca filas 'esperando') para que no quede colgado el
   // temporizador del panel al pausar/excluir/hacer handoff/borrar durante la espera de una activación.
   await activationLogDone(conversationId, 'descartado', 'cancelado');
@@ -784,9 +786,15 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   // se perdería en silencio (y con espera=3600 caducaba justo al ejecutarse).
   const ttlActivar = Math.max(86400, (Number(waitSeconds) || 0) * 2 + 3600);
   await redis.set(activarKey(conv.id), String(contexto || '').trim().slice(0, 1500) || '1', 'EX', ttlActivar);
+  // los RESCATES se re-chequean al disparar (con goteo de horas, un humano pudo atender entretanto)
+  if (tag === 'rescate') await redis.set(rescConvKey(conv.id), '1', 'EX', ttlActivar);
+  else await redis.del(rescConvKey(conv.id)).catch(() => {}); // una activación normal posterior pisa el marcador
   await logEvent('activador_externo', { conv: conv.id, setter: setter.id, contactId, canal: channel, mensajes_importados: ghlHistory.messages.length, espera_s: waitSeconds });
-  // espera configurable tras la etiqueta antes de que el setter entre (mín. 3 s para que no sea instantáneo)
-  const delayMs = Math.max(3, Math.min(Number(waitSeconds) || 0, 3600)) * 1000;
+  // espera configurable tras la etiqueta antes de que el setter entre (mín. 3 s para que no sea
+  // instantáneo). Tope normal 1h; el GOTEO del rescate necesita esperas de horas → opts.maxEsperaS
+  // (el token del debounce vive 3 días y ttlActivar escala con la espera, así que aguantan).
+  const topeEsperaS = Math.max(3600, Math.min(Number(opts.maxEsperaS) || 3600, 172_800));
+  const delayMs = Math.max(3, Math.min(Number(waitSeconds) || 0, topeEsperaS)) * 1000;
   await scheduleDebounce(merged, conv.id, delayMs);
   // registro en vivo (panel de Activaciones): esperando, con la hora objetivo real del temporizador
   await activationLogStart(account, setter, conv, { tag, contexto, waitSeconds: delayMs / 1000 });
@@ -1227,6 +1235,7 @@ export async function processDebounce(job) {
   const descartarActivacion = async (motivo) => {
     if (!activacion) return;
     await redis.del(activarKey(conversationId));
+    await redis.del(rescConvKey(conversationId));
     await logEvent('activacion_descartada', { conv: conv.id, motivo });
     await activationLogDone(conversationId, 'descartado', motivo);
   };
@@ -1243,6 +1252,17 @@ export async function processDebounce(job) {
     await logEvent('error_config', { conv: conv.id, msg: 'la cuenta o el agente no tiene proveedor de IA configurado' });
     await descartarActivacion('sin_proveedor');
     return;
+  }
+  // 📣 RESCATE con goteo de horas: si ALGUIEN (humano o automatización) ya respondió al lead
+  // durante la espera, el rescate sobra — sin este corte el setter escribiría encima con el
+  // contexto «nunca te respondimos». Solo aplica a rescates: una activación normal por etiqueta
+  // SÍ debe entrar aunque el workflow acabe de mandar un mensaje (ese es su flujo de siempre).
+  if (activacion && (await redis.get(rescConvKey(conversationId)))) {
+    const atendido = await one(`SELECT 1 AS ok FROM messages WHERE conversation_id = $1 AND direction = 'outbound' LIMIT 1`, [conversationId]);
+    if (atendido) {
+      await descartarActivacion('atendido_entretanto');
+      return;
+    }
   }
   // nada nuevo que responder (el último mensaje ya es nuestro)
   const lastMsg = history[history.length - 1];
@@ -1357,6 +1377,7 @@ export async function processDebounce(job) {
   }
   if (activacion) {
     await redis.del(activarKey(conversationId)); // activación consumida
+    await redis.del(rescConvKey(conversationId));
     await activationLogDone(conversationId, 'respondido', result.mensajes.join('\n')); // panel: el mensaje que respondió
   }
 

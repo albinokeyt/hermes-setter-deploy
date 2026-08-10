@@ -46,6 +46,10 @@ export default function AccountEdit() {
   const [rescCalculando, setRescCalculando] = useState(false);
   const [rescEnviando, setRescEnviando] = useState(false);
   const [rescResultado, setRescResultado] = useState(null);
+  const [rescDesde, setRescDesde] = useState(''); // rango: solo leads que escribieron entre estas fechas
+  const [rescHasta, setRescHasta] = useState('');
+  const [rescLote, setRescLote] = useState(5); // goteo: N mensajes cada M minutos
+  const [rescCada, setRescCada] = useState(10);
   const loadCommentLog = () => api.get(`/api/accounts/${id}/comment-log`).then(setCommentLog).catch(() => setCommentLog({ received: [], issues: [] }));
 
   const loadSetters = () => api.get(`/api/accounts/${id}/setters`).then(setSetters).catch(() => setSetters([]));
@@ -106,9 +110,17 @@ export default function AccountEdit() {
     } finally { setRecuperando(false); }
   };
 
+  const rangoQS = () => {
+    const p = new URLSearchParams();
+    if (rescDesde) p.set('desde', new Date(`${rescDesde}T00:00:00`).toISOString());
+    if (rescHasta) p.set('hasta', new Date(`${rescHasta}T23:59:59`).toISOString());
+    const qs = p.toString();
+    return qs ? `?${qs}` : '';
+  };
+
   const calcularRescate = async () => {
     setRescCalculando(true); setRescResultado(null);
-    try { setRescInfo(await api.get(`/api/accounts/${id}/rescate`)); }
+    try { setRescInfo(await api.get(`/api/accounts/${id}/rescate${rangoQS()}`)); }
     catch (err) { setRescResultado({ tone: 'error', text: err.message }); }
     finally { setRescCalculando(false); }
   };
@@ -119,9 +131,17 @@ export default function AccountEdit() {
     if (!window.confirm('Confírmalo de nuevo: se enviarán mensajes REALES a esos leads.')) return;
     setRescEnviando(true); setRescResultado(null);
     try {
-      const r = await api.post(`/api/accounts/${id}/rescate`, { contexto: rescContexto.trim() });
-      const partes = [`✓ ${r.programados} rescate${r.programados === 1 ? '' : 's'} programado${r.programados === 1 ? '' : 's'} (salen espaciados ~8s; míralos en ⚡ Activaciones de cada setter, etiqueta «rescate»)`];
+      const r = await api.post(`/api/accounts/${id}/rescate`, {
+        contexto: rescContexto.trim(),
+        desde: rescDesde ? new Date(`${rescDesde}T00:00:00`).toISOString() : null,
+        hasta: rescHasta ? new Date(`${rescHasta}T23:59:59`).toISOString() : null,
+        lote: rescLote,
+        cada_minutos: rescCada,
+      });
+      const partes = [`✓ ${r.programados} rescate${r.programados === 1 ? '' : 's'} programado${r.programados === 1 ? '' : 's'} en goteo de ${r.lote} cada ${r.cada_minutos} min (~${r.duracion_min} min en total; míralos en ⚡ Activaciones, etiqueta «rescate»)`];
       if (r.fuera_de_ventana) partes.push(`${r.fuera_de_ventana} imposibles: fuera de la ventana de 24h de Meta`);
+      if (r.fuera_por_goteo) partes.push(`${r.fuera_por_goteo} se saldrían de la ventana con este ritmo: acelera el goteo o lánzales otra pasada`);
+      if (r.fuera_por_tope) partes.push(`${r.fuera_por_tope} superan las 48h de cola con este ritmo: acelera el goteo o lánzales otra pasada`);
       if (r.sin_setter) partes.push(`${r.sin_setter} sin setter`);
       if (r.setter_apagado) partes.push(`${r.setter_apagado} con su setter apagado`);
       setRescResultado({ tone: 'ok', text: partes.join(' · ') });
@@ -315,6 +335,19 @@ export default function AccountEdit() {
           <div className="space-y-2 border-t border-slate-100 pt-5">
             <span className="block text-sm font-bold text-slate-800">📣 Rescatar leads sin responder</span>
             <p className="-mt-1 text-xs text-slate-400">Leads que escribieron y NADIE les respondió jamás (ni bot ni humano) — p. ej. por una racha con la IA apagada. El setter les escribe él, leyendo cada conversación y siguiendo tu contexto. Ojo: en Instagram/WhatsApp solo es posible dentro de las 24h del último mensaje del lead (los demás quedan fuera por Meta). Repetir la pasada es seguro: solo cuenta a quien SIGUE sin respuesta.</p>
+            <div className="flex flex-wrap items-end gap-2">
+              <div>
+                <span className="mb-1 block text-[11px] font-medium text-slate-500">Que escribieron desde</span>
+                <input type="date" value={rescDesde} onChange={(e) => { setRescDesde(e.target.value); setRescInfo(null); }}
+                  className="rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-violet-400" />
+              </div>
+              <div>
+                <span className="mb-1 block text-[11px] font-medium text-slate-500">hasta</span>
+                <input type="date" value={rescHasta} onChange={(e) => { setRescHasta(e.target.value); setRescInfo(null); }}
+                  className="rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-violet-400" />
+              </div>
+              <span className="pb-1.5 text-[11px] text-slate-400">(vacío = todos)</span>
+            </div>
             {!rescInfo ? (
               <Button variant="secondary" loading={rescCalculando} onClick={calcularRescate}>Calcular candidatos</Button>
             ) : (
@@ -325,6 +358,16 @@ export default function AccountEdit() {
                 </p>
                 {rescInfo.dentro_ventana > 0 && (
                   <>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                      <span className="font-semibold">⏱️ Goteo:</span> enviar
+                      <input type="number" min="1" max="20" value={rescLote} onChange={(e) => setRescLote(Math.min(20, Math.max(1, Number(e.target.value) || 1)))}
+                        className="w-16 rounded-lg border border-slate-300 px-2 py-1 text-xs outline-none focus:border-violet-400" />
+                      mensajes cada
+                      <input type="number" min="1" max="240" value={rescCada} onChange={(e) => setRescCada(Math.min(240, Math.max(1, Number(e.target.value) || 1)))}
+                        className="w-16 rounded-lg border border-slate-300 px-2 py-1 text-xs outline-none focus:border-violet-400" />
+                      minutos
+                      <span className="text-slate-400">≈ {Math.floor(Math.max(0, rescInfo.dentro_ventana - 1) / Math.max(1, rescLote)) * rescCada + 1} min en total</span>
+                    </div>
                     <textarea
                       value={rescContexto}
                       rows={3}

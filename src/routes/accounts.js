@@ -231,17 +231,26 @@ export default async function accountRoutes(app) {
   // 📣 RESCATE: leads que escribieron y NADIE les respondió jamás (ni bot ni humano) — p. ej. por
   // una racha con la IA apagada. El setter les escribe ÉL, con un contexto del negocio que manda
   // (misma maquinaria que la activación por etiqueta: respeta ventana de Meta, pausas y registro ⚡).
-  const candidatosRescate = (accId) => q(
+  // rango opcional: solo leads cuyo ÚLTIMO mensaje cayó entre esas fechas (elegir la tanda a rescatar)
+  const candidatosRescate = (accId, desde = null, hasta = null) => q(
     `SELECT c.id, c.ghl_contact_id, c.channel, c.setter_id, c.last_inbound_at
        FROM conversations c
       WHERE c.account_id = $1 AND c.bot_paused = false
         AND c.stage NOT IN ('descartado', 'atencion_humana')
+        AND ($2::timestamptz IS NULL OR c.last_inbound_at >= $2::timestamptz)
+        AND ($3::timestamptz IS NULL OR c.last_inbound_at <= $3::timestamptz)
         AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'inbound')
         AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'outbound')
       ORDER BY c.last_inbound_at DESC NULLS LAST
       LIMIT 500`,
-    [accId]
+    [accId, desde, hasta]
   );
+  // acotada a fechas sensatas: Date.parse acepta años extremos cuyo ISO Postgres rechaza (500)
+  const fechaISO = (v) => {
+    const t = Date.parse(String(v || ''));
+    if (!Number.isFinite(t)) return null;
+    return (t >= Date.UTC(2000, 0, 1) && t <= Date.UTC(2100, 0, 1)) ? new Date(t).toISOString() : null;
+  };
   // ventana de Meta (~24h desde el último mensaje del lead): fuera de ella es IMPOSIBLE escribirles
   const enVentana = (c) => !WINDOWED_CHANNELS.includes(c.channel)
     || (c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < 23 * 3_600_000);
@@ -251,7 +260,7 @@ export default async function accountRoutes(app) {
     if (!Number.isInteger(accId) || accId <= 0) return reply.code(404).send({ error: 'No existe' });
     if (!(await requireManageAgents(req, reply))) return;
     if (!(await canAccessAccount(req, accId))) return reply.code(403).send({ error: 'Sin acceso' });
-    const filas = await candidatosRescate(accId);
+    const filas = await candidatosRescate(accId, fechaISO(req.query?.desde), fechaISO(req.query?.hasta));
     const dentro = filas.filter(enVentana).length;
     return { total: filas.length, dentro_ventana: dentro, fuera_ventana: filas.length - dentro };
   });
@@ -276,28 +285,47 @@ export default async function accountRoutes(app) {
     const lock = await redis.set(`rescate:${accId}`, '1', 'EX', 1800, 'NX');
     if (!lock) return reply.code(409).send({ error: 'Ya hay un rescate en curso para esta conexión. Espera a que termine (mira el Registro de eventos: rescate_completado).' });
 
+    // ⏱️ GOTEO configurable: `lote` mensajes cada `cada_minutos` (dentro del lote, 8s entre leads)
+    const lote = Math.min(Math.max(1, Math.round(Number(req.body?.lote) || 5)), 20);
+    const cadaMin = Math.min(Math.max(1, Math.round(Number(req.body?.cada_minutos) || 10)), 240);
+
     const setters = await q(`SELECT * FROM setters WHERE account_id = $1`, [accId]);
     const porId = Object.fromEntries(setters.map((s) => [s.id, s]));
     const porDefecto = setters.find((s) => s.is_default) || setters[0] || null;
 
-    const filas = await candidatosRescate(accId);
+    const filas = await candidatosRescate(accId, fechaISO(req.body?.desde), fechaISO(req.body?.hasta));
     const elegibles = [];
     let fueraVentana = 0;
     let sinSetter = 0;
     let setterApagado = 0;
+    let fueraPorGoteo = 0;
+    let fueraPorTope = 0;
     for (const c of filas) {
       if (!enVentana(c)) { fueraVentana++; continue; }
       const setter = porId[c.setter_id] || porDefecto;
       if (!setter) { sinSetter++; continue; }
       if (!setter.bot_enabled) { setterApagado++; continue; } // se autodescartaría: no contarlo como programado
-      elegibles.push({ ...c, setter });
+      // hora REAL de salida con el goteo: si para entonces su ventana de Meta ya cerró, no se
+      // programa un envío condenado — se cuenta aparte para que el usuario acelere el goteo
+      const i = elegibles.length;
+      const waitS = 15 + Math.floor(i / lote) * cadaMin * 60 + (i % lote) * 8;
+      // tope duro de programación (48h): sin este corte, pipeline recortaría esperas mayores a 48h
+      // y TODOS esos leads dispararian A LA VEZ — justo la ráfaga que el goteo evita
+      if (waitS > 172_800) { fueraPorTope++; continue; }
+      if (WINDOWED_CHANNELS.includes(c.channel) && c.last_inbound_at
+        && (new Date(c.last_inbound_at).getTime() + 23 * 3_600_000) < (Date.now() + waitS * 1000)) {
+        fueraPorGoteo++;
+        continue;
+      }
+      elegibles.push({ ...c, setter, waitS });
       if (elegibles.length >= 150) break; // tope por pasada (puede repetirse: cero-outbound es idempotente)
     }
 
     // Respondemos YA y programamos en segundo plano: cada activación consulta la API de GHL
     // (historial + contacto) y con decenas de leads tardaría minutos. Los envíos salen ESPACIADOS
     // (~8s entre leads) para no parecer una ráfaga; el progreso se ve en ⚡ Activaciones (tag «rescate»).
-    reply.send({ programados: elegibles.length, fuera_de_ventana: fueraVentana, sin_setter: sinSetter, setter_apagado: setterApagado, total_sin_respuesta: filas.length });
+    const duracionMin = elegibles.length ? Math.ceil(((elegibles[elegibles.length - 1].waitS || 0) / 60)) : 0;
+    reply.send({ programados: elegibles.length, fuera_de_ventana: fueraVentana, fuera_por_goteo: fueraPorGoteo, fuera_por_tope: fueraPorTope, sin_setter: sinSetter, setter_apagado: setterApagado, total_sin_respuesta: filas.length, duracion_min: duracionMin, lote, cada_minutos: cadaMin });
 
     setImmediate(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -318,8 +346,9 @@ export default async function accountRoutes(app) {
           if (!sigue) { atendidosEntretanto++; continue; }
           try {
             // respetarPausaHumano: el rescate NO levanta la auto-pausa por intervención humana;
-            // canal: ancla la activación a la conversación auditada (contactos multicanal)
-            await activateSetterForContact(account, c.setter, c.ghl_contact_id, 15 + i * 8, contexto, 'rescate', { respetarPausaHumano: true, canal: c.channel });
+            // canal: ancla la activación a la conversación auditada; maxEsperaS: el goteo puede
+            // programar envíos a horas vista (el tope normal de 1h los comprimiría todos)
+            await activateSetterForContact(account, c.setter, c.ghl_contact_id, c.waitS, contexto, 'rescate', { respetarPausaHumano: true, canal: c.channel, maxEsperaS: 172_800 });
             ok++;
           } catch (err) {
             fallos++;
