@@ -1,7 +1,7 @@
 import { one } from '../db.js';
 import { generateReply } from '../services/agent.js';
 import { typingDelayMs } from '../services/humanize.js';
-import { recordUsage, mergeSetter } from '../services/pipeline.js';
+import { recordUsage, mergeSetter, filtrarRepetidos } from '../services/pipeline.js';
 import { requireManageAgents, canAccessAccount, accessibleAccountIds } from '../lib/session.js';
 
 export default async function playgroundRoutes(app) {
@@ -49,8 +49,13 @@ export default async function playgroundRoutes(app) {
     try {
       const result = await generateReply({ account, provider, conversation: fakeConv, history: mapped });
       await recordUsage(account.id, null, provider, result.model, result.usage, 'playground', null, setterId);
+      // mismo filtro que las respuestas normales de producción (solo burbujas duplicadas dentro de
+      // la tanda; contra el historial no se filtra): lo que se prueba es lo que saldría de verdad
+      const rep = filtrarRepetidos(result.mensajes, []);
+      result.mensajes = rep.unicos;
       return {
         ...result,
+        repetidos_filtrados: rep.filtrados.length,
         memoria_final: { ...fakeConv.memory, ...result.memoria },
         delays: result.mensajes.map((m, i) => typingDelayMs(m, i)),
       };

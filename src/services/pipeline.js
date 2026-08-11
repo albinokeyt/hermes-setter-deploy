@@ -509,6 +509,32 @@ export async function handleInbound(account, evt) {
   const attachments = Array.isArray(evt.attachments) ? evt.attachments : [];
   if (!textBody && !attachments.length) return null; // nada que procesar
 
+  // Entrantes SIN messageId (p. ej. la ruta de workflow): sin id no hay ON CONFLICT que pare un
+  // reenvío del webhook, y ese reenvío disparaba un SEGUNDO ciclo que re-respondía lo ya respondido.
+  // Candado por payload CRUDO (texto + adjuntos tal como llegan, ANTES de visión/transcripción, que
+  // no son deterministas) y ANTES del upsert (un descarte no debe tocar last_inbound_at). El TTL se
+  // acota al debounce EFECTIVO — el del setter ya asignado a la conversación si lo hay, que es el
+  // que usará scheduleDebounce —: así solo se descartan copias que llegan mientras la primera aún
+  // espera, y un lead que repite «ok» legítimamente DESPUÉS de nuestra respuesta nunca cae dentro.
+  // Con el bot apagado no hay ciclo que proteger: no se aplica (que la repetición se archive).
+  if (!evt.messageId && connAi && connBot) {
+    const filaDeb = await one(
+      `SELECT s.debounce_seconds AS d FROM conversations c
+         LEFT JOIN setters s ON s.id = c.setter_id
+        WHERE c.account_id = $1 AND c.ghl_contact_id = $2 AND c.channel = $3`,
+      [account.id, evt.contactId, channel]
+    );
+    const debEfectivo = Number(filaDeb?.d) || Number(account.debounce_seconds) || 35;
+    const crudo = `${textBody}|${attachments.map((a) => (typeof a === 'string' ? a : a?.url || JSON.stringify(a))).join(',')}`;
+    const inbHash = crypto.createHash('md5').update(`${account.id}|${evt.contactId}|${channel}|${crudo}`).digest('hex');
+    const ttl = Math.min(30, Math.max(5, debEfectivo));
+    const fresco = await redis.set(`inb:${inbHash}`, '1', 'EX', ttl, 'NX');
+    if (!fresco) {
+      await logEvent('mensaje_duplicado_sin_id', { account: account.id, contacto: evt.contactId, body: textBody.slice(0, 120) });
+      return null;
+    }
+  }
+
   // Última actividad ANTES de esta entrada (el upsert de abajo pisa last_inbound_at), para saber si
   // el lead vuelve tras un periodo de inactividad y reaplicar el tiempo de inserción.
   const prevAct = await one(
@@ -592,6 +618,7 @@ export async function handleInbound(account, evt) {
     );
     if (!inserted) return conv; // duplicado (reintento de GHL)
   } else {
+    // sin messageId el candado por payload crudo del INICIO de esta función ya filtró los reenvíos
     await q(`INSERT INTO messages (conversation_id, direction, source, body) VALUES ($1, 'inbound', 'lead', $2)`, [conv.id, body]);
   }
 
@@ -903,7 +930,30 @@ export async function handleOutboundEvent(account, evt) {
     // (GHL puede reemitir el evento, y si el envío falló tras entregar el job se reintenta y reenvía).
     // Con consumo de un solo uso, el segundo eco pausaba el bot. El riesgo de tragarse el mismo texto
     // escrito por un humano en esos minutos ya lo asumía el respaldo de abajo, con ventana más amplia.
-    if (await redis.get(ecoKey(conv.id, body))) return; // era nuestro
+    if (await redis.get(ecoKey(conv.id, body))) {
+      // Era nuestro. El eco hace además de RED CONTABLE del envío ambiguo: si ghl.sendMessage lanzó
+      // DESPUÉS de que GHL entregara (timeout/5xx/red), `sentjob` impide el reenvío y la fila nunca
+      // se insertó — sin esto la burbuja entregada quedaba invisible (panel sin mensaje,
+      // last_outbound_at viejo). Si processSend sí la guardó, el ON CONFLICT lo deja en nada.
+      const yaGuardado = evt.messageId
+        ? await one(`SELECT id FROM messages WHERE ghl_message_id = $1 LIMIT 1`, [evt.messageId])
+        : await one(
+            `SELECT id FROM messages WHERE conversation_id = $1 AND direction = 'outbound'
+               AND btrim(body) = btrim($2) AND created_at >= now() - interval '15 minutes' LIMIT 1`,
+            [conv.id, body]
+          );
+      if (!yaGuardado) {
+        await q(
+          `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id)
+           VALUES ($1, 'outbound', 'bot', $2, $3)
+           ON CONFLICT (ghl_message_id) WHERE ghl_message_id IS NOT NULL DO NOTHING`,
+          [conv.id, body, evt.messageId || null]
+        );
+        await q(`UPDATE conversations SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
+        await logEvent('eco_registro_envio_ambiguo', { conv: conv.id }).catch(() => {});
+      }
+      return;
+    }
     const propio = await one(
       `SELECT id FROM messages WHERE conversation_id = $1 AND direction = 'outbound'
          AND source IN ('bot', 'seguimiento') AND btrim(body) = btrim($2)
@@ -1211,12 +1261,64 @@ async function lastInboundId(conversationId) {
   return row?.id || 0;
 }
 
-// Consume el token de debounce de forma atómica: solo UNA ejecución puede
-// comprometerse a enviar, aunque dos jobs pasaran la comprobación inicial.
-async function consumeDebounceToken(conversationId, token) {
-  const script = `if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('del', KEYS[1]) return 1 else return 0 end`;
-  return (await redis.eval(script, 1, debKey(conversationId), token)) === 1;
+// ── Filtro anti-repetición ───────────────────────────────────────────────────
+// Red de seguridad para el caso «el setter contestó dos veces lo mismo»: se tiran las burbujas
+// idénticas a otra de la MISMA tanda, o idénticas a un saliente RECIENTE. Reglas que lo mantienen
+// inofensivo para las repeticiones LEGÍTIMAS:
+//  · Igualdad normalizada (minúsculas, sin puntuación NI signos — «¿Te viene bien?» ≡ «Te viene
+//    bien?»); una paráfrasis de verdad no se toca (eso lo cubre la regla de estilo del prompt).
+//  · Contra el historial solo cuentan salientes del BOT de los últimos 15 minutos (la doble
+//    respuesta ocurre en segundos; re-responder días después es normal) y de ≥15 chars.
+//  · Las burbujas con URL nunca se filtran contra el historial: reenviar el enlace cuando el lead
+//    lo vuelve a pedir es literal por diseño. (Dentro de su tanda una URL duplicada sí se tira.)
+//  · Si TODO saldría filtrado se conserva la primera burbuja: jamás silencio total (la despedida
+//    del handoff tiene que salir, y una activación «respondido» sin texto mentiría).
+const normRep = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+const MIN_REP_HISTORIA = 15;
+const VENTANA_REP_MS = 15 * 60_000;
+const tieneUrl = (s) => /https?:\/\/|www\./i.test(String(s || ''));
+export function filtrarRepetidos(mensajes, history) {
+  const ahora = Date.now();
+  const recientes = new Set(
+    (Array.isArray(history) ? history : [])
+      .filter((m) => m.direction === 'outbound' && m.source !== 'humano')
+      .filter((m) => !m.created_at || ahora - new Date(m.created_at).getTime() < VENTANA_REP_MS)
+      .slice(-12)
+      .map((m) => normRep(m.body))
+      .filter((t) => t.length >= MIN_REP_HISTORIA)
+  );
+  const vistos = new Set();
+  const unicos = [];
+  const filtrados = [];
+  const lista = Array.isArray(mensajes) ? mensajes : [];
+  for (const msg of lista) {
+    // burbujas que normalizan a vacío («...», «!!») se dejan pasar tal cual: no son repetición
+    const k = normRep(msg) || `raw:${String(msg).trim()}`;
+    const repEnTanda = vistos.has(k);
+    const repEnHistoria = !tieneUrl(msg) && k.length >= MIN_REP_HISTORIA && recientes.has(k);
+    if (repEnTanda || repEnHistoria) {
+      filtrados.push(msg);
+      continue;
+    }
+    vistos.add(k);
+    unicos.push(msg);
+  }
+  if (!unicos.length && lista.length) {
+    // todo era repetido: mejor UNA burbuja (la primera) que un silencio que rompe handoff/activación
+    unicos.push(lista[0]);
+    const i = filtrados.indexOf(lista[0]);
+    if (i >= 0) filtrados.splice(i, 1);
+  }
+  return { unicos, filtrados };
 }
+
+// Consume un token de vigencia de forma atómica: solo UNA ejecución puede comprometerse a enviar,
+// aunque dos jobs (o una re-ejecución por worker caído/stalled) pasaran la comprobación inicial.
+async function consumeToken(key, token) {
+  const script = `if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('del', KEYS[1]) return 1 else return 0 end`;
+  return (await redis.eval(script, 1, key, token)) === 1;
+}
+const consumeDebounceToken = (conversationId, token) => consumeToken(debKey(conversationId), token);
 
 export async function processDebounce(job) {
   const { conversationId, token } = job.data;
@@ -1360,6 +1462,22 @@ export async function processDebounce(job) {
   }
   if (result.etiqueta) await applyStage(conv, account, result.etiqueta, result.motivo);
 
+  // Anti-repetición SOLO dentro de la tanda (burbujas duplicadas de una misma llamada al LLM).
+  // Contra el historial NO se filtra aquí a propósito: si el lead re-pregunta («¿cuánto me
+  // dijiste?»), la re-respuesta es legítimamente idéntica y tirarla dejaría su pregunta sin
+  // contestar — el eco entre tandas (doble ciclo) ya lo cortan las capas de dedupe del entrante.
+  // El filtro garantiza al menos UNA burbuja: la despedida del handoff siempre sale.
+  {
+    const rep = filtrarRepetidos(result.mensajes, []);
+    if (rep.filtrados.length) {
+      await logEvent('respuesta_repetida_filtrada', {
+        conv: conv.id, filtradas: rep.filtrados.length, enviadas: rep.unicos.length,
+        ejemplos: rep.filtrados.slice(0, 3).map((t) => String(t).slice(0, 80)),
+      });
+      result.mensajes = rep.unicos;
+    }
+  }
+
   let cursor = 0;
   for (let i = 0; i < result.mensajes.length; i++) {
     cursor += typingDelayMs(result.mensajes[i], i);
@@ -1421,8 +1539,25 @@ export async function processSend(job) {
   // devolvería nuestro propio texto como intervención externa y el bot SE PAUSARÍA A SÍ MISMO.
   // TTL corto y consumo de un solo uso (si la petición nunca llegó, caduca sola).
   await markOwnOutbound(conv.id, body);
-  const res = await ghl.sendMessage(account, { channel: conv.channel, contactId: conv.ghl_contact_id, message: body });
+  // `sentjob` se marca ANTES del POST: si el envío entra en un estado AMBIGUO (timeout, 5xx, corte
+  // de red — GHL pudo haber entregado), el reintento de BullMQ NO debe re-enviar: el lead recibiría
+  // la misma burbuja dos veces. Solo si GHL RECHAZÓ en firme (4xx ≠ 408/429: seguro que no salió)
+  // se libera la marca para que el reintento tenga sentido. Perder una burbuja en el caso ambiguo
+  // es el precio de no duplicarla — y queda trazado.
   await redis.setex(sentKey, 3600, '1').catch(() => {});
+  let res;
+  try {
+    res = await ghl.sendMessage(account, { channel: conv.channel, contactId: conv.ghl_contact_id, message: body });
+  } catch (err) {
+    const st = Number(err?.status) || 0;
+    const rechazoFirme = st >= 400 && st < 500 && st !== 408 && st !== 429;
+    if (rechazoFirme || st === 429) {
+      await redis.del(sentKey).catch(() => {}); // no salió: el reintento puede volver a intentarlo
+    } else {
+      await logEvent('envio_ambiguo_no_reintentado', { conv: conv.id, error: String(err?.message || err).slice(0, 200) }).catch(() => {});
+    }
+    throw err;
+  }
   try {
     // Guardamos SIEMPRE que se pueda el id real de GHL: es lo que evita que el import de la activación
     // reimporte nuestro propio mensaje y lo re-etiquete como 'humano'. Cubrimos las variantes del payload.
@@ -1581,6 +1716,26 @@ export async function processFollowup(job) {
 
   // ¿el lead respondió mientras generábamos? → el ciclo normal (debounce) responde; este seguimiento sobra
   if ((await lastInboundId(conversationId)) !== snapshotId) return;
+
+  // Anti-repetición CON historial solo aquí: en un seguimiento el lead NO ha escrito desde nuestro
+  // último mensaje, así que un toque que calca el anterior jamás es una re-respuesta pedida — es el
+  // modelo repitiéndose. El filtro garantiza al menos UNA burbuja, así que el followup_state
+  // «enviado_N» nunca miente.
+  {
+    const rep = filtrarRepetidos(result.mensajes, history);
+    if (rep.filtrados.length) {
+      await logEvent('respuesta_repetida_filtrada', {
+        conv: conv.id, origen: 'seguimiento', filtradas: rep.filtrados.length, enviadas: rep.unicos.length,
+        ejemplos: rep.filtrados.slice(0, 3).map((t) => String(t).slice(0, 80)),
+      });
+      result.mensajes = rep.unicos;
+    }
+  }
+
+  // Compromiso de envío ATÓMICO (mismo patrón que el debounce): si el worker cayó tras encolar y
+  // BullMQ re-ejecuta este job, el token ya no está y la re-ejecución muere aquí en vez de mandar
+  // la tanda de seguimiento DOS veces.
+  if (token && !(await consumeToken(fuKey(conversationId), token))) return;
 
   let cursor = 0;
   for (let i = 0; i < result.mensajes.length; i++) {

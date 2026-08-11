@@ -36,6 +36,7 @@ function styleRules(account) {
 - Mensajes CORTOS, como se chatea de verdad. Nada de párrafos largos, listas, negritas ni markdown.
 - Divide tu respuesta en 1 a ${account.max_msgs || 3} mensajes según fluya natural (saludo aparte, idea aparte). Casi siempre 2 o 3.
 - El lead puede haber enviado varios mensajes seguidos: respóndelos como un TODO, no uno por uno.
+- NUNCA te repitas: no vuelvas a responder algo que ya respondiste antes en la conversación, ni repitas la misma idea con otras palabras dentro de la misma respuesta. Si ya lo dijiste, no lo expliques otra vez salvo que el lead lo vuelva a preguntar.
 - Máximo UNA pregunta por turno.
 - Emojis con mucha moderación (0 o 1), solo si encajan.
 - Deja SIEMPRE un espacio después de punto, coma o interrogación antes de la siguiente palabra ("...atacado. Si quieres..."): si pegas dos frases sin espacio, el chat lo convierte en un enlace falso.

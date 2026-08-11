@@ -237,10 +237,26 @@ export default async function webhookRoutes(app) {
         await logEvent('timestamp_viejo', { type: p.type, timestamp: p.timestamp });
         return;
       }
-      const dedupeKey = p.webhookId || p.messageId;
+      // Para los eventos de mensaje la clave es el messageId: identifica al MENSAJE, no a la
+      // entrega. GHL puede reintentar la misma entrega con un webhookId NUEVO — con el webhookId
+      // por delante, ese reintento se colaba y el setter respondía DOS VECES al mismo mensaje.
+      const dedupeKey = (p.type === 'InboundMessage' || p.type === 'OutboundMessage')
+        ? (p.messageId || p.webhookId)
+        : (p.webhookId || p.messageId);
       if (dedupeKey) {
         const fresh = await redis.set(`wh:${dedupeKey}`, '1', 'EX', 172800, 'NX');
         if (!fresh) return; // reintento duplicado de GHL
+      } else if ((p.type === 'InboundMessage' || p.type === 'OutboundMessage') && p.timestamp) {
+        // Mensaje SIN ningún id: el timestamp del payload es el discriminador — un REINTENTO
+        // repite el timestamp original (freshTimestamp lo acepta hasta 5 min), mientras que un
+        // lead que repite «ok» de verdad genera un evento con timestamp NUEVO. 10 min de memoria.
+        // Sin timestamp NO se aplica (la huella colapsaría mensajes legítimos idénticos): ese caso
+        // lo cubre el candado corto por payload crudo del pipeline.
+        const huella = crypto.createHash('md5')
+          .update(`${p.type}|${p.locationId}|${p.contactId}|${String(p.body || '')}|${p.timestamp}`)
+          .digest('hex');
+        const fresh = await redis.set(`whts:${huella}`, '1', 'EX', 600, 'NX');
+        if (!fresh) return; // reintento duplicado sin id
       }
 
       const type = p.type;
