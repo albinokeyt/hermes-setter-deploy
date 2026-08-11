@@ -61,7 +61,8 @@ export async function chatCompletion({ provider, model, temperature = 0.8, messa
       if (err instanceof LlmError && !(err.status === 429 || err.status >= 500)) throw err;
       lastErr = err instanceof LlmError ? err : new LlmError(`LLM ${provider.name}: ${err.message}`, 0, null);
     }
-    if (attempt < 2) await sleep(1500 * (attempt + 1));
+    // nunca dormir DESPUÉS del último intento: con attempts<3 ese sleep solo retrasaba el error
+    if (attempt < attempts - 1) await sleep(1500 * (attempt + 1));
   }
   throw lastErr;
 }

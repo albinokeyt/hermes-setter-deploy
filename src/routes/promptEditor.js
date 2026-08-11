@@ -23,13 +23,13 @@ LA ENTREVISTA (una pregunta por mensaje, en este orden; si el usuario ya pegó m
 5) FLUJO DE SONDEO: qué preguntas de cualificación hace (dolor/situación, urgencia/tiempo, compromiso…), en qué orden, y qué necesita saber ANTES de proponer el objetivo. ¿Hay fases o tipos de lead que cambian el mensaje?
 6) PRECIOS Y OBJECIONES: ¿se da el precio por chat o se pospone (y con qué frase)? Lista las 4-6 objeciones más comunes y cómo quiere que se respondan (pide sus respuestas reales si las tiene).
 7) CASOS DELICADOS: según el nicho (relaciones, salud, dinero…), ¿hay temas sensibles que requieren derivar a un humano? ¿Qué casos deben marcar REQUIERE ATENCIÓN HUMANA (enfado, insistencia en precio con interés real, pedir hablar con persona…)?
-8) URGENCIA Y SEGUIMIENTO: ¿palancas de urgencia honestas que pueda usar al cerrar? ¿Cómo quiere los seguimientos (pactar fecha, tono)?
+8) URGENCIA Y SEGUIMIENTO: ¿palancas de urgencia honestas que pueda usar al cerrar? Para los seguimientos (cuando el lead deja de responder) pregunta SOLO cuántos toques quiere y qué decir en cada uno POR ORDEN (1er seguimiento, 2º seguimiento, 3º…) y con qué tono. PROHIBIDO preguntar cada cuántas horas o días, o pedir intervalos de tiempo: el CUÁNDO de cada seguimiento lo programa la app (pestaña Seguimiento del setter), nunca el prompt.
 Cuando tengas lo esencial (1-6 como mínimo), ofrece generar; no alargues la entrevista si el usuario quiere el prompt ya — genera con lo que haya y señala los huecos.
 
 CÓMO REDACTAS LOS 3 BLOQUES:
 1) IDENTIDAD Y PERSONALIDAD: quién es + "CÓMO ESCRIBES (reglas que mandan siempre)" con las reglas duras de estilo + "QUÉ NO DICES JAMÁS (líneas rojas)".
 2) NEGOCIO Y OFERTA: QUÉ ES (y qué NO es, con los matices), A QUIÉN, la oferta/el paso que se gestiona desde el chat, POLÍTICA DE PRECIOS con guion de posposición y cuándo puede dejar de posponerse, ENLACES PERMITIDOS con condiciones exactas por enlace, y PREGUNTAS FRECUENTES Y OBJECIONES con respuestas guiadas ("adáptalas, no las sueltes literales").
-3) FLUJO Y OBJETIVO: OBJETIVO en una frase (qué hace y qué NO hace), FILTRO CLAVE, PASO A PASO numerado con guiones y condiciones, la SEÑAL DE CIERRE (cuándo saltarse pasos porque el lead ya quiere), qué es imprescindible ANTES de enviar el enlace, CUÁNDO CALIFICADO / EN CONVERSIÓN / DESCARTADO, y los casos de REQUIERE ATENCIÓN HUMANA.
+3) FLUJO Y OBJETIVO: OBJETIVO en una frase (qué hace y qué NO hace), FILTRO CLAVE, PASO A PASO numerado con guiones y condiciones, la SEÑAL DE CIERRE (cuándo saltarse pasos porque el lead ya quiere), qué es imprescindible ANTES de enviar el enlace, CUÁNDO CALIFICADO / EN CONVERSIÓN / DESCARTADO, los casos de REQUIERE ATENCIÓN HUMANA, y los SEGUIMIENTOS como lista ORDINAL (PRIMER SEGUIMIENTO / SEGUNDO / TERCERO…, cada uno con su intención y su guion) SIN tiempos — jamás escribas "a las X horas" ni "al día siguiente": la cadencia la decide la app, el prompt solo dicta QUÉ decir en cada toque. Encabeza esa sección con la regla: "cuando recibas una TAREA ESPECIAL de SEGUIMIENTO #N, usa el guion del seguimiento #N de esta lista; si la tarea trae su propia instrucción, esa instrucción manda".
 
 FORMATO DE SALIDA:
 - Cuando tengas suficiente información (o el usuario pida aplicar), termina tu mensaje con un bloque JSON EXACTO:
@@ -37,6 +37,7 @@ FORMATO DE SALIDA:
 {"identidad":"<texto completo del bloque 1>","negocio":"<texto completo del bloque 2>","flujo":"<texto completo del bloque 3>","cambios":["qué pusiste/cambiaste en cada bloque"]}
 \`\`\`
 - Si todavía falta un dato CLAVE (objetivo, enlaces, filtro), NO pongas el JSON: haz la siguiente pregunta.
+- Si el prompt incluye seguimientos, recuérdale al usuario EN TU MENSAJE (fuera del JSON) que cree ese mismo número de pasos en la pestaña Seguimiento del setter: ahí se decide cada cuánto y cuántos toques se envían de verdad — sin pasos ahí, no sale ningún seguimiento.
 - Responde en español, cercano y profesional. Una pregunta por mensaje, siempre.`;
 
 export const DEFAULT_CORRECTOR = `Eres un INGENIERO/CORRECTOR DE PROMPTS de élite para setters de ventas por IA (chat de Instagram/WhatsApp). NO creas el prompt desde cero: tomas el prompt ACTUAL del setter (sus 3 bloques: Identidad, Negocio, Flujo) y le aplicas los CAMBIOS que te pide el usuario (que puede adjuntar imágenes como referencia, p. ej. capturas de una conversación donde el setter lo hizo mal).
@@ -47,6 +48,7 @@ CÓMO TRABAJAS:
 - CONVIERTE QUEJAS EN REGLAS: si el usuario reporta un mal comportamiento ("saludó con emoji", "repitió dos veces lo de la sesión"), no lo parchees vago — escribe una regla explícita en la sección correcta, con la PROHIBICIÓN y la ALTERNATIVA ("PROHIBIDO X; en su lugar haz Y"), y si aplica, la coletilla de frecuencia ("se dice UNA SOLA VEZ"). Si el comportamiento venía de una regla vieja, elimínala o corrígela para que no queden dos reglas en conflicto.
 - CADA COSA EN SU SECCIÓN: estilo/tono → bloque 1 (reglas de escritura o líneas rojas); datos, precios, enlaces y objeciones → bloque 2; pasos, filtro, estados y derivación a humano → bloque 3. Si la sección no existe, créala con título en MAYÚSCULAS siguiendo el formato del prompt.
 - Respeta el OBJETIVO del setter tal como esté (agendar una cita, o enviar un enlace de venta / recurso gratuito / agenda). NUNCA inventes datos, precios ni URLs: usa solo lo que el usuario indique.
+- SEGUIMIENTOS SIN TIEMPOS: los seguimientos del bloque 3 van POR ORDEN (PRIMER SEGUIMIENTO / SEGUNDO…), nunca con horas ni días — la cadencia la programa la app en la pestaña Seguimiento del setter. Si el usuario pide «un seguimiento a los 2 días», escribe el guion del toque SIN el tiempo y aclara en \`cambios\` que el cuándo se configura en esa pestaña; si tocas la sección de seguimientos y arrastra tiempos de una versión vieja, elimínalos de paso (indicándolo en \`cambios\`).
 - COHERENCIA GLOBAL: tras el cambio, revisa que ninguna otra regla del prompt lo contradiga (si añades "sin emojis" y el saludo de ejemplo llevaba uno, corrige también el saludo).
 - Si una instrucción es ambigua o falta un dato, aplícala de la forma más razonable y conservadora, y dilo en una línea.
 
@@ -229,10 +231,12 @@ async function runPromptEditor(target, accountId, setterId, req, reply) {
   }
 
   // maxTokens ALTO: los 3 bloques completos + explicación no caben en 2000 y el JSON llegaba CORTADO
-  // (parse imposible → mensaje corto sin botones). Y timeout largo: generar 8000 tokens no cabe en 60 s
-  // con proveedores lentos (abortaba con 502 tras varios reintentos).
+  // (parse imposible → mensaje corto sin botones). El timeout por intento es 90 s: el peor caso
+  // encadena 2 intentos + el reintento de propuesta rota (~270 s) y tiene que quedar por DEBAJO del
+  // corte del navegador (~300 s en Chrome) — con 120 s por intento la respuesta llegaba con la
+  // petición ya muerta: el usuario veía un error de red y los tokens se habían cobrado igual.
   const MAX_TOKENS = 8000;
-  const TIMEOUT_MS = 120_000;
+  const TIMEOUT_MS = 90_000;
   const hayImagenes = Array.isArray(b.images) && b.images.length > 0;
   const gastar = (usage) => recordUsage(accountId, null, provider, modelUsed, usage, mode === 'edit' ? 'corrector' : 'arquitecto', null, setterId);
 
@@ -259,11 +263,22 @@ async function runPromptEditor(target, accountId, setterId, req, reply) {
     return out;
   };
 
+  // 2 intentos: un 429/red/5xx/timeout puntual del proveedor reintenta solo. El mensaje distingue
+  // el fallo PERMANENTE (clave/modelo mal → reenviar no arregla nada, hay que ir a Configuración)
+  // del transitorio, y deja claro que la conversación NO se pierde — el 502 crudo asustaba sin más.
+  const ATTEMPTS = 2;
+  const PERMANENTES = new Set([400, 401, 403, 404, 422]);
+  const falloLlm = (err) => reply.code(502).send({
+    error: PERMANENTES.has(err.status)
+      ? `El proveedor de IA rechazó la petición (${err.message}). Reenviar no lo arreglará: revisa el modelo y la clave de API en Configuración → IA (o en la pestaña IA del setter).`
+      : `El modelo de IA no respondió (${err.message}). No se perdió nada: espera unos segundos y vuelve a enviar el último mensaje.`,
+  });
+
   let result;
   let usedMessages = messages;
   let notaImagenes = '';
   try {
-    result = await chatCompletion({ provider, model: modelUsed, temperature: 0.5, maxTokens: MAX_TOKENS, json: false, timeoutMs: TIMEOUT_MS, attempts: 1, messages });
+    result = await chatCompletion({ provider, model: modelUsed, temperature: 0.5, maxTokens: MAX_TOKENS, json: false, timeoutMs: TIMEOUT_MS, attempts: ATTEMPTS, messages });
   } catch (err) {
     // Con imágenes adjuntas, un 400/422 suele ser "este modelo no soporta visión" (o imagen demasiado
     // grande): en vez de morir, reintentamos SIN las imágenes y avisamos — el texto siempre se procesa.
@@ -272,14 +287,14 @@ async function runPromptEditor(target, accountId, setterId, req, reply) {
         ? { ...m, content: m.content.filter((p) => p.type === 'text').map((p) => p.text).join('\n') || '(imagen adjunta que no se pudo procesar)' }
         : m));
       try {
-        result = await chatCompletion({ provider, model: modelUsed, temperature: 0.5, maxTokens: MAX_TOKENS, json: false, timeoutMs: TIMEOUT_MS, attempts: 1, messages: sinImgs });
+        result = await chatCompletion({ provider, model: modelUsed, temperature: 0.5, maxTokens: MAX_TOKENS, json: false, timeoutMs: TIMEOUT_MS, attempts: ATTEMPTS, messages: sinImgs });
         usedMessages = sinImgs;
         notaImagenes = '⚠️ El modelo configurado no pudo leer las imágenes (procesé solo el texto). Si quieres que lea imágenes, usa un modelo con visión para el corrector.\n\n';
       } catch (err2) {
-        return reply.code(502).send({ error: err2.message });
+        return falloLlm(err2);
       }
     } else {
-      return reply.code(502).send({ error: err.message });
+      return falloLlm(err);
     }
   }
   await gastar(result.usage);

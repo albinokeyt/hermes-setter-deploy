@@ -33,9 +33,13 @@ export default async function settingsRoutes(app) {
 
   app.put('/api/settings/prompts', async (req) => {
     const b = req.body || {};
-    if (typeof b.guardrail === 'string') { await setSetting('guardrail', { text: b.guardrail.trim() }); invalidateGuardrailCache(); }
-    if (typeof b.architect === 'string') { await setSetting('architect_prompt', { text: b.architect.trim() }); }
-    if (typeof b.corrector === 'string') { await setSetting('corrector_prompt', { text: b.corrector.trim() }); }
+    // Si lo que se guarda es EXACTAMENTE el texto por defecto, se guarda vacío: el vacío cae al
+    // default en cada lectura, así que futuras mejoras del default llegan solas. Sin esto, pulsar
+    // «Guardar» sin tocar nada congelaba una copia del default viejo en la base para siempre.
+    const oDefecto = (texto, def) => (texto.trim() === def.trim() ? '' : texto.trim());
+    if (typeof b.guardrail === 'string') { await setSetting('guardrail', { text: oDefecto(b.guardrail, DEFAULT_GUARDRAIL) }); invalidateGuardrailCache(); }
+    if (typeof b.architect === 'string') { await setSetting('architect_prompt', { text: oDefecto(b.architect, DEFAULT_ARCHITECT) }); }
+    if (typeof b.corrector === 'string') { await setSetting('corrector_prompt', { text: oDefecto(b.corrector, DEFAULT_CORRECTOR) }); }
     if ('architect_provider_id' in b || 'architect_model' in b) {
       await setSetting('architect_model', { provider_id: b.architect_provider_id || null, model: b.architect_model || '' });
     }
