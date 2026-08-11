@@ -1,5 +1,6 @@
 import { q, one } from '../db.js';
 import { accessibleAccountIds, requireAdmin } from '../lib/session.js';
+import { zipStore } from '../lib/zip.js';
 
 // 🐞 Reportes de errores: cualquier usuario reporta (texto + hasta 5 capturas); ve los SUYOS
 // (los de su conexión). El admin los ve todos (fecha, usuario, subcuenta, tipo), responde,
@@ -95,6 +96,93 @@ export default async function bugRoutes(app) {
       // una tz con forma valida pero inexistente ('Foo/Bar') hace que Postgres lance: 400, no 500
       return reply.code(400).send({ error: 'Zona horaria no válida' });
     }
+  });
+
+  // ⬇️ Exportación completa (solo admin): un ZIP con TODOS los reportes — resumen.csv en la raíz
+  // y una carpeta por reporte con su texto y sus capturas. Descarga por enlace directo (la sesión
+  // va en cookie same-origin), así que responde el fichero, no JSON.
+  const ETIQUETA_ESTADO = { abierto: 'abierto', en_curso: 'en curso', resuelto: 'resuelto' };
+  const EXT_MIME = { jpeg: 'jpg', jpg: 'jpg', png: 'png', webp: 'webp', gif: 'gif' };
+  const fechaTxt = (v) => (v ? new Date(v).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '');
+  // campo CSV: comillas dobladas; los valores que empiezan por = + - @ se prefijan con apóstrofe
+  // para que Excel no los ejecute como fórmula (inyección CSV: la descripción la escribe el usuario)
+  const campoCsv = (v) => {
+    let s = v === undefined || v === null ? '' : String(v);
+    if (/^[=+\-@]/.test(s)) s = `'${s}`;
+    if (/[",;\r\n]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const MAX_ZIP_BYTES = 150_000_000; // todo el ZIP se arma en memoria: hay que acotarlo
+
+  app.get('/api/bugs/exportar', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return reply;
+    // el tamaño se comprueba ANTES de cargar las capturas en memoria
+    const { bytes } = (await one(
+      `SELECT COALESCE(SUM(length(imagen)), 0) + COALESCE(SUM(length(imagenes::text)), 0) AS bytes FROM bug_reports`
+    )) || { bytes: 0 };
+    if (Number(bytes) > MAX_ZIP_BYTES) {
+      return reply.code(413).send({
+        error: `Las capturas ocupan ${(Number(bytes) / 1e6).toFixed(0)} MB y el ZIP se arma en memoria. Libera espacio con 🧹 (los textos se conservan) y vuelve a exportar.`,
+      });
+    }
+
+    const rows = await q(
+      `SELECT b.*, COALESCE(NULLIF(a.alias, ''), a.name) AS account_name
+         FROM bug_reports b LEFT JOIN accounts a ON a.id = b.account_id
+        ORDER BY b.id`
+    );
+
+    const entries = [];
+    const lineasCsv = [['id', 'fecha', 'conexion', 'reportado_por', 'tipo', 'tipo_original', 'estado', 'capturas', 'respondida', 'resuelto', 'descripcion', 'respuesta'].join(';')];
+    for (const b of rows) {
+      const imgs = [
+        ...(Array.isArray(b.imagenes) ? b.imagenes.filter((x) => typeof x === 'string') : []),
+        ...(b.imagen ? [b.imagen] : []),
+      ];
+      const carpeta = `reporte-${String(b.id).padStart(4, '0')}`;
+      const creado = b.created_at ? new Date(b.created_at) : new Date();
+
+      const texto = [
+        `Reporte #${b.id}`,
+        `Fecha: ${fechaTxt(b.created_at)}`,
+        `Conexión: ${b.account_name || '—'}`,
+        `Reportado por: ${b.reporter || '—'}`,
+        `Tipo: ${b.tipo}${b.tipo_original ? ` (llegó como: ${b.tipo_original})` : ''}`,
+        `Estado: ${ETIQUETA_ESTADO[b.status] || b.status}${b.resuelto_at ? ` (resuelto el ${fechaTxt(b.resuelto_at)})` : ''}`,
+        `Capturas: ${imgs.length}`,
+        '',
+        '--- Descripción ---',
+        b.descripcion || '',
+        ...(b.respuesta ? ['', `--- Respuesta del equipo (${fechaTxt(b.respondida_at)}) ---`, b.respuesta] : []),
+        '',
+      ].join('\r\n');
+      entries.push({ name: `${carpeta}/reporte.txt`, data: texto, mtime: creado });
+
+      imgs.forEach((dataUri, i) => {
+        const m = /^data:image\/([a-z0-9.+-]+);base64,(.+)$/i.exec(dataUri);
+        if (!m) return;
+        const ext = EXT_MIME[m[1].toLowerCase()] || 'bin';
+        try {
+          entries.push({ name: `${carpeta}/captura-${i + 1}.${ext}`, data: Buffer.from(m[2], 'base64'), mtime: creado });
+        } catch { /* base64 corrupto: se salta esa captura, el texto va igual */ }
+      });
+
+      lineasCsv.push([
+        campoCsv(b.id), campoCsv(fechaTxt(b.created_at)), campoCsv(b.account_name || ''), campoCsv(b.reporter || ''),
+        campoCsv(b.tipo), campoCsv(b.tipo_original || ''), campoCsv(ETIQUETA_ESTADO[b.status] || b.status),
+        campoCsv(imgs.length), campoCsv(fechaTxt(b.respondida_at)), campoCsv(fechaTxt(b.resuelto_at)),
+        campoCsv(b.descripcion || ''), campoCsv(b.respuesta || ''),
+      ].join(';'));
+    }
+    // BOM delante: sin él Excel abre el UTF-8 con los acentos rotos
+    entries.unshift({ name: 'resumen.csv', data: '﻿' + lineasCsv.join('\r\n') + '\r\n', mtime: new Date() });
+
+    const nombre = `reportes-errores-${new Date().toISOString().slice(0, 10)}.zip`;
+    return reply
+      .header('content-type', 'application/zip')
+      .header('content-disposition', `attachment; filename="${nombre}"`)
+      .header('cache-control', 'no-store')
+      .send(zipStore(entries));
   });
 
   // 🧹 espacio que ocupan las capturas (solo admin) + vaciado total para liberar disco

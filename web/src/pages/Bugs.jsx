@@ -283,12 +283,21 @@ export default function Bugs() {
         <Card data-tour="bugs-lista" className="overflow-hidden lg:col-span-2">
           <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
             <h3 className="text-sm font-semibold text-slate-700">{isAdmin ? 'Reportes de todos los usuarios' : 'Tus reportes'}</h3>
-            {isAdmin && almacen && almacen.bytes > 0 && (
-              <button onClick={purgarImagenes} disabled={purgando} title="Borra TODAS las capturas de todos los reportes (los textos se conservan) para liberar espacio en disco"
-                className="shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 disabled:opacity-50">
-                {purgando ? 'Liberando…' : `🧹 Liberar espacio (${(almacen.bytes / 1e6).toFixed(1)} MB en capturas)`}
-              </button>
-            )}
+            <div className="flex shrink-0 items-center gap-2">
+              {isAdmin && (
+                // descarga directa: la sesión viaja en la cookie same-origin, no hace falta fetch
+                <a href="/api/bugs/exportar" title="Descarga un ZIP con todos los reportes: resumen.csv + una carpeta por reporte con su texto y sus capturas"
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50">
+                  ⬇️ Descargar ZIP
+                </a>
+              )}
+              {isAdmin && almacen && almacen.bytes > 0 && (
+                <button onClick={purgarImagenes} disabled={purgando} title="Borra TODAS las capturas de todos los reportes (los textos se conservan) para liberar espacio en disco"
+                  className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 disabled:opacity-50">
+                  {purgando ? 'Liberando…' : `🧹 Liberar espacio (${(almacen.bytes / 1e6).toFixed(1)} MB en capturas)`}
+                </button>
+              )}
+            </div>
           </div>
           <div className="scroll-thin max-h-[70vh] overflow-y-auto">
             {bugs === null && <p className="px-5 py-10 text-center text-sm text-slate-400">Cargando…</p>}
