@@ -7,10 +7,15 @@ import { createHash } from 'node:crypto';
 const md5 = (s) => createHash('md5').update(s, 'utf8').digest('hex');
 
 // Extrae el template literal `...` completo de `export const NOMBRE = \`...\`;` respetando \\-escapes.
+// OJO: el backtick puede ir en la LÍNEA SIGUIENTE al `=` (así está declarado DEFAULT_GUARDRAIL):
+// anclar «= \`» literal lo saltaba en silencio y la migración se quedaba sin ese hash.
 function extraerLiteral(src, nombre) {
-  const decl = src.indexOf(`export const ${nombre} = \``);
+  const decl = src.indexOf(`export const ${nombre}`);
   if (decl < 0) return null;
-  const start = src.indexOf('`', decl);
+  const igual = src.indexOf('=', decl);
+  if (igual < 0) return null;
+  const start = src.indexOf('`', igual);
+  if (start < 0 || src.slice(igual + 1, start).trim() !== '') return null; // hay otra cosa entre = y `
   for (let i = start + 1; i < src.length; i++) {
     const ch = src[i];
     if (ch === '\\') { i++; continue; }

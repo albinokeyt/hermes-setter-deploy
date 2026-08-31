@@ -1,9 +1,24 @@
+import crypto from 'node:crypto';
 import { q, getSetting, setSetting } from '../db.js';
 import { config, OAUTH_SCOPES } from '../config.js';
 import { requireAdmin } from '../lib/session.js';
 import { DEFAULT_GUARDRAIL, invalidateGuardrailCache } from '../services/agent.js';
 import { DEFAULT_ARCHITECT, DEFAULT_CORRECTOR } from './promptEditor.js';
 import { agencyKey } from './portal.js';
+
+// md5 de las generaciones VIEJAS de los prompts por defecto (los mismos de la migración 046, ver
+// scripts/hashes-defaults.mjs). Guardar uno de estos textos también almacena '' — cubre la pestaña
+// de Configuración abierta desde ANTES de un deploy: su textarea trae el default viejo prefilled y
+// un «Guardar» lo re-congelaría como «personalización» justo después de que 046 descongelara.
+const HASHES_DEFAULTS_VIEJOS = new Set([
+  'c97555b02207a87ca0fbe0438cb9e6bd', // DEFAULT_ARCHITECT gen. «élite»
+  '57f1b4d9a658a19eb7b690a9375775bc', // DEFAULT_ARCHITECT gen. «experto»
+  '57342d09c8a366bbbe337732e88c1d3f', // DEFAULT_CORRECTOR gen. «élite»
+  '424227373cd33d60d3e23cd3f7a8a174', // DEFAULT_CORRECTOR gen. anterior
+  '75d7fe14b905d73e1d4c63d62687a978', // DEFAULT_GUARDRAIL 1ª generación
+]);
+const esDefaultViejo = (texto) =>
+  HASHES_DEFAULTS_VIEJOS.has(crypto.createHash('md5').update(texto.replace(/\r/g, ''), 'utf8').digest('hex'));
 
 export default async function settingsRoutes(app) {
   app.addHook('preHandler', async (req, reply) => {
@@ -33,10 +48,14 @@ export default async function settingsRoutes(app) {
 
   app.put('/api/settings/prompts', async (req) => {
     const b = req.body || {};
-    // Si lo que se guarda es EXACTAMENTE el texto por defecto, se guarda vacío: el vacío cae al
-    // default en cada lectura, así que futuras mejoras del default llegan solas. Sin esto, pulsar
-    // «Guardar» sin tocar nada congelaba una copia del default viejo en la base para siempre.
-    const oDefecto = (texto, def) => (texto.trim() === def.trim() ? '' : texto.trim());
+    // Si lo que se guarda es EXACTAMENTE el texto por defecto (el actual O una generación vieja:
+    // una pestaña abierta desde antes del deploy trae el viejo prefilled), se guarda vacío: el
+    // vacío cae al default en cada lectura, así que futuras mejoras del default llegan solas. Sin
+    // esto, pulsar «Guardar» sin tocar nada congelaba una copia del default en la base para siempre.
+    const oDefecto = (texto, def) => {
+      const t = texto.trim();
+      return t === def.trim() || esDefaultViejo(t) ? '' : t;
+    };
     if (typeof b.guardrail === 'string') { await setSetting('guardrail', { text: oDefecto(b.guardrail, DEFAULT_GUARDRAIL) }); invalidateGuardrailCache(); }
     if (typeof b.architect === 'string') { await setSetting('architect_prompt', { text: oDefecto(b.architect, DEFAULT_ARCHITECT) }); }
     if (typeof b.corrector === 'string') { await setSetting('corrector_prompt', { text: oDefecto(b.corrector, DEFAULT_CORRECTOR) }); }
