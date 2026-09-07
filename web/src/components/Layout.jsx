@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Database, Swords, Bug, Compass } from 'lucide-react';
+import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Database, Swords, Bug, Compass, CreditCard } from 'lucide-react';
 import { api } from '../api.js';
 import { ThemeToggle } from './ui.jsx';
 import { Tour, TourInvite } from './Tour.jsx';
@@ -107,6 +107,7 @@ export default function Layout() {
     { to: '/errores', label: 'Reportar error', icon: Bug },
   ];
   const navBottom = [
+    ...(isAdmin ? [{ to: '/marketplace', label: 'Marketplace', icon: CreditCard }] : []),
     ...(isAdmin ? [{ to: '/configuracion', label: 'Configuración', icon: Settings }] : []),
     ...(!me.portal ? [{ to: '/usuarios', label: 'Usuarios', icon: UsersRound }] : []),
   ];

@@ -80,6 +80,39 @@ Para conectar una subcuenta sin crear la app:
 
 ---
 
+## Cobros: Marketplace Disruptivo
+
+Hermes **no gestiona pagos propios**. Antes de atender pregunta al [Marketplace
+Disruptivo](https://marketplace.escaladoacelerado.es) si esa subcuenta tiene el uso **incluido**
+(plan o prueba gratuita) y, si no lo tiene, cobra su consumo del saldo que el cliente tenga allí
+(primero su crédito interno, luego el wallet de GoHighLevel de su subcuenta).
+
+- **Unidad facturable:** una **conversación por día natural**. Da igual que ese día se crucen 30
+  mensajes con el lead: cuenta 1. Al día siguiente, ese mismo lead vuelve a contar 1.
+- **Identificador de cobro** (lo que impide cobrar dos veces):
+  `hermes-{locationId}-{conversationId}-{YYYY-MM-DD}`, derivado siempre de los mismos datos —
+  nunca de aleatorios, horas ni contadores en memoria.
+- **Se cobra DESPUÉS de entregar** el mensaje al lead, nunca antes.
+- **Sin `MD_API_KEY` la integración queda apagada** y Hermes funciona exactamente como antes.
+
+| Pieza | Dónde |
+|---|---|
+| Cliente, puerta de acceso y cobro | `src/services/marketplace.js` |
+| Puerta antes de atender | `puedeAtender()` en `processDebounce` y `processFollowup` (`src/services/pipeline.js`) |
+| Registro del consumo tras entregar | `registrarConsumo()` al final de `processSend` (`src/services/pipeline.js`) |
+| Fuente de verdad de los cobros | tabla `marketplace_charges` (migración `047`) |
+| Panel del administrador | menú **Marketplace** · rutas en `src/routes/marketplace.js` |
+
+Las variables (`MD_API_KEY`, `MD_METER`, `MD_PRECIO_UNIDAD`, `MD_UNIDADES_POR_COBRO`,
+`MD_ZONA_HORARIA`, `MD_COBROS`) están documentadas en `.env.example`. **La clave nunca va en el
+repositorio**: solo en las variables de entorno de EasyPanel.
+
+Para integrar o probar sin gastar dinero, pide al administrador del marketplace que active el
+**modo prueba** de la app Hermes: los cargos quedan con estado `test` y no tocan el wallet ni el
+crédito. Desde el panel, **Marketplace → Comprobar** diagnostica sin mover nada y **Cobro de
+prueba** ejecuta el ciclo completo (repetirlo el mismo día debe responder «idempotente»: esa es la
+prueba de que no se duplica).
+
 ## Desarrollo local
 
 ```bash

@@ -25,6 +25,7 @@ import archiveRoutes from './routes/archive.js';
 import promptEditorRoutes from './routes/promptEditor.js';
 import bugRoutes from './routes/bugs.js';
 import tourRoutes from './routes/tour.js';
+import marketplaceRoutes from './routes/marketplace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -67,6 +68,7 @@ async function main() {
   await app.register(promptEditorRoutes);
   await app.register(bugRoutes);
   await app.register(tourRoutes);
+  await app.register(marketplaceRoutes);
 
   // frontend compilado (SPA)
   const webDist = path.join(__dirname, '..', 'web', 'dist');

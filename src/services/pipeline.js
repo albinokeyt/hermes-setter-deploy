@@ -3,6 +3,8 @@ import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { debounceQueue, sendQueue, followupQueue, reactivateQueue } from '../queues.js';
 import { generateReply, shouldFollowup } from './agent.js';
+// 💳 Marketplace Disruptivo: puerta de acceso antes de atender y registro de consumo al entregar.
+import { puedeAtender, registrarConsumo } from './marketplace.js';
 import { describeImage, transcribeAudio } from './llm.js';
 import * as ghl from './ghl.js';
 import { typingDelayMs, delayToActiveWindow, metaWindowOpen } from './humanize.js';
@@ -1411,6 +1413,33 @@ export async function processDebounce(job) {
     return;
   }
 
+  // 💳 Puerta del Marketplace Disruptivo: si el cliente NO tiene el uso incluido y se ha quedado
+  // sin saldo, no se atiende (y queda constancia para que el administrador le avise). Va ANTES de
+  // la llamada al LLM: gastar tokens para un mensaje que no se puede cobrar es tirar dinero.
+  // Fail-open por diseño: con la integración apagada o el marketplace mudo, se atiende igual.
+  {
+    const puerta = await puedeAtender(account).catch(() => ({ atender: true }));
+    if (!puerta.atender) {
+      // El saldo lo comparten TODAS las apps del marketplace y se recarga en caliente: un «sin
+      // fondos» suele ser transitorio. NO se descarta el mensaje ni la activación/rescate: se
+      // reprograma este mismo ciclo cada 10 min (tope 6 h) y, si el cliente recarga, el lead recibe
+      // su respuesta. Solo tras el tope se descarta, con traza.
+      const reintentos = await redis.incr(`mdwait:${conversationId}`);
+      await redis.expire(`mdwait:${conversationId}`, 12 * 3600);
+      if (reintentos <= 36) {
+        await q(`UPDATE conversations SET followup_state = 'sin_saldo', updated_at = now() WHERE id = $1`, [conv.id]);
+        if (activacion) await redis.expire(activarKey(conversationId), 12 * 3600); // que no caduque esperando
+        await scheduleDebounce(account, conversationId, 10 * 60_000);
+        return;
+      }
+      await redis.del(`mdwait:${conversationId}`);
+      await logEvent('marketplace_lead_sin_atender', { conv: conv.id, account: account.id, nota: '6 h sin saldo en el marketplace: se deja de reintentar esta respuesta' });
+      await descartarActivacion('sin_saldo_marketplace');
+      return;
+    }
+    await redis.del(`mdwait:${conversationId}`).catch(() => {});
+  }
+
   const snapshotId = await lastInboundId(conversationId);
   let result;
   try {
@@ -1519,7 +1548,15 @@ export async function processSend(job) {
   // idempotencia: sendQueue reintenta (attempts: 2); si ya enviamos en el intento
   // anterior y falló solo la contabilidad, no volvemos a mandar el mensaje al lead
   const sentKey = `sentjob:${job.id}`;
-  if (await redis.get(sentKey)) return;
+  if (await redis.get(sentKey)) {
+    // El mensaje YA salió en el intento anterior (que murió antes de contabilizar): no se reenvía,
+    // pero el consumo SÍ se registra — si no, un reinicio del contenedor regalaba la conversación.
+    try {
+      const ctx = await loadContext(conversationId);
+      if (ctx?.conv && ctx?.account) await registrarConsumo({ account: ctx.account, conversationId: ctx.conv.id });
+    } catch { /* lo recoge el barrido */ }
+    return;
+  }
 
   const { conv, account } = await loadContext(conversationId);
   if (!conv || !account) return;
@@ -1555,6 +1592,9 @@ export async function processSend(job) {
       await redis.del(sentKey).catch(() => {}); // no salió: el reintento puede volver a intentarlo
     } else {
       await logEvent('envio_ambiguo_no_reintentado', { conv: conv.id, error: String(err?.message || err).slice(0, 200) }).catch(() => {});
+      // Se asume entregado (por eso no se reintenta): el consumo se registra igual. Si de verdad no
+      // salió, el eco del webhook no llegará y el administrador lo ve en el registro de eventos.
+      try { await registrarConsumo({ account, conversationId: conv.id }); } catch { /* barrido */ }
     }
     throw err;
   }
@@ -1575,6 +1615,14 @@ export async function processSend(job) {
     // el mensaje YA salió: no relanzamos el job por un fallo de contabilidad
     await logEvent('error_contabilidad_envio', { conv: conv.id, error: err.message }).catch(() => {});
   }
+
+  // 💳 SERVICIO ENTREGADO → se registra el consumo (Marketplace Disruptivo). Nunca antes de
+  // enviar. La unidad es «una conversación por día natural»: el primer mensaje del día crea la
+  // fila y encola el cobro; los siguientes no hacen ni una llamada (lo corta el event_id).
+  // Va en try/catch mudo: un fallo aquí no puede afectar a un mensaje que el lead YA recibió.
+  try {
+    await registrarConsumo({ account, conversationId: conv.id });
+  } catch { /* lo recoge el barrido de marketplace.js */ }
 }
 
 // ─── Seguimientos ────────────────────────────────────────────────────────────
@@ -1649,6 +1697,29 @@ export async function processFollowup(job) {
 
   // si el lead respondió después del último envío, el ciclo normal ya se encarga
   if (conv.last_inbound_at && conv.last_outbound_at && new Date(conv.last_inbound_at) > new Date(conv.last_outbound_at)) return;
+
+  // 💳 Puerta del marketplace ANTES de allowedByTags: el gate es barato (cacheado) y la comprobación
+  // de etiquetas cuesta una llamada a GHL — no se gasta en un cliente sin saldo. Sin saldo se aplaza
+  // el toque 30 min (borrar fuKey mataba la cadena para siempre: el lead, por definición, no va a
+  // escribir). Tope de 12 aplazamientos (6 h): un cliente que nunca recarga no puede dejar cientos
+  // de seguimientos girando indefinidamente. Al agotarlo se corta la cadena con traza.
+  {
+    const puerta = await puedeAtender(account).catch(() => ({ atender: true }));
+    if (!puerta.atender) {
+      const esperas = await redis.incr(`mdfuwait:${conversationId}`);
+      await redis.expire(`mdfuwait:${conversationId}`, 24 * 3600);
+      await q(`UPDATE conversations SET followup_state = 'sin_saldo', updated_at = now() WHERE id = $1`, [conv.id]);
+      if (esperas <= 12) {
+        await rearmFollowup(conversationId, 30 * 60_000);
+        return;
+      }
+      await redis.del(`mdfuwait:${conversationId}`);
+      await redis.del(fuKey(conv.id));
+      await logEvent('marketplace_seguimiento_detenido', { conv: conv.id, account: account.id, nota: '6 h sin saldo en el marketplace: se corta la cadena de seguimientos (se reanuda si el lead escribe)' });
+      return;
+    }
+    await redis.del(`mdfuwait:${conversationId}`).catch(() => {});
+  }
 
   if (!(await allowedByTags(account, conv))) return;
 

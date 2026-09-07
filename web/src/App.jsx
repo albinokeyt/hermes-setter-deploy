@@ -16,6 +16,7 @@ import Archive from './pages/Archive.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import UsersPage from './pages/Users.jsx';
 import Bugs from './pages/Bugs.jsx';
+import Marketplace from './pages/Marketplace.jsx';
 
 export default function App() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
         <Route path="/prueba" element={<Playground />} />
         <Route path="/archivo" element={<Archive />} />
         <Route path="/errores" element={<Bugs />} />
+        <Route path="/marketplace" element={<Marketplace />} />
         <Route path="/configuracion" element={<SettingsPage />} />
         <Route path="/usuarios" element={<UsersPage />} />
         <Route path="/usuario" element={<Navigate to="/usuarios" replace />} />
