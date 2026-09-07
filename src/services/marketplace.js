@@ -334,8 +334,9 @@ export async function cobrar({ locationId, units, eventId, price, description })
       };
     }
 
-    // el administrador cortó los cobros de la app: no es un error nuestro
-    if (status === 403 && /deshabilitad/i.test(texto(data?.error))) {
+    // el administrador cortó los cobros de la app: no es un error nuestro. Se detecta por el campo
+    // estable `code` (CHARGES_DISABLED); el texto queda solo como respaldo por si llegara sin code.
+    if (status === 403 && (texto(data?.code) === 'CHARGES_DISABLED' || (!data?.code && /deshabilitad/i.test(texto(data?.error))))) {
       await redis.set('md:cortado', '1', 'EX', CORTADO_TTL_S).catch(() => {});
       return { ok: false, estado: 'cortado', error: texto(data?.error) };
     }
@@ -534,7 +535,7 @@ export async function procesarCobro(job) {
     } else if (r.estado === 'sin_confirmar') {
       await evento('marketplace_cobro_sin_confirmar', {
         account: fila.account_id, location: fila.location_id, event_id: eventId, error: r.error,
-        nota: 'El barrido preguntará al marketplace y reenviará el MISMO event_id solo si confirma que no llegó.',
+        nota: 'El barrido preguntará al marketplace y, salvo que ya conste cobrado, reenviará el MISMO event_id (seguro: el POST reconcilia contra GHL antes de re-ejecutar).',
       });
     }
   } finally {
@@ -613,20 +614,20 @@ export async function barrerPendientes({ limite = 50 } = {}) {
         res.cerrados++;
         continue;
       }
-      if (charge && ['pending', 'unknown'].includes(st)) {
-        // en vuelo o sin confirmar: lo cierra el reconciliador del marketplace; se espera
-        await q(`UPDATE marketplace_charges SET charge_status = $2, charge_id = COALESCE($3, charge_id), updated_at = now() WHERE id = $1`,
-          [d.id, st, Number.isInteger(charge.id) ? charge.id : null]);
-        res.esperando++;
-        continue;
+      if (charge && Number.isInteger(charge.id)) {
+        // se conserva el id del cargo aunque aún no esté cerrado: es lo único que permite reembolsar
+        await q(`UPDATE marketplace_charges SET charge_status = $2, charge_id = COALESCE($3, charge_id) WHERE id = $1`,
+          [d.id, st, charge.id]);
       }
-      // 'failed' (GHL rechazó el cargo: p. ej. wallet sin fondos) o el marketplace CONFIRMA que el
-      // event_id no existe: el reintento del consumidor con el MISMO event_id es la vía prevista
-      // (el POST reclama las filas failed y la idempotencia es por (app, event_id)). Con tope.
+      // 'failed' (GHL rechazó el cargo), 'unknown' (el reconciliador del marketplace NO los cierra
+      // solo si GHL no confirma el cobro: espera nuestro reenvío), 'pending' rezagado (>90 s el
+      // reenvío también reconcilia) o el marketplace CONFIRMA que el event_id no existe: en todos
+      // los casos la vía prevista es reenviar el MISMO event_id — el POST reconcilia contra GHL antes
+      // de re-ejecutar y solo cobra si el intento anterior no cobró. Con tope.
       if (Number(d.intentos) >= MAX_INTENTOS_TOTALES) {
         await rendirse(d.event_id, st === 'failed'
           ? `el marketplace rechaza el cobro (${texto(charge?.error) || 'sin detalle'}): probablemente la subcuenta no tiene saldo`
-          : 'el marketplace no registra el cobro tras varios reenvíos');
+          : st ? `el cargo sigue en «${st}» tras varios reenvíos` : 'el marketplace no registra el cobro tras varios reenvíos');
         res.rendidos++;
         continue;
       }
