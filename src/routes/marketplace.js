@@ -107,8 +107,13 @@ export default async function marketplaceRoutes(app) {
     if (!mdActivo()) return reply.code(503).send({ error: 'La integración está apagada: falta la variable de entorno MD_API_KEY.' });
     const b = req.body || {};
     const accId = numId(b.account_id);
-    if (!accId) return reply.code(400).send({ error: 'Indica la conexión (account_id) sobre la que probar.' });
-    const cuenta = await one(`SELECT id, name, location_id FROM accounts WHERE id = $1`, [accId]);
+    // También se admite un location_id suelto (solo admin): la pasada de validación acordada con el
+    // marketplace usa dos subcuentas de pruebas que NO son conexiones de Hermes.
+    const locSuelto = String(b.location_id || '').trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    if (!accId && !locSuelto) return reply.code(400).send({ error: 'Indica la conexión (account_id) o un location_id sobre el que probar.' });
+    const cuenta = accId
+      ? await one(`SELECT id, name, location_id FROM accounts WHERE id = $1`, [accId])
+      : { id: null, name: `(sin conexión en Hermes) ${locSuelto}`, location_id: locSuelto };
     if (!cuenta) return reply.code(404).send({ error: 'Esa conexión no existe' });
     if (!cuenta.location_id) return reply.code(400).send({ error: 'Esa conexión no tiene location_id de GHL: no se le puede cobrar.' });
 
