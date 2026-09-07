@@ -190,11 +190,13 @@ export default async function marketplaceRoutes(app) {
     });
     return {
       ok: r.ok, cuenta, pasos, event_id: eventId,
-      nota: r.idempotente
-        ? 'Idempotencia CONFIRMADA: ese event_id ya estaba cobrado y no se ha duplicado.'
-        : r.test_mode
-          ? 'Cobro en MODO PRUEBA: registrado sin tocar wallet ni crédito. Repite la llamada para comprobar la idempotencia.'
-          : 'Cobro REAL ejecutado. Repite la llamada para comprobar que no se duplica.',
+      nota: !r.ok
+        ? `Cobro RECHAZADO (${r.estado}): ${r.error || 'sin detalle'}. ${r.estado === 'error' ? 'Es la rama «registra y para»: no se reintenta.' : 'Lo recoge el barrido con el mismo event_id.'}`
+        : r.idempotente
+          ? 'Idempotencia CONFIRMADA: ese event_id ya estaba cobrado y no se ha duplicado.'
+          : r.test_mode
+            ? 'Cobro en MODO PRUEBA: registrado sin tocar wallet ni crédito. Repite la llamada para comprobar la idempotencia.'
+            : 'Cobro REAL ejecutado. Repite la llamada para comprobar que no se duplica.',
     };
   });
 }
