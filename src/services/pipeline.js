@@ -1563,7 +1563,7 @@ export async function processDebounce(job) {
     // lead descartado: no programamos seguimientos ni lo perseguimos
     await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
   } else {
-    await scheduleNextFollowup(account, { ...conv, followup_step: 0 }, cursor, result.proximoContactoHoras || null);
+    await scheduleNextFollowup(account, { ...conv, followup_step: 0 }, cursor, result.proximoContactoHoras || horasPrometidasEnTexto(result.mensajes));
   }
 }
 
@@ -1651,6 +1651,33 @@ export async function processSend(job) {
 }
 
 // ─── Seguimientos ────────────────────────────────────────────────────────────
+
+/**
+ * Red de seguridad para los compromisos de tiempo. El modelo DEBERÍA rellenar proximo_contacto_horas
+ * cuando le dice al lead cuándo le escribirá, pero el campo es opcional: si se lo deja en null, el
+ * seguimiento cae a la cadencia configurada (8 h en Despierta en Pareja) y el mensaje sale mucho
+ * antes de lo prometido — el lead lee «te escribo mañana» y le llegamos a las 8 horas, que es
+ * exactamente lo que el cliente reportó una y otra vez. Aquí se lee el texto que se acaba de enviar
+ * y se deduce el plazo prometido. Solo actúa como respaldo: si el modelo dio el dato, manda el suyo.
+ */
+function horasPrometidasEnTexto(mensajes) {
+  const t = (Array.isArray(mensajes) ? mensajes.join(' ') : String(mensajes || '')).toLowerCase();
+  if (!t) return null;
+  let horas = null;
+  const anota = (h) => { if (Number.isFinite(h) && h > 0 && (horas === null || h > horas)) horas = h; };
+
+  const m = (re) => { const x = t.match(re); return x ? Number(x[1]) : null; };
+  anota(m(/\ben\s+(\d{1,2})\s*d[ií]as?\b/) * 24);
+  anota(m(/\ben\s+(\d{1,2})\s*horas?\b/));
+  anota(m(/\bdentro\s+de\s+(\d{1,2})\s*d[ií]as?\b/) * 24);
+  if (/\bpasado\s+ma[ñn]ana\b/.test(t)) anota(48);
+  // «mañana» como DÍA, no como franja horaria: se descartan «por la mañana», «esta mañana», etc.
+  if (/(?<!por\s|de\s|esta\s|la\s|una\s)\bma[ñn]ana\b(?!\s+por\s)/.test(t)) anota(24);
+  if (/\b(la\s+semana\s+que\s+viene|la\s+pr[oó]xima\s+semana|en\s+una\s+semana)\b/.test(t)) anota(168);
+  if (/\besta\s+tarde\b/.test(t)) anota(5);
+  if (/\besta\s+noche\b/.test(t)) anota(8);
+  return horas;
+}
 
 export async function scheduleNextFollowup(account, conv, extraMs = 0, acordadoHoras = null) {
   const steps = Array.isArray(account.followups) ? account.followups : [];
@@ -1885,5 +1912,5 @@ export async function processFollowup(job) {
     await applyStage(conv, account, 'en_seguimiento', `seguimiento #${newStep} enviado`);
   }
   // un seguimiento también puede prometer tiempo («te escribo mañana») → se respeta en el siguiente
-  await scheduleNextFollowup(account, { ...conv, followup_step: newStep }, cursor, result.proximoContactoHoras || null);
+  await scheduleNextFollowup(account, { ...conv, followup_step: newStep }, cursor, result.proximoContactoHoras || horasPrometidasEnTexto(result.mensajes));
 }
