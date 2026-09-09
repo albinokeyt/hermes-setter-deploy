@@ -22,6 +22,11 @@ const TAG_PREFIX = 'setter-';
 // cada programación escribe un token nuevo; los jobs viejos se despiertan, ven que
 // su token ya no es el vigente y mueren en silencio.
 const debKey = (id) => `debtoken:${id}`;
+// El acuerdo de tiempo con el lead se recortó por la ventana de Meta: el seguimiento debe
+// reconocer que escribe ANTES de lo pactado. Se ata al token del job para que la nota no se
+// aplique a un seguimiento posterior que ya no tiene nada que ver con aquel acuerdo.
+const fuAdjKey = (id) => `fuadj:${id}`;
+const olvidarAjuste = (id) => redis.del(fuAdjKey(id)).catch(() => {});
 const fuKey = (id) => `futoken:${id}`;
 const ctaKey = (id) => `ctawait:${id}`; // instante (ms) hasta el que el setter espera por un CTA
 const activarKey = (id) => `activar:${id}`; // activación externa pendiente (el setter escribe él solo)
@@ -392,7 +397,7 @@ function matchCtaWait(account, body) {
 
 export async function cancelBotJobs(conversationId) {
   await redis.del(debKey(conversationId));
-  await redis.del(fuKey(conversationId));
+  await redis.del(fuKey(conversationId)); await olvidarAjuste(conversationId);
   await redis.del(reactKey(conversationId));
   // También la activación externa pendiente: si la dejamos, al reanudar el bot el SIGUIENTE mensaje
   // del lead se trataría como «activación» (saltándose modo test y etiquetas requeridas) y entraría
@@ -624,7 +629,7 @@ export async function handleInbound(account, evt) {
     await q(`INSERT INTO messages (conversation_id, direction, source, body) VALUES ($1, 'inbound', 'lead', $2)`, [conv.id, body]);
   }
 
-  await redis.del(fuKey(conv.id)); // el lead respondió → se cancela la cadena de seguimientos
+  await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); // el lead respondió → se cancela la cadena de seguimientos
 
   if ((!conv.lead_name || !conv.lead_email) && (account.location_id || account.pit_token)) {
     ghl.getContact(account, evt.contactId)
@@ -1105,7 +1110,7 @@ export async function handleAppointmentEvent(account, type, p) {
       // Que la cita no cuente como AGENDA del setter no significa que no haya pasado nada: el lead SÍ
       // reservó. Cortamos igualmente sus seguimientos para no perseguir a alguien que ya tiene cita
       // (el stage NO se toca, para no inflar las métricas del setter con una agenda que no es suya).
-      if (conv?.id && status === 'agendado') await redis.del(fuKey(conv.id));
+      if (conv?.id && status === 'agendado') await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
       return;
     }
     convId = conv.id;
@@ -1136,7 +1141,7 @@ export async function handleAppointmentEvent(account, type, p) {
     if (conv) {
       await applyStage(conv, account, cancelled ? 'agenda_cancelada' : 'agendado',
         cancelled ? 'cita cancelada en el calendario de GHL' : 'cita agendada en el calendario de GHL');
-      if (!cancelled) await redis.del(fuKey(conv.id)); // ya agendó: fuera seguimientos pendientes
+      if (!cancelled) await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); // ya agendó: fuera seguimientos pendientes
     }
   }
   await logEvent(cancelled ? 'cita_cancelada' : 'cita_agendada', {
@@ -1532,11 +1537,11 @@ export async function processDebounce(job) {
     // Etiqueta VISIBLE «Requiere atención humana» + pausa; mientras la tenga, el bot no responde.
     await applyStage(conv, account, 'atencion_humana', result.motivo || 'la IA pidió atención humana');
     await q(`UPDATE conversations SET bot_paused = true, paused_by = 'ia', updated_at = now() WHERE id = $1`, [conv.id]);
-    await redis.del(fuKey(conv.id));
+    await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
     await logEvent('handoff_ia', { conv: conv.id, motivo: result.motivo });
   } else if (result.etiqueta === 'descartado') {
     // lead descartado: no programamos seguimientos ni lo perseguimos
-    await redis.del(fuKey(conv.id));
+    await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
   } else {
     await scheduleNextFollowup(account, { ...conv, followup_step: 0 }, cursor, result.proximoContactoHoras || null);
   }
@@ -1637,6 +1642,7 @@ export async function scheduleNextFollowup(account, conv, extraMs = 0, acordadoH
     return;
   }
   let hours = Number(next.hours);
+  let recorte = false;
   // La IA acordó un momento con el lead («te escribo mañana» → 24h): ese compromiso MANDA sobre la
   // cadencia configurada — escribir antes de lo prometido delata al bot y quema al lead.
   if (acordadoHoras) {
@@ -1654,6 +1660,9 @@ export async function scheduleNextFollowup(account, conv, extraMs = 0, acordadoH
       } else {
         efectivas = Math.min(acordadoHoras, restante);
       }
+      // Recorte REAL (más de 3 h antes de lo pactado: por debajo no lo nota nadie y disculparse
+      // suena peor que callar). Se anota para que el mensaje no parezca una promesa incumplida.
+      recorte = Boolean(efectivas) && acordadoHoras - efectivas > 3;
     }
     if (efectivas) {
       hours = efectivas;
@@ -1662,10 +1671,37 @@ export async function scheduleNextFollowup(account, conv, extraMs = 0, acordadoH
   }
   const token = crypto.randomUUID();
   const delay = extraMs + hours * 3_600_000;
+  // La marca vive atada a ESTE token: si luego se reprograma la cadena (el lead escribe, se agenda,
+  // se corta…), el token cambia y la nota deja de aplicar sola. Y si no hay recorte, se limpia
+  // cualquier marca vieja para que no la herede el siguiente seguimiento.
+  if (recorte) {
+    await redis.set(fuAdjKey(conv.id), JSON.stringify({ token }), 'EX', Math.ceil(delay / 1000) + 7200).catch(() => {});
+  } else {
+    await olvidarAjuste(conv.id);
+  }
   // TTL del token en función del delay: con un acuerdo largo («en un mes» = 720h) el TTL fijo de
   // 30 días caducaba justo antes de disparar y el job se descartaba como viejo.
   await redis.set(fuKey(conv.id), token, 'EX', Math.max(60 * 60 * 24 * 30, Math.ceil(delay / 1000) + 86_400));
   await followupQueue.add('followup', { conversationId: conv.id, token }, { delay });
+}
+
+/**
+ * Nota para el modelo cuando este seguimiento sale ANTES de lo que se pactó con el lead (el acuerdo
+ * no cabía en la ventana de mensajería). Solo se aplica si la marca corresponde a ESTE job (token).
+ * NO borra la marca: eso se hace cuando el envío ya está comprometido, para que un reintento por
+ * error del modelo no mande el mensaje sin la nota.
+ */
+async function instruccionConAjuste(conversationId, token, instruccion) {
+  try {
+    const raw = await redis.get(fuAdjKey(conversationId));
+    if (!raw) return instruccion;
+    const marca = JSON.parse(raw);
+    if (!token || marca.token !== token) return instruccion; // era de otro acuerdo: se ignora
+    return `${instruccion}
+AVISO — ESTE LEAD NO TE IGNORÓ: te pidió que le escribieras más adelante y le estás escribiendo ANTES de ese momento. Por eso: (a) NO le reproches silencio ni digas nada parecido a «vi que no me has contestado» ni «como no me decías nada»; (b) lo más seguro es NO mencionar ningún plazo y entrar directo a su tema, con calidez y sin prisa; (c) si aun así lo mencionas, media línea y sin dar explicaciones ni hablar de horarios, sistemas ni límites de la aplicación; (d) jamás digas «como te prometí» ni des por pasado el tiempo que acordasteis.`;
+  } catch {
+    return instruccion;
+  }
 }
 
 async function rearmFollowup(conversationId, delayMs) {
@@ -1687,7 +1723,7 @@ export async function processFollowup(job) {
   // El resto (en_conversion, calificado, etc.) lo decide el chequeo IA leyendo los mensajes,
   // porque un lead que pidió el enlace pero se quedó callado sí conviene retomarlo.
   if (['descartado', 'agendado'].includes(conv.stage)) {
-    await redis.del(fuKey(conv.id)); // cortar la cadena de seguimientos
+    await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); // cortar la cadena de seguimientos
     return;
   }
   const steps = Array.isArray(account.followups) ? account.followups : [];
@@ -1714,7 +1750,7 @@ export async function processFollowup(job) {
         return;
       }
       await redis.del(`mdfuwait:${conversationId}`);
-      await redis.del(fuKey(conv.id));
+      await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
       await logEvent('marketplace_seguimiento_detenido', { conv: conv.id, account: account.id, nota: '6 h sin saldo en el marketplace: se corta la cadena de seguimientos (se reanuda si el lead escribe)' });
       return;
     }
@@ -1749,7 +1785,7 @@ export async function processFollowup(job) {
     if (!decision.seguir) {
       await logEvent('followup_omitido_ia', { conv: conv.id, stage: conv.stage, motivo: decision.motivo || '' });
       await q(`UPDATE conversations SET followup_state = 'detenido_ia', updated_at = now() WHERE id = $1`, [conv.id]);
-      await redis.del(fuKey(conv.id)); // parar la cadena (el ciclo normal la reanuda si el lead escribe)
+      await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); // parar la cadena (el ciclo normal la reanuda si el lead escribe)
       return;
     }
   }
@@ -1762,7 +1798,7 @@ export async function processFollowup(job) {
       provider,
       conversation: conv,
       history,
-      followupInstruction: stepConf.instruction || 'Retoma la conversación de forma breve y amable.',
+      followupInstruction: await instruccionConAjuste(conversationId, token, stepConf.instruction || 'Retoma la conversación de forma breve y amable.'),
       followupNumber: step + 1,
     });
   } catch (err) {
@@ -1807,6 +1843,7 @@ export async function processFollowup(job) {
   // BullMQ re-ejecuta este job, el token ya no está y la re-ejecución muere aquí en vez de mandar
   // la tanda de seguimiento DOS veces.
   if (token && !(await consumeToken(fuKey(conversationId), token))) return;
+  await olvidarAjuste(conversationId); // el mensaje ya sale: la nota queda consumida
 
   let cursor = 0;
   for (let i = 0; i < result.mensajes.length; i++) {
