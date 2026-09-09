@@ -22,14 +22,33 @@ const ADMIN_EDITABLE = [
 ];
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
+// REGLA: todo campo que la pestaña Ajustes/CTAs del PORTAL enseñe tiene que estar aquí. Si falta,
+// el PUT lo ignora en silencio, devuelve la fila vieja y el panel «borra» lo que el cliente acaba de
+// escribir (así se perdían los CTAs, la etiqueta de exclusión, la pausa por humano y la sincronía
+// de etiquetas). Los campos de la pestaña Conexión (name, mode, location_id, pit_token) son solo admin.
 const USER_EDITABLE = [
   'alias',
   'followups', 'debounce_seconds', 'max_msgs',
   'active_hours', 'timezone', 'temperature', 'bot_enabled', 'test_mode', 'test_tag', 'auto_handoff_minutes',
   'required_tags', 'required_tags_mode', 'insertion_wait_seconds', 'insertion_idle_hours',
+  'ctas', 'exclude_tag', 'auto_handoff', 'sync_tags',
 ];
 
 const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags', 'ctas']);
+
+// CTAs = [{ keyword, wait_seconds }]. La keyword vacía es el «cualquiera» que matchCtaWait (pipeline)
+// usa como comodín, así que se conserva; lo que se tira es lo que no tiene una espera válida.
+export function sanearCtas(valor) {
+  if (!Array.isArray(valor)) return [];
+  return valor
+    .filter((c) => c && typeof c === 'object')
+    .map((c) => ({
+      keyword: String(c.keyword ?? '').trim().slice(0, 120),
+      wait_seconds: Math.min(Math.max(0, Math.round(Number(c.wait_seconds))), 3600),
+    }))
+    .filter((c) => Number.isFinite(c.wait_seconds))
+    .slice(0, 50);
+}
 
 function stripSecrets(row, req) {
   if (req.auth?.role === 'admin') return row;
@@ -97,6 +116,7 @@ export default async function accountRoutes(app) {
     for (const field of editable) {
       if (!(field in b)) continue;
       let value = JSON_FIELDS.has(field) ? JSON.stringify(b[field]) : b[field] === '' && field === 'location_id' ? null : b[field];
+      if (field === 'ctas') value = JSON.stringify(sanearCtas(b[field]));
       if (field === 'insertion_wait_seconds') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 3600);
       if (field === 'insertion_idle_hours') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 720);
       vals.push(value);
