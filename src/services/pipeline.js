@@ -380,6 +380,22 @@ async function selectSetter(account, conv) {
 // CTAs: si el primer mensaje contiene una palabra/frase clave, el setter espera un
 // plazo antes de entrar. Devuelve la espera en SEGUNDOS o null si no aplica.
 // Casan primero las CTAs con keyword; una keyword vacía es el "cualquiera" (catch-all).
+// Una palabra de CTA tiene que EMPEZAR donde empieza una palabra. Con `includes` a secas, una CTA
+// corta como "test" casaba dentro de "contestar" o "raíz" dentro de otra palabra, y el lead se comía
+// la espera del CTA sin haber escrito ninguna palabra de campaña. El final se deja libre a propósito
+// para que sigan valiendo los plurales y las variantes con sufijo ("señal" casa "señales").
+// Se usa \p{L}/\p{N} en vez de \b porque \b no considera letra ni a la enye ni a las acentuadas.
+const cacheCta = new Map();
+function ctaRegex(kw) {
+  let re = cacheCta.get(kw);
+  if (!re) {
+    const literal = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp(`(?<![\\p{L}\\p{N}_])${literal}`, 'iu');
+    cacheCta.set(kw, re);
+  }
+  return re;
+}
+
 function matchCtaWait(account, body) {
   const ctas = Array.isArray(account.ctas) ? account.ctas : [];
   if (!ctas.length) return null;
@@ -390,7 +406,7 @@ function matchCtaWait(account, body) {
     const w = Number(c?.wait_seconds);
     if (!Number.isFinite(w) || w < 0) continue;
     if (!kw) { if (catchAll === null) catchAll = w; continue; }
-    if (text.includes(kw)) return w;
+    if (ctaRegex(kw).test(text)) return w;
   }
   return catchAll;
 }
