@@ -14,7 +14,7 @@ const COMMENT_WEBHOOK_URL = `${config.appBaseUrl}/api/webhooks/comentarios`;
 // mergeSetter) — fuera del whitelist para no escribir en una columna muerta sin versionado.
 const ADMIN_EDITABLE = [
   'name', 'alias', 'mode', 'pit_token', 'location_id', 'channels',
-  'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'max_words', 'followups', 'active_hours',
+  'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'max_words', 'followup_fit_window', 'followups', 'active_hours',
   'timezone', 'sync_tags', 'auto_handoff', 'bot_enabled', 'ai_enabled', 'test_mode', 'test_tag', 'exclude_tag',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
   'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode', 'ctas',

@@ -232,6 +232,8 @@ export function mergeSetter(account, s) {
     // tope de palabras: el del setter manda si lo tiene; si no lo define, hereda el de la conexión
     // (a diferencia de max_msgs/temperature, que son de siempre y ahí el setter gana aunque sea nulo)
     max_words: Number(s.max_words) > 0 ? s.max_words : account.max_words,
+    // igual que max_words: el setter manda si lo tiene encendido; si no, hereda el de la conexion
+    followup_fit_window: Boolean(s.followup_fit_window || account.followup_fit_window),
     debounce_seconds: s.debounce_seconds,
     followups: Array.isArray(s.followups) && s.followups.length ? s.followups : account.followups,
     followup_ai_check: s.followup_ai_check !== false, // por defecto ON
@@ -1769,6 +1771,27 @@ export async function scheduleNextFollowup(account, conv, extraMs = 0, acordadoH
     if (efectivas) {
       hours = efectivas;
       await logEvent('seguimiento_reprogramado_acuerdo', { conv: conv.id, horas_acordadas: acordadoHoras, horas_efectivas: Number(hours.toFixed(1)) });
+    }
+  }
+  // ¿Cabe este paso en la ventana de mensajeria? Los pasos se cuentan desde el ENVIO anterior del bot
+  // y se acumulan, asi que el segundo suele caer fuera de las ~23 h desde el ultimo mensaje del LEAD:
+  // processFollowup lo marca 'ventana_cerrada' y muere sin reprogramarse. En Albatros eso son 627
+  // primeros toques y CERO segundos. Con la bandera encendida, el paso se adelanta al ultimo hueco
+  // util en vez de perderse. Apagada (por defecto en las 12 cuentas), nada cambia.
+  if (account.followup_fit_window && WINDOWED_CHANNELS.includes(conv.channel) && conv.last_inbound_at) {
+    const desdeInboundH = (Date.now() - new Date(conv.last_inbound_at).getTime()) / 3_600_000;
+    const restante = 22 - desdeInboundH; // 22 y no 23: margen para el tecleo y la cola
+    if (restante < 2) {
+      // Menos de 2 h de hueco: adelantarlo mas seria un «¿sigues ahi?» a los minutos, que delata al
+      // bot. Se deja morir, pero TRAZADO y con el estado visible en el panel.
+      await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]).catch(() => {});
+      await logEvent('seguimiento_no_cabe_en_ventana', { conv: conv.id, paso: conv.followup_step || 0, horas_pedidas: hours, ventana_restante_h: Number(Math.max(0, restante).toFixed(1)) });
+      return;
+    }
+    if (hours > restante) {
+      await logEvent('seguimiento_adelantado_a_ventana', { conv: conv.id, paso: conv.followup_step || 0, horas_pedidas: hours, horas_efectivas: Number(restante.toFixed(1)) });
+      hours = restante;
+      recorte = true; // el mensaje sale antes de lo previsto: que el modelo lo sepa
     }
   }
   const token = crypto.randomUUID();

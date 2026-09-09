@@ -7,13 +7,15 @@ import * as ghl from '../services/ghl.js';
 const ADMIN_EDITABLE = [
   'name', 'bot_enabled', 'accepts_leads', 'test_mode', 'test_tag', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
-  'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'max_words', 'followups', 'followup_ai_check',
+  'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'max_words', 'followup_fit_window', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
   'calendar_ids', 'activation_enabled', 'activation_tags', 'insertion_wait_seconds', 'insertion_idle_hours',
 ];
 const USER_EDITABLE = [
   'name', 'bot_enabled', 'test_mode', 'test_tag', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
   'prompt_identity', 'prompt_business', 'prompt_flow',
+  // followup_fit_window NO va aquí a propósito: cambia CUÁNDO sale un seguimiento respetando la
+  // ventana de Meta y se enciende por cuenta tras medir, no desde el panel del cliente.
   'temperature', 'debounce_seconds', 'max_msgs', 'max_words', 'followups', 'followup_ai_check',
   // pestaña IA: el usuario elige sus APIs (solo las habilitadas para usuarios; se valida abajo)
   'provider_id', 'model', 'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
