@@ -62,14 +62,20 @@ async function activationLogStart(account, setter, conv, { tag = '', contexto = 
   try {
     // una activación nueva reemplaza a la anterior pendiente de esta conversación (last-wins)
     await q(`UPDATE activation_log SET status = 'descartado', motivo = 'reemplazada', updated_at = now() WHERE conversation_id = $1 AND status = 'esperando'`, [conv.id]);
+    // $8::int en las DOS posiciones: sin el cast, Postgres no sabe de qué tipo es el parámetro dentro
+    // de «$8 * interval» y rechaza el INSERT entero. Fallaba en silencio (lo tragaba el catch de
+    // abajo), así que la tabla llevaba VACÍA desde que se creó y el panel de Activaciones no mostraba
+    // nada en ninguna cuenta: el cliente no tenía forma de ver si sus campañas activaban al setter.
     await q(
       `INSERT INTO activation_log (account_id, setter_id, conversation_id, contact_id, contact_name, tag, contexto, wait_seconds, respond_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now() + ($8 * interval '1 second'))`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int, now() + ($8::int * interval '1 second'))`,
       [account.id, setter.id, conv.id, conv.ghl_contact_id, conv.lead_name || '', String(tag || '').slice(0, 100), String(contexto || '').slice(0, 1500), Math.max(0, Number(waitSeconds) || 0)]
     );
     await q(`DELETE FROM activation_log WHERE id < (SELECT COALESCE(MAX(id),0) FROM activation_log) - 3000`);
   } catch (err) {
+    // Se traza además en el registro visible: un fallo aquí deja el panel ciego y nadie se entera.
     console.error('[activation_log start]', err.message);
+    await logEvent('activation_log_error', { conv: conv.id, setter: setter.id, error: String(err.message).slice(0, 200) }).catch(() => {});
   }
 }
 // Llamado desde el worker cuando un job de debounce FALLA (excepción no capturada): resuelve la fila
