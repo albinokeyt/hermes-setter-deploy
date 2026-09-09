@@ -114,6 +114,70 @@ Su perfil/usuario dice: «${name}».
 ${cierre}`;
 }
 
+/**
+ * Fecha y hora de HOY en la zona del negocio. El modelo no la sabe: sin esto confundía los días
+ * («te recuerdo lo de mañana» un viernes para una cita del martes) y no podía juzgar si una cita ya
+ * pasó. Va siempre, cueste una línea.
+ */
+function bloqueFecha(account) {
+  const tz = String(account?.timezone || '').trim() || 'Europe/Madrid';
+  try {
+    const f = new Intl.DateTimeFormat('es-ES', {
+      timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    }).format(new Date());
+    return `=== AHORA MISMO ===\nHoy es ${f} (zona ${tz}). Úsalo para hablar de fechas: no digas "mañana" ni "esta semana" sin comprobarlo contra esta fecha.`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Estado de la cita del lead. Hermes ya lo guardaba en `appointments` pero NUNCA se lo contaba al
+ * modelo, así que el setter cualificaba desde cero a gente que ya tenía hora reservada — en Albatros,
+ * 56 de los 62 contactos con cita que tocó. Ahora lo sabe y se comporta distinto en cada caso.
+ * El bloque solo aparece si hay cita: en una conversación normal no gasta ni una línea.
+ */
+function bloqueCita(cita, account) {
+  if (!cita) return '';
+  const tz = String(account?.timezone || '').trim() || 'Europe/Madrid';
+  let cuando = '';
+  if (cita.start_time) {
+    try {
+      cuando = new Intl.DateTimeFormat('es-ES', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(new Date(cita.start_time));
+    } catch { cuando = String(cita.start_time); }
+  }
+  const pasada = cita.start_time ? new Date(cita.start_time).getTime() < Date.now() : false;
+
+  if (cita.status === 'no_asistio') {
+    return `=== SU CITA: NO SE PRESENTÓ ===
+Tenía cita el ${cuando} y no apareció. OJO: esto NO es que se haya arrepentido — ya te había dicho que sí, así que sigue siendo de los leads más calientes que tienes.
+- Escríbele sin reproche ni culpa ("se te pasó", "no viniste" ❌). Da por hecho que se le cruzó algo, que es lo normal.
+- Tu único objetivo es que coja OTRA hora: ofrécele el enlace para que elija él, en corto.
+- NO vuelvas a cualificar desde cero: ya sabes su caso, retómalo por donde estaba.`;
+  }
+  if (cita.status === 'cancelado') {
+    return `=== SU CITA: CANCELADA ===
+Tenía cita el ${cuando} y se canceló.
+- No des por hecho que ya no le interesa, pero tampoco lo persigas: pregúntale con naturalidad si quiere buscar otro momento, UNA vez.
+- Si te dice que sí, mándale el enlace para que elija hora. Si te dice que no, ciérralo con cariño y para.
+- NO vuelvas a cualificar desde cero: ya sabes su caso.`;
+  }
+  if (pasada) {
+    return `=== SU CITA: YA PASÓ ===
+Su cita era el ${cuando}, o sea que ya la ha tenido.
+- NO le pidas que reserve "la valoración" como si no hubiera pasado nada, y no lo cualifiques desde cero: ya habló con el equipo.
+- Si escribe con una duda, resuélvela en modo soporte. Si lo que quiere es otra cita —una segunda sesión, otro tema, o retomar— atiéndele con normalidad y mándale el enlace para que elija hora.
+- NUNCA le confirmes ni le repitas el día y la hora tú: la fecha de arriba es interna y quien la verifica es el equipo.`;
+  }
+  return `=== SU CITA: RESERVADA ===
+Tiene cita reservada para el ${cuando}.
+- YA ESTÁ AGENDADO: no vuelvas a cualificarlo, no le pidas que reserve y NO le preguntes si quiere una cita. Eso es lo que más molesta a alguien que ya dio el paso.
+- Quédate en modo soporte: resuelve sus dudas, y si solo se despide, responde en una línea y para.
+- NUNCA le confirmes ni le repitas el día y la hora tú: la fecha de arriba es interna, y quien la verifica es el equipo. Si te pregunta por su hora, dile que le llega en el correo de confirmación.
+- EXCEPCIÓN: si te pide cita para algo DISTINTO, o quiere cambiar la hora, o dice que no pudo ir: atiéndele con normalidad y mándale el enlace para que elija.`;
+}
+
 export function buildSystemPrompt(account, conversation, opts = {}) {
   const memoria = conversation?.memory && Object.keys(conversation.memory).length
     ? JSON.stringify(conversation.memory, null, 2)
@@ -125,10 +189,14 @@ export function buildSystemPrompt(account, conversation, opts = {}) {
     `=== 2. NEGOCIO Y OFERTA ===\n${account.prompt_business || '(sin definir)'}`,
     `=== 3. FLUJO Y OBJETIVO ===\n${account.prompt_flow || '(sin definir)'}`,
     `=== MEMORIA DEL LEAD (lo que ya sabes de él) ===\n${memoria}`,
+    bloqueFecha(account),
+    // La cita va DESPUÉS del flujo del cliente a propósito: manda sobre él. Un flujo que dice
+    // «sigues SIEMPRE estas fases» no debe hacer que se cualifique a alguien que ya tiene hora.
+    bloqueCita(opts.cita, account),
     styleRules(account),
     mediaRules(),
     stageGuide(),
-  ];
+  ].filter(Boolean);
   if (opts.followupInstruction) {
     parts.push(`=== TAREA ESPECIAL: SEGUIMIENTO #${opts.followupNumber || 1} ===
 El lead dejó de responder. Retoma la conversación de forma natural, sin sonar insistente ni desesperado.
@@ -246,9 +314,9 @@ export function parseAgentJson(content, account) {
   };
 }
 
-export async function generateReply({ account, provider, conversation, history, followupInstruction = null, followupNumber = 1, activation = null }) {
+export async function generateReply({ account, provider, conversation, history, followupInstruction = null, followupNumber = 1, activation = null, cita = null }) {
   const guardrail = await getGuardrail();
-  const system = `${guardrail}\n\n${buildSystemPrompt(account, conversation, { followupInstruction, followupNumber, activation })}`;
+  const system = `${guardrail}\n\n${buildSystemPrompt(account, conversation, { followupInstruction, followupNumber, activation, cita })}`;
   const messages = [{ role: 'system', content: system }, ...historyToMessages(history)];
   if (activation) {
     // ACTIVACIÓN: la orden va SIEMPRE como ÚLTIMO mensaje, con el texto de la etiqueta LITERAL.

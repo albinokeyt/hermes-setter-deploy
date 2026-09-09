@@ -1080,8 +1080,13 @@ export async function handleAppointmentEvent(account, type, p) {
   const contactId = String(appt.contactId || p.contactId || '');
   const calendarId = appt.calendarId || appt.calendar_id || p.calendarId || '';
   const statusRaw = String(appt.appointmentStatus || appt.status || '').toLowerCase();
-  const cancelled = type === 'AppointmentDelete' || ['cancelled', 'canceled', 'noshow', 'no_show', 'invalid'].includes(statusRaw);
-  const status = cancelled ? 'cancelado' : 'agendado';
+  // NO ASISTIÓ ≠ CANCELÓ. Antes los dos caían en 'cancelado' y el setter no podía distinguirlos, que
+  // es justo la diferencia comercial: quien anula puede haberse arrepentido, pero quien no se
+  // presenta YA HABÍA DICHO QUE SÍ y solo hay que proponerle otra hora. En Albatros, de 151 citas
+  // hay 100 canceladas y 3 no-shows, y a ninguno de los dos grupos le vuelve a escribir nadie.
+  const noAsistio = ['noshow', 'no_show', 'no-show'].includes(statusRaw);
+  const cancelled = type === 'AppointmentDelete' || noAsistio || ['cancelled', 'canceled', 'invalid'].includes(statusRaw);
+  const status = noAsistio ? 'no_asistio' : (cancelled ? 'cancelado' : 'agendado');
   const startTime = appt.startTime || appt.start_time || null;
 
   // ¿Ya teníamos registrada esta cita? Entonces es un update/cancel: se reconcilia contra la
@@ -1165,12 +1170,13 @@ export async function handleAppointmentEvent(account, type, p) {
   if (convId) {
     const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [convId]);
     if (conv) {
-      await applyStage(conv, account, cancelled ? 'agenda_cancelada' : 'agendado',
-        cancelled ? 'cita cancelada en el calendario de GHL' : 'cita agendada en el calendario de GHL');
+      const etapa = noAsistio ? 'no_asistio' : (cancelled ? 'agenda_cancelada' : 'agendado');
+      await applyStage(conv, account, etapa,
+        noAsistio ? 'no se presentó a la cita' : (cancelled ? 'cita cancelada en el calendario de GHL' : 'cita agendada en el calendario de GHL'));
       if (!cancelled) await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); // ya agendó: fuera seguimientos pendientes
     }
   }
-  await logEvent(cancelled ? 'cita_cancelada' : 'cita_agendada', {
+  await logEvent(noAsistio ? 'cita_no_asistio' : (cancelled ? 'cita_cancelada' : 'cita_agendada'), {
     account: account.id, contactId, appointmentId: ghlId, startTime, statusRaw, tipo: type,
   });
 }
@@ -1501,6 +1507,7 @@ export async function processDebounce(job) {
       // La activación va por su propio canal (NO como followupInstruction): dentro del bloque de
       // seguimiento sus instrucciones quedaban diluidas y contradichas ("el lead dejó de responder…").
       activation: activacion ? { contexto: activContexto } : null,
+      cita: await citaDelLead(conv),
     });
     await redis.del(`llmretry:${conversationId}`);
   } catch (err) {
@@ -1676,6 +1683,23 @@ export async function processSend(job) {
   try {
     await registrarConsumo({ account, conversationId: conv.id });
   } catch { /* lo recoge el barrido de marketplace.js */ }
+}
+
+// Última cita del lead, para que el modelo sepa que ya tiene hora (o que no se presentó) en vez de
+// cualificarlo desde cero. Se busca por CONTACTO, no por conversación: la cita pudo reclamarse desde
+// otro canal del mismo lead. Si falla, se devuelve null y el prompt sale como siempre.
+async function citaDelLead(conv) {
+  if (!conv?.ghl_contact_id) return null;
+  try {
+    return await one(
+      `SELECT status, start_time, title FROM appointments
+        WHERE account_id = $1 AND ghl_contact_id = $2
+        ORDER BY COALESCE(start_time, created_at) DESC LIMIT 1`,
+      [conv.account_id, conv.ghl_contact_id]
+    );
+  } catch {
+    return null;
+  }
 }
 
 // ─── Seguimientos ────────────────────────────────────────────────────────────
@@ -1887,6 +1911,7 @@ export async function processFollowup(job) {
       history,
       followupInstruction: await instruccionConAjuste(conversationId, token, stepConf.instruction || 'Retoma la conversación de forma breve y amable.'),
       followupNumber: step + 1,
+      cita: await citaDelLead(conv),
     });
   } catch (err) {
     const retries = await redis.incr(`furetry:${conversationId}`);
