@@ -229,6 +229,7 @@ export function mergeSetter(account, s) {
     model: (s.provider_id && s.provider_id !== account.provider_id) ? (s.model || '') : (s.model || account.model),
     temperature: s.temperature,
     max_msgs: s.max_msgs,
+    max_words: s.max_words,
     debounce_seconds: s.debounce_seconds,
     followups: Array.isArray(s.followups) && s.followups.length ? s.followups : account.followups,
     followup_ai_check: s.followup_ai_check !== false, // por defecto ON

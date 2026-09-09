@@ -32,10 +32,22 @@ function stageGuide() {
 }
 
 function styleRules(account) {
+  // Tope de palabras por mensaje, OPCIONAL y por cuenta (max_words). Sin él, la regla es la de
+  // siempre y el prompt sale byte a byte igual que antes: encenderlo es decisión de cada cuenta.
+  // Por qué existe: midiendo 1.269 conversaciones reales de Albatros, Theos manda el MISMO texto
+  // (~41 palabras por respuesta) en 3 burbujas de 13,6 palabras y Hermes en 1-2 de 26 — y el 51 % de
+  // las conversaciones de Facebook mueren en el segundo turno. Lo que cambia no es el contenido, es
+  // que llegue como escribe una persona en vez de como un formulario.
+  const cap = Number(account.max_words) > 0 ? Math.round(Number(account.max_words)) : null;
+  const reparto = cap
+    ? `- Mensajes CORTOS de verdad: NINGÚN mensaje pasa de ${cap} palabras. Nada de párrafos largos, listas, negritas ni markdown.
+- Divide tu respuesta en 1 a ${account.max_msgs || 3} mensajes. Si lo que tienes que decir no cabe en ${cap} palabras, NO lo mandes en bloque: pártelo POR FRASES en mensajes seguidos (saludo aparte, idea aparte, y la pregunta sola en el último). Un ladrillo delata al bot tanto como encadenar mensajes vacíos.
+- Si tu FLUJO trae un guion literal (una apertura, una explicación), respeta sus PALABRAS pero no su formato: mándalo partido en mensajes cortos. EXCEPCIÓN: un mensaje que lleve un ENLACE va entero y solo, nunca partido.`
+    : `- Mensajes CORTOS, como se chatea de verdad. Nada de párrafos largos, listas, negritas ni markdown.
+- Divide tu respuesta en 1 a ${account.max_msgs || 3} mensajes según fluya natural (saludo aparte, idea aparte). Por defecto UNO: parte en dos solo cuando de verdad son dos cosas distintas (p. ej. entregar algo y luego preguntar). Encadenar mensajes agobia y delata al bot.`;
   return `REGLAS DE ESTILO (obligatorias):
 - Escribes como una persona real por ${account.channels?.join(' y ') || 'chat'}: cercano, natural, en el idioma del lead (por defecto español).
-- Mensajes CORTOS, como se chatea de verdad. Nada de párrafos largos, listas, negritas ni markdown.
-- Divide tu respuesta en 1 a ${account.max_msgs || 3} mensajes según fluya natural (saludo aparte, idea aparte). Por defecto UNO: parte en dos solo cuando de verdad son dos cosas distintas (p. ej. entregar algo y luego preguntar). Encadenar mensajes agobia y delata al bot.
+${reparto}
 - El lead puede haber enviado varios mensajes seguidos: respóndelos como un TODO, no uno por uno.
 - NUNCA te repitas: no vuelvas a responder algo que ya respondiste antes en la conversación, ni repitas la misma idea con otras palabras dentro de la misma respuesta. Si ya lo dijiste, no lo expliques otra vez salvo que el lead lo vuelva a preguntar.
 - Máximo UNA pregunta por turno.
