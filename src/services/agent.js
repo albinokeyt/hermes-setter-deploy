@@ -308,9 +308,23 @@ export function parseAgentJson(content, account) {
   mensajes = mensajes.map((m) => sanitizeMessage(String(m || '').trim()).trim()).filter(Boolean);
   const max = account.max_msgs || 3;
   if (mensajes.length > max) {
+    // El sobrante se funde en la última burbuja, PERO nunca arrastrando un enlace: pegar una URL a
+    // otro texto rompe la entrega (el lead recibe el enlace incrustado en una frase, y en las cuentas
+    // que entregan guías eso es el mensaje que importa). Un mensaje con enlace se queda solo y lo que
+    // se descarta es el texto de relleno que lo acompañaba.
+    const conUrl = (m) => /https?:\/\//i.test(m);
     const keep = mensajes.slice(0, max - 1);
-    keep.push(mensajes.slice(max - 1).join(' '));
-    mensajes = keep;
+    const sobra = mensajes.slice(max - 1);
+    const enlace = sobra.find(conUrl);
+    if (enlace) {
+      // el enlace es lo único imprescindible del sobrante: va suelto y en último lugar
+      const previo = sobra.filter((m) => !conUrl(m) && sobra.indexOf(m) < sobra.indexOf(enlace)).join(' ').trim();
+      if (previo && keep.length < max - 1) keep.push(previo);
+      keep.push(enlace);
+    } else {
+      keep.push(sobra.join(' '));
+    }
+    mensajes = keep.slice(0, max);
   }
   const etiqueta = STAGE_KEYS.includes(parsed.etiqueta) && !SYSTEM_STAGES.includes(parsed.etiqueta) ? parsed.etiqueta : null;
   const memoria = parsed.memoria && typeof parsed.memoria === 'object' && !Array.isArray(parsed.memoria) ? parsed.memoria : {};
