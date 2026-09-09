@@ -229,7 +229,9 @@ export function mergeSetter(account, s) {
     model: (s.provider_id && s.provider_id !== account.provider_id) ? (s.model || '') : (s.model || account.model),
     temperature: s.temperature,
     max_msgs: s.max_msgs,
-    max_words: s.max_words,
+    // tope de palabras: el del setter manda si lo tiene; si no lo define, hereda el de la conexión
+    // (a diferencia de max_msgs/temperature, que son de siempre y ahí el setter gana aunque sea nulo)
+    max_words: Number(s.max_words) > 0 ? s.max_words : account.max_words,
     debounce_seconds: s.debounce_seconds,
     followups: Array.isArray(s.followups) && s.followups.length ? s.followups : account.followups,
     followup_ai_check: s.followup_ai_check !== false, // por defecto ON
