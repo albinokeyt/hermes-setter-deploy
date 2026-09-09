@@ -44,19 +44,30 @@ function sanitizeLinks(links, legacy) {
     .slice(0, 10);
 }
 
+// Techo de etiquetas activadoras. Estaba en 20 y una cuenta con 20 campañas vivas no podía añadir la
+// 21: el guardado devolvía 200 y la etiqueta desaparecía sin decir nada, así que esos leads entraban
+// por GHL y nadie les contestaba nunca. Ahora cabe una campaña por cada lead magnet con margen, y si
+// aun así se pasa, el guardado avisa en vez de recortar a escondidas.
+const MAX_ACTIVACIONES = 100;
+
 // Lista de etiquetas activadoras: { tag, contexto, espera, links }. Se normaliza entera para que no
 // entre basura al prompt ni al panel (claves desconocidas fuera, longitudes y espera acotadas).
 function sanitizeActivationTags(v) {
   if (!Array.isArray(v)) return [];
-  return v
+  const lista = v
     .map((e) => ({
       tag: String(e?.tag || '').trim().slice(0, 100),
       contexto: String(e?.contexto || '').trim().slice(0, 1500),
       espera: Math.min(Math.max(0, Math.round(Number(e?.espera) || 0)), 3600),
       links: sanitizeLinks(e?.links, e?.link),
     }))
-    .filter((e) => e.tag)
-    .slice(0, 20);
+    .filter((e) => e.tag);
+  if (lista.length > MAX_ACTIVACIONES) {
+    const err = new Error(`Demasiadas etiquetas de activacion: ${lista.length}. El maximo es ${MAX_ACTIVACIONES}.`);
+    err.statusCode = 400;
+    throw err;
+  }
+  return lista;
 }
 
 async function loadSetterScoped(req, setterId) {
