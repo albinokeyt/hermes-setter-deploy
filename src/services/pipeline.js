@@ -1268,7 +1268,11 @@ async function allowedByTags(account, conv, activacion = false) {
   if (!(account.location_id || account.pit_token)) return true; // sin GHL no podemos consultar etiquetas
 
   const tags = await getContactTags(account, conv);
-  if (tags === null) return false; // error consultando → no respondemos (seguro)
+  // OJO: null NO es "no pasa el filtro", es "no se ha podido comprobar" (GHL caído, límite de tasa,
+  // 5xx). Devolverlo como false dejaba al lead mudo PARA SIEMPRE por un fallo de un segundo, sin
+  // reintento y sin que nadie se enterara. Se distingue con 'error' para que quien llama reprograme,
+  // igual que se hace cuando falta saldo en el marketplace.
+  if (tags === null) return 'error';
 
   // Exclusión: si el contacto tiene la etiqueta de exclusión general, o una del setter, no se responde.
   if (generalExclude && tags.includes(generalExclude)) return false;
@@ -1411,7 +1415,25 @@ export async function processDebounce(job) {
     await redis.del(insFreshKey(conversationId));
   }
 
-  if (!(await allowedByTags(account, conv, activacion))) {
+  const permiso = await allowedByTags(account, conv, activacion);
+  if (permiso === 'error') {
+    // No sabemos si el lead pasa el filtro: GHL no contestó. Antes esto se trataba como un "no" y el
+    // lead se quedaba sin respuesta para siempre por un fallo pasajero. Se reprograma este mismo
+    // ciclo (1 min, tope ~30 min) y solo se descarta si GHL sigue sin responder tras el tope.
+    const intentos = await redis.incr(`tagerr:${conversationId}`);
+    await redis.expire(`tagerr:${conversationId}`, 3600);
+    if (intentos <= 30) {
+      if (activacion) await redis.expire(activarKey(conversationId), 7200); // que no caduque esperando
+      await scheduleDebounce(account, conversationId, 60_000);
+      return;
+    }
+    await redis.del(`tagerr:${conversationId}`);
+    await logEvent('etiquetas_ilegibles_lead_sin_atender', { conv: conv.id, contacto: conv.ghl_contact_id, nota: '30 min sin poder leer las etiquetas en GHL: se deja de reintentar' });
+    await descartarActivacion('etiquetas_ilegibles');
+    return;
+  }
+  await redis.del(`tagerr:${conversationId}`).catch(() => {});
+  if (!permiso) {
     await logEvent('respuesta_omitida_por_etiqueta', { conv: conv.id, contacto: conv.ghl_contact_id, test_mode: account.test_mode, required_tags: account.required_tags, activacion });
     await descartarActivacion('filtro_etiqueta'); // borra activarKey + marca el registro (no dejar 'esperando' colgado)
     return;
@@ -1810,7 +1832,19 @@ export async function processFollowup(job) {
     await redis.del(`mdfuwait:${conversationId}`).catch(() => {});
   }
 
-  if (!(await allowedByTags(account, conv))) return;
+  const permisoFu = await allowedByTags(account, conv);
+  if (permisoFu === 'error') {
+    // No se han podido leer las etiquetas: NO se manda a ciegas (el contacto podría llevar "sin-ia"),
+    // pero tampoco se mata la cadena por un fallo pasajero de GHL. Se reintenta en 10 min.
+    const fallos = await redis.incr(`tagerrfu:${conversationId}`);
+    await redis.expire(`tagerrfu:${conversationId}`, 12 * 3600);
+    if (fallos <= 6) { await rearmFollowup(conversationId, 10 * 60_000); return; }
+    await redis.del(`tagerrfu:${conversationId}`);
+    await logEvent('etiquetas_ilegibles_seguimiento_detenido', { conv: conv.id, nota: '1 h sin poder leer las etiquetas en GHL: se corta esta cadena de seguimientos' });
+    return;
+  }
+  await redis.del(`tagerrfu:${conversationId}`).catch(() => {});
+  if (!permisoFu) return;
 
   if (windowBlocked(conv)) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
