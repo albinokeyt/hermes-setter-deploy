@@ -915,6 +915,23 @@ export async function handleOutboundEvent(account, evt) {
   if (!(await shouldCollect(account))) return; // recaudación off + bot off
   const channel = normalizeChannel(evt.channel);
   if (!channel) return;
+
+  const body = String(evt.body || '').trim();
+
+  // SIN TEXTO no seguimos, y se sale ANTES de tocar la base: los anti-ecos de abajo son POR TEXTO y
+  // la pausa por intervención externa también los necesita. Un saliente sin body (adjunto de una
+  // automatización, plantilla, evento fantasma de GHL) se saltaba todos los filtros y PAUSABA
+  // conversaciones recién nacidas sin dejar ni una burbuja: el lead "entraba con el bot en pausa" y
+  // el setter no hablaba nunca. Cuando esa salida estaba DESPUÉS del insert, cada evento fantasma
+  // dejaba además una conversación huérfana —sin entrada, sin salida y sin un solo mensaje— que
+  // engordaba el recuento de leads del panel: en Albatros eran 1.055 de 1.200 filas, y con ese
+  // denominador la tasa de agenda parecía nueve veces peor de lo que era.
+  if (!body) {
+    const fresh = await redis.set(`outnobody:${account.id}`, '1', 'EX', 60, 'NX').catch(() => null);
+    if (fresh) await logEvent('saliente_sin_texto_ignorado', { contacto: evt.contactId || null, canal: channel, messageId: evt.messageId || null, keys: Object.keys(evt || {}).slice(0, 20) }).catch(() => {});
+    return;
+  }
+
   // Si aún NO existe conversación en este canal (p. ej. una automatización escribe ANTES de que el
   // lead conteste, o escribe por un canal distinto al que ya teníamos), la creamos en vez de tirar el
   // mensaje: si no, ese saliente no aparecería en ninguna parte. No fijamos last_inbound_at (no ha
@@ -929,19 +946,6 @@ export async function handleOutboundEvent(account, evt) {
     [account.id, evt.contactId, evt.conversationId || null, channel, evt.contactName || '']
   );
   if (!conv) return;
-
-  const body = String(evt.body || '').trim();
-
-  // SIN TEXTO no seguimos: los anti-ecos de abajo son POR TEXTO y la pausa por intervención externa
-  // también los necesita. Un saliente sin body (adjunto de una automatización, plantilla, evento
-  // fantasma de GHL) se saltaba todos los filtros y PAUSABA conversaciones recién nacidas sin dejar
-  // ni una burbuja: el lead "entraba con el bot en pausa" y el setter no hablaba nunca. Sin texto
-  // no hay evidencia de intervención conversacional — se traza y se sale.
-  if (!body) {
-    const fresh = await redis.set(`outnobody:${account.id}`, '1', 'EX', 60, 'NX').catch(() => null);
-    if (fresh) await logEvent('saliente_sin_texto_ignorado', { conv: conv.id, messageId: evt.messageId || null, keys: Object.keys(evt || {}).slice(0, 20) }).catch(() => {});
-    return;
-  }
 
   // ANTI-ECO: el guard `sent:` de arriba solo funciona si GHL nos devolvió el messageId al enviar.
   // Cuando no lo devuelve (o el envío falló tras entregar), el eco de NUESTRO PROPIO mensaje llegaría

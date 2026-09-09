@@ -25,6 +25,10 @@ export default async function conversationRoutes(app) {
     const ids = await accessibleAccountIds(req); // null = admin (todas)
     const where = [];
     const vals = [];
+    // Fuera las conversaciones que nunca tuvieron mensaje ni por un lado ni por el otro: son las que
+    // dejaban los salientes fantasma de GHL (eventos sin texto). Aparecian en la lista como filas en
+    // blanco, sin nombre y sin ultimo mensaje, y tapaban las conversaciones de verdad.
+    where.push('(c.last_inbound_at IS NOT NULL OR c.last_outbound_at IS NOT NULL)');
     if (ids) { vals.push(ids); where.push(`c.account_id = ANY($${vals.length}::int[])`); }
     if (req.query?.account_id) { vals.push(req.query.account_id); where.push(`c.account_id = $${vals.length}`); }
     if (setter_id) { vals.push(setter_id); where.push(`c.setter_id = $${vals.length}`); }

@@ -62,8 +62,10 @@ export default async function accountRoutes(app) {
     const ids = await accessibleAccountIds(req); // null = admin (todas)
     const rows = await q(`
       SELECT a.*, p.name AS provider_name,
-        (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id) AS conversations_count,
-        (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id AND c.updated_at > now() - interval '24 hours') AS active_24h,
+        -- Mismo criterio que en las metricas del setter: una conversacion cuenta cuando el lead
+        -- llego a escribir. Las filas que dejaban los salientes fantasma de GHL no son leads.
+        (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id AND c.last_inbound_at IS NOT NULL) AS conversations_count,
+        (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id AND c.last_inbound_at IS NOT NULL AND c.updated_at > now() - interval '24 hours') AS active_24h,
         EXISTS(SELECT 1 FROM ghl_tokens t WHERE t.location_id = a.location_id) AS oauth_connected
       FROM accounts a LEFT JOIN providers p ON p.id = a.provider_id
       ${ids ? 'WHERE a.id = ANY($1::int[])' : ''}

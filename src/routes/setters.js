@@ -98,7 +98,10 @@ export default async function setterRoutes(app) {
         COALESCE((SELECT SUM(COALESCE(u.billed_usd, u.cost_usd)) FROM llm_usage u WHERE u.setter_id = s.id), 0) AS facturado
        FROM setters s
        LEFT JOIN providers p ON p.id = s.provider_id
-       LEFT JOIN conversations c ON c.setter_id = s.id
+       -- Solo conversaciones que existieron de verdad. GHL emite salientes fantasma (sin texto) que
+       -- dejaban una fila vacia por contacto: en Albatros eran 1.055 de 1.200 y hundian la tasa de
+       -- agenda del panel a una novena parte de la real. Se cuentan las que tienen mensaje del lead.
+       LEFT JOIN conversations c ON c.setter_id = s.id AND c.last_inbound_at IS NOT NULL
        WHERE s.account_id = $1
        GROUP BY s.id, p.name
        ORDER BY s.is_default DESC, s.id`,
