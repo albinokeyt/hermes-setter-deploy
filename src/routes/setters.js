@@ -165,12 +165,13 @@ export default async function setterRoutes(app) {
   app.get('/api/setters/:id/tag-log', async (req, reply) => {
     const { setter, code, error } = await loadSetterScoped(req, req.params.id);
     if (code) return reply.code(code).send({ error });
+    const limit = Math.min(Math.max(Math.trunc(Number(req.query?.limit)) || 20, 1), 500); // ?limit= para auditar
     const events = await q(
       `SELECT id, kind, payload, created_at FROM webhook_log
        WHERE kind IN ('etiqueta_recibida', 'activador_etiqueta')
          AND (payload->>'account' = $1 OR payload->>'setter' = $2)
-       ORDER BY id DESC LIMIT 20`,
-      [String(setter.account_id), String(setter.id)]
+       ORDER BY id DESC LIMIT $3`,
+      [String(setter.account_id), String(setter.id), limit]
     );
     return { events };
   });
@@ -180,10 +181,12 @@ export default async function setterRoutes(app) {
   app.get('/api/setters/:id/activaciones', async (req, reply) => {
     const { setter, code, error } = await loadSetterScoped(req, req.params.id);
     if (code) return reply.code(code).send({ error });
+    // ?limit= hasta 500: para auditar hace falta más que las 30 últimas del panel.
+    const limit = Math.min(Math.max(Math.trunc(Number(req.query?.limit)) || 30, 1), 500);
     const rows = await q(
       `SELECT id, contact_id, contact_name, tag, contexto, wait_seconds, respond_at, status, message, motivo, created_at
-       FROM activation_log WHERE setter_id = $1 ORDER BY id DESC LIMIT 30`,
-      [setter.id]
+       FROM activation_log WHERE setter_id = $1 ORDER BY id DESC LIMIT $2`,
+      [setter.id, limit]
     );
     return { activaciones: rows };
   });

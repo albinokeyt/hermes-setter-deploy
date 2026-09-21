@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
+import { normTag } from '../lib/tags.js';
 import { debounceQueue, sendQueue, followupQueue, reactivateQueue } from '../queues.js';
 import { generateReply, shouldFollowup } from './agent.js';
 // 💳 Marketplace Disruptivo: puerta de acceso antes de atender y registro de consumo al entregar.
@@ -590,6 +591,9 @@ export async function handleInbound(account, evt) {
      RETURNING *, (xmax = 0) AS is_new`,
     [account.id, evt.contactId, evt.conversationId || null, channel, evt.contactName || '']
   );
+  // Si el CTA le llegó ANTES de escribir (comentó, le etiquetaron, y ahora contesta al DM), la
+  // conversación nace aquí y hereda ese contexto: el setter responde sabiendo qué pidió.
+  await aplicarContextoCtaPendiente(account, conv);
 
   // Enrutado al setter de la conexión que casa por etiqueta. Se reintenta mientras el
   // lead no tenga setter (por si se etiqueta más tarde). Si hay setters pero ninguno
@@ -741,11 +745,67 @@ export async function handleInbound(account, evt) {
 // ⚡ ACTIVADOR EXTERNO: un workflow de GHL (p. ej. al asignar una etiqueta) activa a ESTE setter
 // para un contacto: importa el historial (entrantes y salientes) desde GHL, reclama la conversación
 // y programa una respuesta proactiva (instrucción de activación en processDebounce).
+// 📌 CONTEXTO PERSISTENTE DEL CTA: queda en TODAS las conversaciones del contacto en esta conexión
+// (aún no sabemos por qué canal escribirá) y en Redis 14 días para aplicarlo a la conversación que
+// nazca después. Es lo que hace que el setter sepa qué material pidió el lead en TODOS los turnos y
+// no solo en la entrada proactiva, que puede descartarse (ventana de Meta cerrada, pausa, canal…).
+// opts.soloSiVacio: no pisar un CTA ya guardado (se usa cuando no sabemos si la etiqueta es nueva).
+// opts.setterId: en el camino de activación, solo las conversaciones de ESE setter (o sin setter);
+// el camino informativo de lead magnet no lo pasa y llega a todas las del contacto.
+// NO toca updated_at: es la métrica de actividad del panel y un re-etiquetado en lote de GHL no es
+// actividad del lead (cta_at ya fecha el CTA).
+const ctaPendKey = (accountId, contactId) => `ctapend:${accountId}:${contactId}`;
+export async function guardarContextoCta(account, contactId, tag, contexto, opts = {}) {
+  const t = normTag(tag);
+  if (!contactId || !t) return 0;
+  const ctx = String(contexto || '').trim().slice(0, 1500);
+  const at = new Date().toISOString();
+  // Redis PRIMERO: una conversación que nazca mientras corre el UPDATE la recoge aplicarContextoCtaPendiente.
+  const key = ctaPendKey(account.id, contactId);
+  const valor = JSON.stringify({ tag: t, contexto: ctx, at });
+  if (opts.soloSiVacio) await redis.set(key, valor, 'EX', 14 * 86400, 'NX');
+  else await redis.set(key, valor, 'EX', 14 * 86400);
+  const cond = ['account_id = $1', 'ghl_contact_id = $2'];
+  const vals = [account.id, String(contactId), t, ctx, at];
+  if (opts.soloSiVacio) cond.push(`cta_tag = ''`);
+  if (opts.setterId) { vals.push(opts.setterId); cond.push(`(setter_id IS NULL OR setter_id = $${vals.length})`); }
+  const filas = await q(
+    `UPDATE conversations SET cta_tag = $3, cta_context = $4, cta_at = $5::timestamptz WHERE ${cond.join(' AND ')} RETURNING id`,
+    vals
+  );
+  return filas.length;
+}
+// Le quitaron la etiqueta al contacto en GHL: si era su CTA vigente, se olvida (en la BD y en el pendiente).
+export async function limpiarContextoCta(account, contactId, tag) {
+  const t = normTag(tag);
+  if (!contactId || !t) return;
+  await q(`UPDATE conversations SET cta_tag = '', cta_context = '' WHERE account_id = $1 AND ghl_contact_id = $2 AND cta_tag = $3`, [account.id, String(contactId), t]);
+  const key = ctaPendKey(account.id, contactId);
+  const raw = await redis.get(key).catch(() => null);
+  if (raw) { try { if (normTag(JSON.parse(raw).tag) === t) await redis.del(key); } catch { /* nada */ } }
+}
+// Aplica a una conversación recién creada (o sin CTA) el contexto pendiente del contacto, si lo hay,
+// con la fecha REAL en que se puso la etiqueta (no «ahora»).
+async function aplicarContextoCtaPendiente(account, conv) {
+  if (!conv || conv.cta_tag) return;
+  const raw = await redis.get(ctaPendKey(account.id, conv.ghl_contact_id)).catch(() => null);
+  if (!raw) return;
+  try {
+    const { tag, contexto, at } = JSON.parse(raw);
+    if (!tag) return;
+    const fecha = at && !Number.isNaN(new Date(at).getTime()) ? at : new Date().toISOString();
+    await q(`UPDATE conversations SET cta_tag = $2, cta_context = $3, cta_at = COALESCE(cta_at, $4::timestamptz) WHERE id = $1 AND cta_tag = ''`, [conv.id, tag, String(contexto || ''), fecha]);
+    conv.cta_tag = tag; conv.cta_context = String(contexto || ''); conv.cta_at = conv.cta_at || fecha;
+  } catch { /* pendiente corrupto: se ignora */ }
+}
+
+// Devuelve el ESTADO real de la activación: 'activado' | 'apagado' (IA o bot apagados) |
+// 'bloqueado' (pausa o atención humana). El webhook lo usa para no quemar la etiqueta 24 h en falso.
 export async function activateSetterForContact(account, setter, contactId, waitSeconds = 0, contexto = '', tag = '', opts = {}) {
   const merged = mergeSetter(account, setter);
   if (!account.ai_enabled || !merged.bot_enabled) {
     await logEvent('activador_apagado', { setter: setter.id, contactId, ai: account.ai_enabled, bot: merged.bot_enabled });
-    return;
+    return 'apagado';
   }
   // historial del contacto en GHL (si falla o no hay, se sigue con lo que tengamos local)
   let ghlHistory = { conversationId: null, messages: [], lastInboundAt: null };
@@ -768,6 +828,7 @@ export async function activateSetterForContact(account, setter, contactId, waitS
      RETURNING *`,
     [account.id, String(contactId), ghlHistory.conversationId, channel]
   );
+  await aplicarContextoCtaPendiente(account, conv); // si la conversación nace aquí, hereda el CTA
   // Una activación por etiqueta es una ORDEN EXPLÍCITA del negocio, así que gana a la AUTO-pausa por
   // intervención externa (paused_by='humano'), que es solo una suposición: si el workflow manda un
   // mensaje y acto seguido pone la etiqueta, sin esto el setter no entraría nunca. Se siguen respetando
@@ -789,7 +850,7 @@ export async function activateSetterForContact(account, setter, contactId, waitS
     await logEvent('activador_bloqueado', { conv: conv.id, setter: setter.id, motivo });
     await activationLogStart(account, setter, conv, { tag, contexto, waitSeconds });
     await activationLogDone(conv.id, 'descartado', motivo);
-    return;
+    return 'bloqueado';
   }
   // la activación RECLAMA la conversación para este setter
   if (conv.setter_id !== setter.id) {
@@ -859,6 +920,7 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   await scheduleDebounce(merged, conv.id, delayMs);
   // registro en vivo (panel de Activaciones): esperando, con la hora objetivo real del temporizador
   await activationLogStart(account, setter, conv, { tag, contexto, waitSeconds: delayMs / 1000 });
+  return 'activado';
 }
 
 // Guarda en `messages` los mensajes traídos de GHL (entrantes y salientes) que falten, dedupe por
@@ -1625,10 +1687,21 @@ export async function processSend(job) {
 
   const { conv, account } = await loadContext(conversationId);
   if (!conv || !account) return;
-  if ((conv.bot_paused && !bypassPause) || !account.bot_enabled || !account.ai_enabled) return;
-  if (snapshotId && (await lastInboundId(conversationId)) !== snapshotId) return; // el lead volvió a escribir
+  // Un descarte AQUÍ es silencioso para el resto del sistema: el seguimiento ya se marcó «enviado_N»
+  // al encolarse y el panel lo enseña como entregado. Medido en Despierta en Pareja: 55 conversaciones
+  // con «seguimiento #1 enviado» y CERO mensajes del bot. Así que todo descarte deja rastro y, si era
+  // un seguimiento, corrige el estado a «no_entregado» para que nadie crea que el lead recibió algo.
+  const descartado = async (motivo) => {
+    await logEvent('envio_descartado', { conv: conv.id, motivo, source: source || 'bot', canal: conv.channel, body: String(body || '').slice(0, 80) }).catch(() => {});
+    if (source === 'seguimiento') {
+      await q(`UPDATE conversations SET followup_state = 'no_entregado', updated_at = now() WHERE id = $1`, [conv.id]).catch(() => {});
+    }
+  };
+  if ((conv.bot_paused && !bypassPause) || !account.bot_enabled || !account.ai_enabled) { await descartado(conv.bot_paused ? 'conversacion_pausada' : 'ia_o_bot_apagado'); return; }
+  if (snapshotId && (await lastInboundId(conversationId)) !== snapshotId) return; // el lead volvió a escribir: el ciclo normal responde
   if (windowBlocked(conv)) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
+    await logEvent('envio_descartado', { conv: conv.id, motivo: 'ventana_cerrada_al_enviar', source: source || 'bot', canal: conv.channel }).catch(() => {});
     // una activación al borde de la ventana: el panel ya decía 'respondido' pero el mensaje murió aquí
     if (deActivacion) {
       await activationLogDone(conv.id, 'descartado', 'ventana_cerrada_al_enviar').catch(() => {});
@@ -1655,6 +1728,9 @@ export async function processSend(job) {
     const rechazoFirme = st >= 400 && st < 500 && st !== 408 && st !== 429;
     if (rechazoFirme || st === 429) {
       await redis.del(sentKey).catch(() => {}); // no salió: el reintento puede volver a intentarlo
+      // Rechazo en firme (típico: Meta cierra la ventana aunque nuestro reloj la diera por abierta):
+      // queda trazado y, si era un seguimiento, deja de figurar como entregado.
+      if (rechazoFirme) await descartado(`rechazado_por_ghl_${st}`);
     } else {
       await logEvent('envio_ambiguo_no_reintentado', { conv: conv.id, error: String(err?.message || err).slice(0, 200) }).catch(() => {});
       // Se asume entregado (por eso no se reintenta): el consumo se registra igual. Si de verdad no

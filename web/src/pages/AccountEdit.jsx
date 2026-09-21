@@ -3,13 +3,14 @@ import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Plus, Trash2, Sparkles, ChevronRight, Bot } from 'lucide-react';
 import { api } from '../api.js';
 import { useMe } from '../components/Layout.jsx';
-import { Card, SectionTitle, Button, Input, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
+import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 import { AccessManager } from '../components/AccessManager.jsx';
 
 const TABS = [
   { key: 'setters', label: '🤖 Setters' },
   { key: 'ajustes', label: 'Ajustes' },
   { key: 'ctas', label: '🎯 CTAs' },
+  { key: 'lm', label: '📚 Lead magnets' },
   { key: 'accesos', label: 'Accesos' },
   { key: 'conexion', label: 'Conexión GHL', adminOnly: true },
 ];
@@ -387,6 +388,62 @@ export default function AccountEdit() {
           </div>
         </Card>
       )}
+
+      {tab === 'lm' && (() => {
+        const lms = Array.isArray(acc.lead_magnets) ? acc.lead_magnets : [];
+        const setLm = (i, patch) => set({ lead_magnets: lms.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+        const vacio = { keyword: '', name: '', tag: '', promise: '', url: '', details: '' };
+        return (
+          <div data-tour="conexion-lm" className="max-w-3xl space-y-4">
+            <Banner tone="info">
+              Todo lo que el negocio <b>regala o vende por una palabra</b> (guías, vídeos, tests, clases…). El setter lleva siempre este índice y consulta el detalle cuando el lead <b>pregunta por uno</b> o cuando es <b>el que pidió</b> (la etiqueta que le pusieron). Así no inventa ni pregunta «¿a qué guía te refieres?».
+            </Banner>
+            <Card className="space-y-3 p-6">
+              {lms.length === 0 && <p className="text-xs text-slate-400">Sin lead magnets todavía. Añade uno o pega la lista en JSON abajo.</p>}
+              {lms.map((l, i) => (
+                <div key={i} className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                    <Input label="Palabra que lo pide" maxLength={80} value={l.keyword || ''} onChange={(e) => setLm(i, { keyword: e.target.value })} placeholder="ej. CIENCIA" />
+                    <Input label="Nombre" maxLength={160} value={l.name || ''} onChange={(e) => setLm(i, { name: e.target.value })} placeholder="ej. Los 7 Protocolos de Precios" />
+                    <Input label="Etiqueta que lo marca" maxLength={160} value={l.tag || ''} onChange={(e) => setLm(i, { tag: e.target.value })} placeholder="ej. cta ciencia" hint="La MISMA que pone el workflow (con sus tildes)." />
+                  </div>
+                  {!String(l.name || '').trim() && !String(l.keyword || '').trim() && !String(l.tag || '').trim() && (
+                    <p className="text-xs font-medium text-red-500">⚠ Necesita nombre, palabra o etiqueta: si no, se descarta al guardar.</p>
+                  )}
+                  <Input label="Promesa (una línea)" maxLength={400} value={l.promise || ''} onChange={(e) => setLm(i, { promise: e.target.value })} placeholder="Qué consigue quien lo pide" />
+                  <Input label="Enlace de entrega" maxLength={500} value={l.url || ''} onChange={(e) => setLm(i, { url: e.target.value })} placeholder="https://…" />
+                  <Textarea label="Detalle (qué hay dentro, a quién le sirve, cómo hablar de él)" rows={3} maxLength={2000} value={l.details || ''} onChange={(e) => setLm(i, { details: e.target.value })}
+                    hint={`Lo que el setter necesita para contestar preguntas sobre este material. (${String(l.details || '').length}/2000)`} />
+                  <div className="flex justify-end">
+                    <button type="button" onClick={() => set({ lead_magnets: lms.filter((_, j) => j !== i) })} className="text-slate-400 hover:text-red-500" title="Quitar"><Trash2 size={16} /></button>
+                  </div>
+                </div>
+              ))}
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" onClick={() => set({ lead_magnets: [...lms, { ...vacio }] })}><Plus size={16} /> Añadir lead magnet</Button>
+                <Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(JSON.stringify(lms, null, 1)).catch(() => {}); }}>Copiar lista (JSON)</Button>
+              </div>
+              <Textarea label="Pegar lista en JSON (sustituye la actual)" rows={3} value={acc._lmImport || ''} onChange={(e) => set({ _lmImport: e.target.value })}
+                placeholder='[{"keyword":"CIENCIA","name":"…","tag":"cta ciencia","promise":"…","url":"…","details":"…"}]'
+                hint="Formato: keyword, name, tag, promise, url, details. Se valida al pulsar «Aplicar»." />
+              <Button variant="secondary" disabled={!String(acc._lmImport || '').trim()} onClick={() => {
+                try {
+                  const arr = JSON.parse(acc._lmImport);
+                  if (!Array.isArray(arr)) throw new Error('no es una lista');
+                  // solo objetos planos y solo texto/número por campo (un objeto anidado acabaría
+                  // como «[object Object]» en el prompt del setter)
+                  const txt = (v) => (typeof v === 'string' || typeof v === 'number' ? String(v) : '');
+                  const limpios = arr.filter((x) => x && typeof x === 'object' && !Array.isArray(x))
+                    .map((x) => Object.fromEntries(Object.keys(vacio).map((k) => [k, txt(x[k])])));
+                  const descartados = arr.length - limpios.length;
+                  set({ lead_magnets: limpios, _lmImport: '' });
+                  if (descartados) alert(`Se han descartado ${descartados} elemento(s) que no eran fichas válidas.`);
+                } catch (err) { alert(`JSON no válido: ${err.message}`); }
+              }}>Aplicar JSON</Button>
+            </Card>
+          </div>
+        );
+      })()}
 
       {tab === 'ctas' && (() => {
         const ctas = Array.isArray(acc.ctas) ? acc.ctas : [];

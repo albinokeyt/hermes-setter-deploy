@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { one, q, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
-import { handleInbound, handleOutboundEvent, handleAppointmentEvent, accountByLocation, logEvent, activateSetterForContact } from '../services/pipeline.js';
+import { handleInbound, handleOutboundEvent, handleAppointmentEvent, accountByLocation, logEvent, activateSetterForContact, guardarContextoCta, limpiarContextoCta } from '../services/pipeline.js';
 
 const APPOINTMENT_TYPES = ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'];
 
@@ -127,11 +127,16 @@ async function handleGlobalComment(req) {
 // ContactTagUpdate del marketplace: si el contacto tiene la etiqueta activadora de algún setter,
 // ese setter lee el historial y escribe él solo. Dedupe por setter+contacto: dispara UNA vez por
 // «añadido» de la etiqueta (al quitarse la etiqueta se resetea, así un re-añadido vuelve a disparar).
+// Normaliza una etiqueta para compararla: minúsculas, SIN tildes y con los espacios internos
+// colapsados. «cta élite», «CTA  Elite» y «cta elite» son la misma etiqueta para el negocio; antes
+// una tilde de más en el panel dejaba muda una campaña entera y el rastro decía «sin coincidir».
+const normTag = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+
 async function handleTagActivation(account, p) {
   const contactId = String(p.id || p.contact_id || p.contactId || p.contact?.id || '');
   // ¿el payload trae DE VERDAD la lista de etiquetas? (para no confundir "sin lista" con "sin la etiqueta")
   const tagsArray = Array.isArray(p.tags) ? p.tags : (Array.isArray(p.contact?.tags) ? p.contact.tags : null);
-  const tags = (tagsArray || []).map((t) => String(t).trim().toLowerCase()).filter(Boolean);
+  const tags = (tagsArray || []).map(normTag).filter(Boolean);
   const setters = await q(
     `SELECT * FROM setters WHERE account_id = $1 AND activation_enabled = true`,
     [account.id]
@@ -142,45 +147,116 @@ async function handleTagActivation(account, p) {
   for (const s of setters) {
     const lista = Array.isArray(s.activation_tags) ? s.activation_tags : [];
     for (const e of lista) {
-      const tag = String(e?.tag || '').trim().toLowerCase();
+      const tag = normTag(e?.tag);
       if (!tag) continue;
-      entradas.push({ setter: s, tag, contexto: String(e?.contexto || ''), espera: Number(e?.espera) || 0 });
+      entradas.push({ setter: s, tag, tagOriginal: String(e?.tag || ''), contexto: String(e?.contexto || ''), espera: Number(e?.espera) || 0 });
     }
   }
-  // Sin ninguna etiqueta activadora configurada → no hay nada que hacer. No registramos nada para
-  // no inundar la traza (ContactTagUpdate se dispara con CADA cambio de etiqueta de la subcuenta).
+  const lms = (Array.isArray(account.lead_magnets) ? account.lead_magnets : []).filter((l) => l && normTag(l.tag));
+  const lmPorTag = new Map(lms.map((l) => [normTag(l.tag), l]));
+  // Sin etiquetas activadoras NI lead magnets configurados → no hay nada que hacer (ni foto que guardar).
+  // No registramos nada para no inundar la traza (ContactTagUpdate salta con CADA cambio de etiqueta).
+  if (!entradas.length && !lms.length) return;
+
+  // Qué etiquetas se acaban de AÑADIR: se compara con la última foto del contacto (Redis, 30 días).
+  // ContactTagUpdate salta con cualquier cambio y no dice cuál fue; sin esto, con dos etiquetas
+  // activadoras puestas ganaba «la última de la lista del panel», no la recién puesta, y el setter
+  // podía entrar hablando del lead magnet equivocado. anadidas === null → no había foto (1er evento).
+  const fotoKey = `tagset:${account.id}:${contactId}`;
+  let anadidas = null;
+  if (contactId && tagsArray) {
+    const prevRaw = await redis.get(fotoKey).catch(() => null);
+    if (prevRaw) { try { const prev = new Set(JSON.parse(prevRaw)); anadidas = new Set(tags.filter((t) => !prev.has(t))); } catch { anadidas = null; } }
+    await redis.set(fotoKey, JSON.stringify(tags), 'EX', 30 * 86400).catch(() => {});
+  }
+
+  // Ficha de un lead magnet como contexto de conversación: QUÉ pidió, no una orden de entrada.
+  const fichaLm = (l) => [
+    l.name ? `El lead pidió «${l.name}»${l.keyword ? ` (comentó «${l.keyword}»)` : ''}.` : '',
+    l.promise, l.details,
+  ].filter(Boolean).join(' ').slice(0, 1500);
+
+  // 📚 Etiquetas de LEAD MAGNET (pestaña «Lead magnets» de la conexión): si al contacto le acaban de
+  // poner la etiqueta de un lead magnet, se guarda como contexto del CTA de su conversación SIN
+  // entrada proactiva (esa la deciden solo las etiquetas activadoras). Es lo que hace que «cta ciencia»
+  // deje al setter sabiendo qué pidió el lead aunque nadie configure una activación para esa etiqueta.
+  // Con foto previa, solo cuenta la RECIÉN puesta; sin foto (primer evento del contacto), la última
+  // que case pero SOLO si la conversación aún no tiene CTA (no pisar uno más nuevo con uno viejo).
+  if (contactId && tagsArray && lms.length) {
+    const candidatos = lms.filter((l) => tags.includes(normTag(l.tag)));
+    const recienLm = anadidas ? candidatos.filter((l) => anadidas.has(normTag(l.tag))) : [];
+    const lm = recienLm[recienLm.length - 1] || (anadidas ? null : candidatos[candidatos.length - 1]);
+    if (lm) {
+      await guardarContextoCta(account, contactId, lm.tag, fichaLm(lm), { soloSiVacio: !recienLm.length })
+        .catch((err) => logEvent('error_contexto_cta', { contactId, error: String(err.message).slice(0, 120) }));
+      await logEvent('contexto_lead_magnet', { account: account.id, contactId, etiqueta: normTag(lm.tag), nombre: lm.name || '', recien_puesta: recienLm.length > 0 });
+    }
+  }
   if (!entradas.length) return;
+
   const evaluados = [];
-  // Un setter entra UNA sola vez por evento aunque casen varias de sus etiquetas: si no, la segunda
-  // activación pisaría el contexto de la primera y el agente entraría con el contexto equivocado.
   // Un setter entra UNA sola vez por evento; si varias de sus etiquetas casan a la vez, prevalece la
-  // ÚLTIMA (por orden de la lista), que es la más reciente. Entre eventos distintos, la más nueva
-  // también gana porque activateSetterForContact reescribe la activación pendiente.
+  // RECIÉN puesta (o la última de la lista si no hay foto previa). Entre eventos distintos, la más
+  // nueva también gana porque activateSetterForContact reescribe la activación pendiente.
   const frescasPorSetter = new Map(); // setterId -> { setter, list: [entradas frescas] }
   if (contactId) {
     for (const en of entradas) {
       const s = en.setter;
       const dedupe = `tagact:${s.id}:${en.tag}:${contactId}`;
+      // clave con la grafía ANTERIOR al despliegue (sin normalizar tildes ni espacios): si existe, ya disparó
+      const legacy = `tagact:${s.id}:${en.tagOriginal.trim().toLowerCase()}:${contactId}`;
       if (tags.includes(en.tag)) {
+        if (legacy !== dedupe && (await redis.exists(legacy).catch(() => 0))) { evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'ya_activado' }); continue; }
         const fresh = await redis.set(dedupe, '1', 'EX', 86400, 'NX');
         if (!fresh) { evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'ya_activado' }); continue; }
         if (!frescasPorSetter.has(s.id)) frescasPorSetter.set(s.id, { setter: s, list: [] });
         frescasPorSetter.get(s.id).list.push(en);
       } else {
-        // SOLO si el payload trae la lista real y la etiqueta no está → resetear (re-añadido re-dispara).
-        // Si el payload venía sin lista (parcial), NO tocamos el dedupe (evita doble activación).
-        if (tagsArray) await redis.del(dedupe);
+        // SOLO si el payload trae la lista real y la etiqueta no está → resetear (re-añadido re-dispara)
+        // y, si era el CTA vigente de la conversación, olvidarlo (le quitaron la etiqueta a propósito).
+        // Si el payload venía sin lista (parcial), NO tocamos nada (evita doble activación).
+        if (tagsArray) {
+          await redis.del(dedupe); await redis.del(legacy).catch(() => {});
+          await limpiarContextoCta(account, contactId, en.tag).catch(() => {});
+        }
         evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'sin_coincidir' });
       }
     }
-    // Activar cada setter con su ÚLTIMA etiqueta fresca (last wins); las demás quedan marcadas (no re-disparan).
     for (const { setter: s, list } of frescasPorSetter.values()) {
-      const elegida = list[list.length - 1];
+      const recien = anadidas ? list.filter((en) => anadidas.has(en.tag)) : [];
+      // Con foto previa y NINGUNA activadora recién puesta, el evento lo provocó otra etiqueta: no se
+      // entra ni se pisa el contexto, y se sueltan los candados recién cogidos para que un añadido
+      // real sí dispare. Sin foto (primer evento del contacto), vale la última de la lista.
+      if (anadidas && !recien.length) {
+        for (const en of list) {
+          await redis.del(`tagact:${s.id}:${en.tag}:${contactId}`).catch(() => {});
+          evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'etiqueta_no_reciente' });
+        }
+        continue;
+      }
+      const elegida = recien.length ? recien[recien.length - 1] : list[list.length - 1];
       for (const en of list) if (en !== elegida) evaluados.push({ setter: s.id, nombre: s.name, etiqueta: en.tag, estado: 'omitida_por_otra_etiqueta' });
-      await logEvent('activador_etiqueta', { account: account.id, setter: s.id, contactId, etiqueta: elegida.tag, con_contexto: Boolean(elegida.contexto.trim()) });
+      await logEvent('activador_etiqueta', { account: account.id, setter: s.id, contactId, etiqueta: elegida.tag, con_contexto: Boolean(elegida.contexto.trim()), recien_puesta: recien.includes(elegida) });
+      // 📌 El contexto del CTA se guarda en la conversación PASE LO QUE PASE con la entrada proactiva:
+      // aunque se descarte (ventana de Meta cerrada, bot pausado, canal distinto), cuando el lead
+      // escriba el setter sabrá qué pidió. Solo si la etiqueta ES un CTA: casa con un lead magnet o
+      // lleva contexto escrito; una etiqueta operativa vacía (IF, reactivación) no se guarda como «pidió».
+      const lm = lmPorTag.get(elegida.tag);
+      if (lm || elegida.contexto.trim()) {
+        const ctx = lm
+          ? `${fichaLm(lm)}${elegida.contexto.trim() ? ` Instrucciones de entrada que llevaba la etiqueta: ${elegida.contexto.trim()}` : ''}`
+          : elegida.contexto;
+        await guardarContextoCta(account, contactId, elegida.tag, ctx, { setterId: s.id }).catch((err) => logEvent('error_contexto_cta', { contactId, error: String(err.message).slice(0, 120) }));
+      }
       try {
-        await activateSetterForContact(account, s, contactId, elegida.espera, elegida.contexto, elegida.tag);
-        evaluados.push({ setter: s.id, nombre: s.name, etiqueta: elegida.tag, estado: 'activado' });
+        const estado = await activateSetterForContact(account, s, contactId, elegida.espera, elegida.contexto, elegida.tag);
+        if (estado === 'apagado') {
+          // IA o bot apagados: NO se quema la etiqueta 24 h (antes el panel decía «activó» y, al
+          // encender el interruptor, esa etiqueta ya no volvía a disparar sobre ese contacto). Solo
+          // vuelve a disparar con un añadido REAL de la etiqueta (arriba se exige «recién puesta»).
+          await redis.del(`tagact:${s.id}:${elegida.tag}:${contactId}`).catch(() => {});
+        }
+        evaluados.push({ setter: s.id, nombre: s.name, etiqueta: elegida.tag, estado: estado || 'activado' });
       } catch (err) {
         // Si falló, liberamos su dedupe: un error pasajero no debe quemar la etiqueta 24 h.
         await redis.del(`tagact:${s.id}:${elegida.tag}:${contactId}`).catch(() => {});
@@ -384,9 +460,9 @@ export default async function webhookRoutes(app) {
       // autentica solo con el token (que viaja en URLs de workflows y logs de terceros), así que un
       // texto libre acabaría inyectando instrucciones en el prompt del agente. El workflow manda el
       // NOMBRE de la etiqueta y resolvemos su contexto desde la lista del setter, ya saneada.
-      const tagPedida = String(c.tag || c.etiqueta || '').trim().toLowerCase();
+      const tagPedida = normTag(c.tag || c.etiqueta || '');
       const lista = Array.isArray(setter.activation_tags) ? setter.activation_tags : [];
-      let entrada = tagPedida ? lista.find((e) => String(e?.tag || '').trim().toLowerCase() === tagPedida) : null;
+      let entrada = tagPedida ? lista.find((e) => normTag(e?.tag) === tagPedida) : null;
       // Si el workflow no manda la etiqueta (la UI ni lo menciona) o no casa, antes se activaba en
       // silencio SIN el contexto que el dueño escribió — parecía que sus instrucciones se ignoraban.
       // Si el setter tiene una sola etiqueta, usamos la suya; si no, dejamos traza para poder verlo.
@@ -398,12 +474,19 @@ export default async function webhookRoutes(app) {
           usada: entrada?.tag || null,
         });
       }
-      await activateSetterForContact(
+      // Mismo contexto persistente que el webhook de etiquetas: solo con una entrada saneada del panel
+      // (nunca con tagPedida libre) y solo si lleva contexto escrito.
+      if (entrada && String(entrada.contexto || '').trim()) {
+        await guardarContextoCta(account, String(contactId), entrada.tag, String(entrada.contexto || ''), { setterId: setter.id })
+          .catch((err) => logEvent('error_contexto_cta', { contactId: String(contactId), error: String(err.message).slice(0, 120) }));
+      }
+      const estado = await activateSetterForContact(
         account, setter, String(contactId),
         entrada ? Number(entrada.espera) || 0 : 0,
         entrada ? String(entrada.contexto || '') : '',
         entrada ? String(entrada.tag || '') : tagPedida
       );
+      if (estado && estado !== 'activado') await logEvent('activador_webhook_no_activo', { setter: setter.id, contactId: String(contactId), estado });
     } catch (err) {
       console.error('[webhook activar]', err);
       await logEvent('error_webhook', { error: err.message }).catch(() => {});

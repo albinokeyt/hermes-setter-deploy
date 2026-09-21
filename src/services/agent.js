@@ -1,5 +1,6 @@
 import { chatCompletion } from './llm.js';
 import { getSetting } from '../db.js';
+import { normTag } from '../lib/tags.js';
 import { STAGE_KEYS, SYSTEM_STAGES } from '../config.js';
 
 export const DEFAULT_GUARDRAIL =
@@ -190,6 +191,60 @@ Tiene cita reservada para el ${cuando}.
 - EXCEPCIÓN: si te pide cita para algo DISTINTO, o quiere cambiar la hora, o dice que no pudo ir: atiéndele con normalidad y mándale el enlace para que elija.`;
 }
 
+// 📌 LO QUE PIDIÓ EL LEAD (CTA): va en TODOS los turnos, no solo en la entrada proactiva. Antes el
+// contexto de la etiqueta se consumía en una respuesta y al turno siguiente el setter ya no sabía qué
+// guía había pedido («¿a qué guía te refieres?»). Ahora vive en la conversación hasta que otro CTA
+// lo sustituya.
+function bloqueCta(conversation) {
+  const tag = String(conversation?.cta_tag || '').trim();
+  if (!tag) return '';
+  const ctx = String(conversation?.cta_context || '').trim();
+  const cuando = conversation?.cta_at ? new Date(conversation.cta_at) : null;
+  const dias = cuando && !Number.isNaN(cuando.getTime()) ? (Date.now() - cuando.getTime()) / 86_400_000 : null;
+  const n = dias == null ? null : Math.round(dias);
+  const hace = n == null ? '' : n < 1 ? ' · hoy' : ` · hace ${n} día${n === 1 ? '' : 's'}`;
+  // Con el tiempo el CTA deja de mandar: un lead que vuelve semanas después no «sigue con la guía».
+  const antiguo = dias != null && dias > 21;
+  return `=== LO QUE PIDIÓ ESTE LEAD (etiqueta «${tag}»${hace}) ===
+${ctx || 'Pidió el material asociado a esta etiqueta. Si no sabes cuál es, míralo en INFORMACIÓN DE LEAD MAGNETS.'}
+Esto es CONTEXTO, no una orden de entrada: la entrada por esa etiqueta ya se hizo (o se descartó) en su momento, así que NO la repitas ni vuelvas a presentarte por ello. Úsalo para saber qué pidió y en qué punto estaba. ${antiguo
+    ? 'Ha pasado bastante tiempo: si ahora habla de otra cosa, atiende lo nuevo y no le insistas con aquel material.'
+    : 'No le preguntes qué pidió ni le ofrezcas otro material como si no lo supieras; si dice «la guía», «el vídeo», «el mapa» o «lo que me mandaste», se refiere a esto salvo que diga otra cosa.'}`;
+}
+
+// 📚 INFORMACIÓN DE LEAD MAGNETS: índice compacto de todo lo que el negocio entrega por palabra/CTA, y
+// el detalle SOLO de los que importan ahora (primero el que pidió el lead, luego los que salen en los
+// últimos mensajes). Así el setter contesta «¿de qué va la guía X?» sin inventar y sin cargar el prompt
+// entero. Presupuesto: índice ≈ 6 KB (promesa a 90 caracteres; con más de 40 entradas solo palabra →
+// nombre) y fichas ≈ 700 caracteres cada una, salvo la del CTA (1.200).
+function bloqueLeadMagnets(account, conversation, history) {
+  const lista = (Array.isArray(account?.lead_magnets) ? account.lead_magnets : []).filter((l) => l && (l.name || l.keyword));
+  if (!lista.length) return '';
+  const ctaTag = normTag(conversation?.cta_tag);
+  const reciente = normTag((Array.isArray(history) ? history.slice(-8) : []).map((m) => m?.body || '').join(' \n '));
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // mención por PALABRA COMPLETA (como ctaRegex del pipeline): «mapa» no casa dentro de «mapamundi»
+  const mencionado = (l) => [l.keyword, l.name].map(normTag).filter((k) => k.length >= 4)
+    .some((k) => new RegExp(`(?<![\\p{L}\\p{N}])${esc(k)}(?![\\p{L}\\p{N}])`, 'u').test(reciente));
+  const porCta = lista.filter((l) => ctaTag && normTag(l.tag) === ctaTag);
+  const porMencion = lista.filter((l) => !porCta.includes(l) && mencionado(l));
+  const detalle = [...porCta, ...porMencion].slice(0, 4);
+  const compacto = lista.length > 40;
+  const indice = lista.map((l) => `- ${l.keyword ? `«${l.keyword}» → ` : ''}${l.name}${!compacto && l.promise ? `: ${String(l.promise).slice(0, 90)}` : ''}`).join('\n');
+  const fichas = detalle.map((l) => {
+    const esCta = porCta.includes(l);
+    return [
+      `• ${l.name}${l.keyword ? ` (palabra «${l.keyword}»)` : ''}${l.tag ? ` — etiqueta «${l.tag}»` : ''}${esCta ? ' — ES EL QUE PIDIÓ ESTE LEAD' : ''}`,
+      l.promise ? `  Promesa: ${String(l.promise).slice(0, 300)}` : '',
+      l.details ? `  Detalle: ${String(l.details).slice(0, esCta ? 1200 : 600)}` : '',
+      l.url ? `  Enlace de entrega: ${l.url}` : '',
+    ].filter(Boolean).join('\n');
+  }).join('\n');
+  return `=== INFORMACIÓN DE LEAD MAGNETS (lo que el negocio entrega por cada palabra o CTA) ===
+${indice}${fichas ? `\n\nDETALLE de los que importan en esta conversación:\n${fichas}` : ''}
+Si el lead pregunta por alguno, respóndele con ESTA información. Si pregunta por uno que no está aquí, no lo inventes: dile que lo confirmas y sigue con tu flujo. El enlace de entrega solo se comparte si ya lo pidió y no le llegó.`;
+}
+
 export function buildSystemPrompt(account, conversation, opts = {}) {
   const memoria = conversation?.memory && Object.keys(conversation.memory).length
     ? JSON.stringify(conversation.memory, null, 2)
@@ -205,6 +260,10 @@ export function buildSystemPrompt(account, conversation, opts = {}) {
     // La cita va DESPUÉS del flujo del cliente a propósito: manda sobre él. Un flujo que dice
     // «sigues SIEMPRE estas fases» no debe hacer que se cualifique a alguien que ya tiene hora.
     bloqueCita(opts.cita, account),
+    // Qué pidió el lead (CTA) y el catálogo de lead magnets: después del flujo para que manden sobre
+    // él, y antes del estilo (que solo dice CÓMO escribir, no QUÉ saber).
+    bloqueCta(conversation),
+    bloqueLeadMagnets(account, conversation, opts.history),
     styleRules(account),
     mediaRules(),
     stageGuide(),
@@ -342,7 +401,7 @@ export function parseAgentJson(content, account) {
 
 export async function generateReply({ account, provider, conversation, history, followupInstruction = null, followupNumber = 1, activation = null, cita = null }) {
   const guardrail = await getGuardrail();
-  const system = `${guardrail}\n\n${buildSystemPrompt(account, conversation, { followupInstruction, followupNumber, activation, cita })}`;
+  const system = `${guardrail}\n\n${buildSystemPrompt(account, conversation, { followupInstruction, followupNumber, activation, cita, history })}`;
   const messages = [{ role: 'system', content: system }, ...historyToMessages(history)];
   if (activation) {
     // ACTIVACIÓN: la orden va SIEMPRE como ÚLTIMO mensaje, con el texto de la etiqueta LITERAL.

@@ -18,7 +18,7 @@ const ADMIN_EDITABLE = [
   'timezone', 'sync_tags', 'auto_handoff', 'bot_enabled', 'ai_enabled', 'test_mode', 'test_tag', 'exclude_tag',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
   'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode', 'ctas',
-  'insertion_wait_seconds', 'insertion_idle_hours',
+  'insertion_wait_seconds', 'insertion_idle_hours', 'lead_magnets',
 ];
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
@@ -31,10 +31,10 @@ const USER_EDITABLE = [
   'followups', 'debounce_seconds', 'max_msgs', 'max_words',
   'active_hours', 'timezone', 'temperature', 'bot_enabled', 'test_mode', 'test_tag', 'auto_handoff_minutes',
   'required_tags', 'required_tags_mode', 'insertion_wait_seconds', 'insertion_idle_hours',
-  'ctas', 'exclude_tag', 'auto_handoff', 'sync_tags',
+  'ctas', 'exclude_tag', 'auto_handoff', 'sync_tags', 'lead_magnets',
 ];
 
-const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags', 'ctas']);
+const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags', 'ctas', 'lead_magnets']);
 
 // CTAs = [{ keyword, wait_seconds }]. La keyword vacía es el «cualquiera» que matchCtaWait (pipeline)
 // usa como comodín, así que se conserva; lo que se tira es lo que no tiene una espera válida.
@@ -48,6 +48,24 @@ export function sanearCtas(valor) {
     }))
     .filter((c) => Number.isFinite(c.wait_seconds))
     .slice(0, 50);
+}
+
+// Lead magnets = [{ keyword, name, tag, promise, url, details }] (máx. 100). Es INFORMACIÓN para el
+// agente, no configuración: lo único que se exige es un nombre o una palabra; el resto es opcional.
+export function sanearLeadMagnets(valor) {
+  if (!Array.isArray(valor)) return [];
+  // solo texto o número: un objeto anidado acabaría como «[object Object]» en el prompt
+  const s = (v, n) => (typeof v === 'string' || typeof v === 'number' ? String(v) : '').trim().slice(0, n);
+  return valor
+    .filter((l) => l && typeof l === 'object' && !Array.isArray(l))
+    .map((l) => ({
+      keyword: s(l.keyword, 80), name: s(l.name, 160), tag: s(l.tag, 160),
+      promise: s(l.promise, 400), url: s(l.url, 500), details: s(l.details, 2000),
+    }))
+    // se conserva mientras tenga algo identificable (nombre, palabra o etiqueta): no se borra en
+    // silencio una tarjeta a medio escribir
+    .filter((l) => l.name || l.keyword || l.tag)
+    .slice(0, 100);
 }
 
 function stripSecrets(row, req) {
@@ -119,6 +137,7 @@ export default async function accountRoutes(app) {
       if (!(field in b)) continue;
       let value = JSON_FIELDS.has(field) ? JSON.stringify(b[field]) : b[field] === '' && field === 'location_id' ? null : b[field];
       if (field === 'ctas') value = JSON.stringify(sanearCtas(b[field]));
+      if (field === 'lead_magnets') value = JSON.stringify(sanearLeadMagnets(b[field]));
       if (field === 'insertion_wait_seconds') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 3600);
       if (field === 'insertion_idle_hours') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 720);
       vals.push(value);
