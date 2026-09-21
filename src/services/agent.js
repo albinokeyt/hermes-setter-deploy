@@ -1,6 +1,6 @@
 import { chatCompletion } from './llm.js';
 import { getSetting } from '../db.js';
-import { normTag } from '../lib/tags.js';
+import { normTag, tagsDeLeadMagnet } from '../lib/tags.js';
 import { STAGE_KEYS, SYSTEM_STAGES } from '../config.js';
 
 export const DEFAULT_GUARDRAIL =
@@ -226,7 +226,7 @@ function bloqueLeadMagnets(account, conversation, history) {
   // mención por PALABRA COMPLETA (como ctaRegex del pipeline): «mapa» no casa dentro de «mapamundi»
   const mencionado = (l) => [l.keyword, l.name].map(normTag).filter((k) => k.length >= 4)
     .some((k) => new RegExp(`(?<![\\p{L}\\p{N}])${esc(k)}(?![\\p{L}\\p{N}])`, 'u').test(reciente));
-  const porCta = lista.filter((l) => ctaTag && normTag(l.tag) === ctaTag);
+  const porCta = lista.filter((l) => ctaTag && tagsDeLeadMagnet(l).includes(ctaTag));
   const porMencion = lista.filter((l) => !porCta.includes(l) && mencionado(l));
   const detalle = [...porCta, ...porMencion].slice(0, 4);
   const compacto = lista.length > 40;

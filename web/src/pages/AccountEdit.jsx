@@ -392,7 +392,7 @@ export default function AccountEdit() {
       {tab === 'lm' && (() => {
         const lms = Array.isArray(acc.lead_magnets) ? acc.lead_magnets : [];
         const setLm = (i, patch) => set({ lead_magnets: lms.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
-        const vacio = { keyword: '', name: '', tag: '', promise: '', url: '', details: '' };
+        const vacio = { keyword: '', name: '', tag: '', tags_extra: '', promise: '', url: '', details: '' };
         return (
           <div data-tour="conexion-lm" className="max-w-3xl space-y-4">
             <Banner tone="info">
@@ -407,6 +407,7 @@ export default function AccountEdit() {
                     <Input label="Nombre" maxLength={160} value={l.name || ''} onChange={(e) => setLm(i, { name: e.target.value })} placeholder="ej. Los 7 Protocolos de Precios" />
                     <Input label="Etiqueta que lo marca" maxLength={160} value={l.tag || ''} onChange={(e) => setLm(i, { tag: e.target.value })} placeholder="ej. cta ciencia" hint="La MISMA que pone el workflow (con sus tildes)." />
                   </div>
+                  <Input label="Otras etiquetas que también lo marcan (separadas por «;»)" maxLength={500} value={l.tags_extra || ''} onChange={(e) => setLm(i, { tags_extra: e.target.value })} placeholder="ej. lm-pacto-de-los-siete; cta test fb" hint="Cuando el mismo material llega por varias vías (la del comentario, la de la portada, la versión de Facebook)." />
                   {!String(l.name || '').trim() && !String(l.keyword || '').trim() && !String(l.tag || '').trim() && (
                     <p className="text-xs font-medium text-red-500">⚠ Necesita nombre, palabra o etiqueta: si no, se descarta al guardar.</p>
                   )}

@@ -3,6 +3,7 @@ import { one, q, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
 import { handleInbound, handleOutboundEvent, handleAppointmentEvent, accountByLocation, logEvent, activateSetterForContact, guardarContextoCta, limpiarContextoCta } from '../services/pipeline.js';
+import { tagsDeLeadMagnet } from '../lib/tags.js';
 
 const APPOINTMENT_TYPES = ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'];
 
@@ -152,8 +153,9 @@ async function handleTagActivation(account, p) {
       entradas.push({ setter: s, tag, tagOriginal: String(e?.tag || ''), contexto: String(e?.contexto || ''), espera: Number(e?.espera) || 0 });
     }
   }
-  const lms = (Array.isArray(account.lead_magnets) ? account.lead_magnets : []).filter((l) => l && normTag(l.tag));
-  const lmPorTag = new Map(lms.map((l) => [normTag(l.tag), l]));
+  // un lead magnet puede llegar por varias etiquetas (la del CTA del comentario, la de la portada…)
+  const lms = (Array.isArray(account.lead_magnets) ? account.lead_magnets : []).filter((l) => l && tagsDeLeadMagnet(l).length);
+  const lmPorTag = new Map(lms.flatMap((l) => tagsDeLeadMagnet(l).map((t) => [t, l])));
   // Sin etiquetas activadoras NI lead magnets configurados → no hay nada que hacer (ni foto que guardar).
   // No registramos nada para no inundar la traza (ContactTagUpdate salta con CADA cambio de etiqueta).
   if (!entradas.length && !lms.length) return;
@@ -183,13 +185,14 @@ async function handleTagActivation(account, p) {
   // Con foto previa, solo cuenta la RECIÉN puesta; sin foto (primer evento del contacto), la última
   // que case pero SOLO si la conversación aún no tiene CTA (no pisar uno más nuevo con uno viejo).
   if (contactId && tagsArray && lms.length) {
-    const candidatos = lms.filter((l) => tags.includes(normTag(l.tag)));
-    const recienLm = anadidas ? candidatos.filter((l) => anadidas.has(normTag(l.tag))) : [];
-    const lm = recienLm[recienLm.length - 1] || (anadidas ? null : candidatos[candidatos.length - 1]);
-    if (lm) {
-      await guardarContextoCta(account, contactId, lm.tag, fichaLm(lm), { soloSiVacio: !recienLm.length })
+    // pares (etiqueta, lead magnet) que el contacto lleva, en el orden del catálogo
+    const candidatos = lms.flatMap((l) => tagsDeLeadMagnet(l).filter((t) => tags.includes(t)).map((t) => ({ t, l })));
+    const recienLm = anadidas ? candidatos.filter((c) => anadidas.has(c.t)) : [];
+    const par = recienLm[recienLm.length - 1] || (anadidas ? null : candidatos[candidatos.length - 1]);
+    if (par) {
+      await guardarContextoCta(account, contactId, par.t, fichaLm(par.l), { soloSiVacio: !recienLm.length })
         .catch((err) => logEvent('error_contexto_cta', { contactId, error: String(err.message).slice(0, 120) }));
-      await logEvent('contexto_lead_magnet', { account: account.id, contactId, etiqueta: normTag(lm.tag), nombre: lm.name || '', recien_puesta: recienLm.length > 0 });
+      await logEvent('contexto_lead_magnet', { account: account.id, contactId, etiqueta: par.t, nombre: par.l.name || '', recien_puesta: recienLm.length > 0 });
     }
   }
   if (!entradas.length) return;

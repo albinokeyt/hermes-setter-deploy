@@ -60,6 +60,7 @@ export function sanearLeadMagnets(valor) {
     .filter((l) => l && typeof l === 'object' && !Array.isArray(l))
     .map((l) => ({
       keyword: s(l.keyword, 80), name: s(l.name, 160), tag: s(l.tag, 160),
+      tags_extra: s(l.tags_extra, 500), // otras etiquetas que marcan el mismo material, separadas por «;»
       promise: s(l.promise, 400), url: s(l.url, 500), details: s(l.details, 2000),
     }))
     // se conserva mientras tenga algo identificable (nombre, palabra o etiqueta): no se borra en
