@@ -269,9 +269,13 @@ export function buildSystemPrompt(account, conversation, opts = {}) {
     stageGuide(),
   ].filter(Boolean);
   if (opts.followupInstruction) {
+    // Si sabemos qué material pidió (bloqueCta), el seguimiento retoma desde ESE tema: un «¿sigues ahí?» genérico
+    // desperdicia el contexto del CTA (medido en el simulador: «Cuando puedas, respóndeme y avanzamos»).
+    const conCta = Boolean(String(conversation?.cta_tag || '').trim());
     parts.push(`=== TAREA ESPECIAL: SEGUIMIENTO #${opts.followupNumber || 1} ===
 El lead dejó de responder. Retoma la conversación de forma natural, sin sonar insistente ni desesperado.
-Instrucción para este seguimiento: ${opts.followupInstruction}
+Instrucción para este seguimiento: ${opts.followupInstruction}${conCta ? `
+Conoces LO QUE PIDIÓ ESTE LEAD: retoma desde ese material o desde lo último que contó (una referencia concreta y una sola pregunta ligada a ello), nunca con un «¿sigues ahí?» o «cuando puedas respóndeme» genérico.` : ''}
 Genera 1 o 2 mensajes como máximo. Etiqueta sugerida: "en_seguimiento".`);
   }
   // ACTIVACIÓN EXTERNA: bloque PROPIO y en último lugar (justo antes del formato de salida) para que

@@ -17,7 +17,10 @@ function textoEvento(e) {
   const m = {
     sim_creada: () => `Lead simulado creado (${p.canal}, ventana de Meta: ${p.ventana === 'nunca' ? 'nunca escribió por DM' : p.ventana})`,
     sim_etiquetas: () => `Etiquetas del lead ahora: ${(p.tags || []).map((t) => `«${t}»`).join(', ') || '(ninguna)'}`,
-    etiqueta_recibida: () => `Webhook de etiquetas evaluado: ${(p.evaluados || []).map((x) => `${x.etiqueta} → ${x.estado}`).join(' · ') || (p.sin_match ? 'ninguna etiqueta activadora coincide' : 'sin activadoras')}`,
+    etiqueta_recibida: () => { // solo lo relevante: las que casaron; el resto («sin coincidir») se cuenta
+      const ev = p.evaluados || []; const casan = ev.filter((x) => x.estado !== 'sin_coincidir'); const resto = ev.length - casan.length;
+      return `Webhook de etiquetas evaluado: ${casan.map((x) => `${x.etiqueta} → ${x.estado}`).join(' · ') || 'ninguna activadora coincide'}${resto ? ` · ${resto} activadoras sin coincidir` : ''}`;
+    },
     contexto_lead_magnet: () => `📌 Contexto guardado: pidió «${p.nombre}» (etiqueta «${p.etiqueta}»${p.recien_puesta ? ', recién puesta' : ''})`,
     activador_etiqueta: () => `⚡ La etiqueta «${p.etiqueta}» activa al setter${p.con_contexto ? ' con instrucciones de entrada' : ''}${p.recien_puesta ? ' (recién puesta)' : ''}`,
     activador_externo: () => `Activación programada: el setter entrará tras ${seg(Number(p.espera_s) || 0)} (canal ${p.canal})`,
