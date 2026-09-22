@@ -208,7 +208,13 @@ export default async function simuladorRoutes(app) {
     const ctx = await cargarSim(req, reply); if (!ctx) return;
     const v = String(req.body?.estado || '');
     if (!Object.prototype.hasOwnProperty.call(VENTANAS, v)) return reply.code(400).send({ error: 'estado: nunca | abierta | cerrada' });
-    await q(`UPDATE conversations SET last_inbound_at = ${VENTANAS[v] || 'NULL'} WHERE id = $1`, [ctx.conv.id]);
+    // «abierta» no debe adelantar al lead por delante del último mensaje del setter (eso bloquearía los
+    // seguimientos con «el lead respondió después»): si el setter escribió hace poco, el lead «escribió» un
+    // segundo antes de ese mensaje; si no, hace 5 minutos.
+    const valor = v === 'abierta'
+      ? `CASE WHEN last_outbound_at IS NOT NULL AND last_outbound_at > now() - interval '23 hours' THEN last_outbound_at - interval '1 second' ELSE now() - interval '5 minutes' END`
+      : (VENTANAS[v] || 'NULL');
+    await q(`UPDATE conversations SET last_inbound_at = ${valor} WHERE id = $1`, [ctx.conv.id]);
     await logEvent('sim_ventana', { conv: ctx.conv.id, estado: v });
     return { ok: true, estado: v };
   });
