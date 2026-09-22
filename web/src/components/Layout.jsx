@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Database, Swords, Bug, Compass, CreditCard } from 'lucide-react';
+import { LayoutDashboard, MessagesSquare, Tags, Building2, Plug, FlaskConical, Settings, UsersRound, LogOut, Bot, Database, Swords, Bug, Compass, CreditCard, Beaker } from 'lucide-react';
 import { api } from '../api.js';
 import { ThemeToggle } from './ui.jsx';
 import { Tour, TourInvite } from './Tour.jsx';
@@ -101,7 +101,7 @@ export default function Layout() {
             { to: '/versus', label: 'Versus', icon: Swords },
           ]
         : []),
-    ...(restricted ? [] : [{ to: '/prueba', label: 'Probar agente', icon: FlaskConical }]),
+    ...(restricted ? [] : [{ to: '/prueba', label: 'Probar agente', icon: FlaskConical }, { to: '/simulador', label: 'Simulador', icon: Beaker }]),
     // Archivo (mensajes entrantes/salientes + comentarios + descargar) NO depende de la IA → siempre visible.
     { to: '/archivo', label: 'Archivo', icon: Database },
     { to: '/errores', label: 'Reportar error', icon: Bug },

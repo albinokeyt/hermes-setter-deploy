@@ -133,7 +133,7 @@ async function handleGlobalComment(req) {
 // una tilde de más en el panel dejaba muda una campaña entera y el rastro decía «sin coincidir».
 const normTag = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-async function handleTagActivation(account, p) {
+export async function handleTagActivation(account, p) { // exportada: el 🧪 simulador la llama con contactos «sim:…»
   const contactId = String(p.id || p.contact_id || p.contactId || p.contact?.id || '');
   // ¿el payload trae DE VERDAD la lista de etiquetas? (para no confundir "sin lista" con "sin la etiqueta")
   const tagsArray = Array.isArray(p.tags) ? p.tags : (Array.isArray(p.contact?.tags) ? p.contact.tags : null);
@@ -276,7 +276,7 @@ async function handleTagActivation(account, p) {
   if (huboMatch) {
     await logEvent('etiqueta_recibida', { account: account.id, contactId: contactId || null, tags, evaluados });
   } else {
-    const fresh = await redis.set(`etlog:${account.id}`, '1', 'EX', 60, 'NX');
+    const fresh = contactId.startsWith('sim:') ? true : await redis.set(`etlog:${account.id}`, '1', 'EX', 60, 'NX'); // 🧪 la simulación siempre deja traza
     if (fresh) await logEvent('etiqueta_recibida', { account: account.id, contactId: contactId || null, tags, evaluados, sin_match: true });
   }
 }

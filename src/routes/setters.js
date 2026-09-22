@@ -103,7 +103,7 @@ export default async function setterRoutes(app) {
        -- Solo conversaciones que existieron de verdad. GHL emite salientes fantasma (sin texto) que
        -- dejaban una fila vacia por contacto: en Albatros eran 1.055 de 1.200 y hundian la tasa de
        -- agenda del panel a una novena parte de la real. Se cuentan las que tienen mensaje del lead.
-       LEFT JOIN conversations c ON c.setter_id = s.id AND c.last_inbound_at IS NOT NULL
+       LEFT JOIN conversations c ON c.setter_id = s.id AND NOT c.simulada AND c.last_inbound_at IS NOT NULL
        WHERE s.account_id = $1
        GROUP BY s.id, p.name
        ORDER BY s.is_default DESC, s.id`,
@@ -170,6 +170,7 @@ export default async function setterRoutes(app) {
       `SELECT id, kind, payload, created_at FROM webhook_log
        WHERE kind IN ('etiqueta_recibida', 'activador_etiqueta')
          AND (payload->>'account' = $1 OR payload->>'setter' = $2)
+         AND COALESCE(payload->>'contactId', '') NOT LIKE 'sim:%'
        ORDER BY id DESC LIMIT $3`,
       [String(setter.account_id), String(setter.id), limit]
     );
@@ -185,7 +186,7 @@ export default async function setterRoutes(app) {
     const limit = Math.min(Math.max(Math.trunc(Number(req.query?.limit)) || 30, 1), 500);
     const rows = await q(
       `SELECT id, contact_id, contact_name, tag, contexto, wait_seconds, respond_at, status, message, motivo, created_at
-       FROM activation_log WHERE setter_id = $1 ORDER BY id DESC LIMIT $2`,
+       FROM activation_log WHERE setter_id = $1 AND contact_id NOT LIKE 'sim:%' ORDER BY id DESC LIMIT $2`,
       [setter.id, limit]
     );
     return { activaciones: rows };

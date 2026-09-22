@@ -11,7 +11,7 @@ export default async function playgroundRoutes(app) {
     const ids = await accessibleAccountIds(req);
     const row = await one(
       `SELECT COALESCE(SUM(cost_usd), 0) AS costo, COALESCE(SUM(COALESCE(billed_usd, cost_usd)), 0) AS facturado, COUNT(*)::int AS llamadas
-       FROM llm_usage WHERE source IN ('playground', 'corrector', 'arquitecto')
+       FROM llm_usage WHERE source IN ('playground', 'corrector', 'arquitecto', 'simulador')
        ${ids ? 'AND account_id = ANY($1::int[])' : ''}`,
       ids ? [ids] : []
     );

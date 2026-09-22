@@ -30,10 +30,9 @@ export default async function dashboardRoutes(app) {
     const P = [from, to]; // $1 = desde, $2 = hasta
 
     const isAdmin = ids === null;
-    const cond = inIds ? `AND c.account_id IN (${inIds})` : '';
-    const condM = inIds
-      ? `AND m.conversation_id IN (SELECT id FROM conversations WHERE account_id IN (${inIds}))`
-      : '';
+    // 🧪 las conversaciones simuladas (laboratorio) no cuentan en ninguna métrica
+    const cond = `AND NOT c.simulada${inIds ? ` AND c.account_id IN (${inIds})` : ''}`;
+    const condM = `AND m.conversation_id IN (SELECT id FROM conversations WHERE NOT simulada${inIds ? ` AND account_id IN (${inIds})` : ''})`;
     const condA = inIds ? `AND ap.account_id IN (${inIds})` : '';
     const condU = inIds ? `AND u.account_id IN (${inIds})` : '';
     const condCm = inIds ? `AND cm.account_id IN (${inIds})` : '';
@@ -64,7 +63,7 @@ export default async function dashboardRoutes(app) {
       SELECT stage, COUNT(*)::int AS total FROM conversations c WHERE true ${cond} GROUP BY stage
     `);
 
-    const condC = inIds ? `AND c2.account_id IN (${inIds})` : '';
+    const condC = `AND NOT c2.simulada${inIds ? ` AND c2.account_id IN (${inIds})` : ''}`;
     const daily = await q(`
       SELECT to_char(d, 'YYYY-MM-DD') AS dia,
         COALESCE((SELECT COUNT(*)::int FROM messages m WHERE m.direction='inbound' AND m.created_at::date = d ${condM}), 0) AS recibidos,
@@ -89,7 +88,7 @@ export default async function dashboardRoutes(app) {
         COUNT(c.id) FILTER (WHERE c.updated_at BETWEEN $1 AND $2)::int AS activas,
         (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.account_id = a.id AND u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2) AS gasto,
         (SELECT COALESCE(SUM(COALESCE(u.billed_usd, u.cost_usd)), 0) FROM llm_usage u WHERE u.account_id = a.id AND u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2) AS facturado
-      FROM accounts a LEFT JOIN conversations c ON c.account_id = a.id
+      FROM accounts a LEFT JOIN conversations c ON c.account_id = a.id AND NOT c.simulada
       ${inIds ? `WHERE a.id IN (${inIds})` : ''}
       GROUP BY a.id ORDER BY a.id
     `, P);

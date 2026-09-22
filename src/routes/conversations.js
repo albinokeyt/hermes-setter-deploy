@@ -3,6 +3,7 @@ import { STAGES, STAGE_KEYS } from '../config.js';
 import { applyStage, cancelBotJobs, invalidateContactTags, markOwnOutbound, markSentMessage } from '../services/pipeline.js';
 import * as ghl from '../services/ghl.js';
 import { accessibleAccountIds, canAccessAccount } from '../lib/session.js';
+import { esSim } from '../lib/sim.js';
 
 async function loadScopedConv(req, reply) {
   const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [req.params.id]);
@@ -12,6 +13,10 @@ async function loadScopedConv(req, reply) {
   }
   if (!(await canAccessAccount(req, conv.account_id))) {
     reply.code(403).send({ error: 'Sin acceso a esta conversación' });
+    return null;
+  }
+  if (conv.simulada || esSim(conv.ghl_contact_id)) { // 🧪 se gestiona desde el Simulador (nunca enviar a GHL un contacto ficticio)
+    reply.code(400).send({ error: 'Es una conversación simulada: se gestiona desde el Simulador' });
     return null;
   }
   return conv;
@@ -50,7 +55,7 @@ export default async function conversationRoutes(app) {
        FROM conversations c
        JOIN accounts a ON a.id = c.account_id
        LEFT JOIN setters st ON st.id = c.setter_id
-       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       WHERE NOT c.simulada ${where.length ? 'AND ' + where.join(' AND ') : ''}
        ORDER BY c.updated_at DESC
        LIMIT $${vals.length - 1} OFFSET $${vals.length}`,
       vals
@@ -200,7 +205,7 @@ export default async function conversationRoutes(app) {
     if (ids) { vals.push(ids); where.push(`account_id = ANY($${vals.length}::int[])`); }
     if (req.query?.account_id) { vals.push(req.query.account_id); where.push(`account_id = $${vals.length}`); }
     const rows = await q(
-      `SELECT stage, COUNT(*)::int AS n FROM conversations ${where.length ? 'WHERE ' + where.join(' AND ') : ''} GROUP BY stage`,
+      `SELECT stage, COUNT(*)::int AS n FROM conversations WHERE NOT simulada ${where.length ? 'AND ' + where.join(' AND ') : ''} GROUP BY stage`,
       vals
     );
     const counts = {};
@@ -215,7 +220,7 @@ export default async function conversationRoutes(app) {
               COALESCE(NULLIF(a.alias,''), a.name) AS account_name,
               (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message
        FROM conversations c JOIN accounts a ON a.id = c.account_id
-       ${ids ? 'WHERE c.account_id = ANY($1::int[])' : ''}
+       WHERE NOT c.simulada ${ids ? 'AND c.account_id = ANY($1::int[])' : ''}
        ORDER BY c.updated_at DESC LIMIT 400`,
       ids ? [ids] : []
     );

@@ -15,6 +15,7 @@ import setterRoutes from './routes/setters.js';
 import conversationRoutes from './routes/conversations.js';
 import dashboardRoutes from './routes/dashboard.js';
 import playgroundRoutes from './routes/playground.js';
+import simuladorRoutes from './routes/simulador.js';
 import settingsRoutes from './routes/settings.js';
 import ghlOauthRoutes from './routes/ghlOauth.js';
 import webhookRoutes from './routes/webhooks.js';
@@ -58,6 +59,7 @@ async function main() {
   await app.register(conversationRoutes);
   await app.register(dashboardRoutes);
   await app.register(playgroundRoutes);
+  await app.register(simuladorRoutes);
   await app.register(settingsRoutes);
   await app.register(ghlOauthRoutes);
   await app.register(webhookRoutes);

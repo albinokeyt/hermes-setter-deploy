@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { normTag } from '../lib/tags.js';
+// 🧪 Simulador: contactos «sim:…» recorren este motor sin tocar GHL ni cobrar (ver lib/sim.js)
+import { esSim, getSimTags } from '../lib/sim.js';
 import { debounceQueue, sendQueue, followupQueue, reactivateQueue } from '../queues.js';
 import { generateReply, shouldFollowup } from './agent.js';
 // 💳 Marketplace Disruptivo: puerta de acceso antes de atender y registro de consumo al entregar.
@@ -52,7 +54,9 @@ export function normalizeChannel(raw) {
 export async function logEvent(kind, payload) {
   try {
     await q(`INSERT INTO webhook_log (kind, payload) VALUES ($1, $2)`, [kind, JSON.stringify(payload)]);
-    await q(`DELETE FROM webhook_log WHERE id < (SELECT COALESCE(MAX(id),0) FROM webhook_log) - 2000`);
+    await q(`DELETE FROM webhook_log WHERE id < (SELECT COALESCE(MAX(id),0) FROM webhook_log) - 2000
+                AND COALESCE(payload->>'contactId', '') NOT LIKE 'sim:%' AND COALESCE(payload->>'contacto', '') NOT LIKE 'sim:%'
+                AND NOT EXISTS (SELECT 1 FROM conversations s WHERE s.simulada AND s.id::text = webhook_log.payload->>'conv')`); // 🧪 las trazas del simulador se podan por edad
   } catch (err) {
     console.error('[log]', err.message);
   }
@@ -579,8 +583,8 @@ export async function handleInbound(account, evt) {
   );
 
   const conv = await one(
-    `INSERT INTO conversations (account_id, ghl_contact_id, ghl_conversation_id, channel, lead_name, last_inbound_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, now(), now())
+    `INSERT INTO conversations (account_id, ghl_contact_id, ghl_conversation_id, channel, lead_name, last_inbound_at, updated_at, simulada)
+     VALUES ($1, $2, $3, $4, $5, now(), now(), $6)
      ON CONFLICT (account_id, ghl_contact_id, channel) DO UPDATE SET
        ghl_conversation_id = COALESCE(EXCLUDED.ghl_conversation_id, conversations.ghl_conversation_id),
        lead_name = CASE WHEN conversations.lead_name = '' THEN EXCLUDED.lead_name ELSE conversations.lead_name END,
@@ -589,11 +593,13 @@ export async function handleInbound(account, evt) {
        followup_state = 'ninguno',
        updated_at = now()
      RETURNING *, (xmax = 0) AS is_new`,
-    [account.id, evt.contactId, evt.conversationId || null, channel, evt.contactName || '']
+    [account.id, evt.contactId, evt.conversationId || null, channel, evt.contactName || '', esSim(evt.contactId)]
   );
   // Si el CTA le llegó ANTES de escribir (comentó, le etiquetaron, y ahora contesta al DM), la
   // conversación nace aquí y hereda ese contexto: el setter responde sabiendo qué pidió.
   await aplicarContextoCtaPendiente(account, conv);
+  // 🧪 el lead simulado nace en el simulador (no aquí): su primer mensaje debe contar como ENTRADA igualmente
+  if (esSim(conv.ghl_contact_id) && (await redis.del(`simentrada:${conv.id}`)) === 1) conv.is_new = true;
 
   // Enrutado al setter de la conexión que casa por etiqueta. Se reintenta mientras el
   // lead no tenga setter (por si se etiqueta más tarde). Si hay setters pero ninguno
@@ -662,7 +668,7 @@ export async function handleInbound(account, evt) {
 
   await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); // el lead respondió → se cancela la cadena de seguimientos
 
-  if ((!conv.lead_name || !conv.lead_email) && (account.location_id || account.pit_token)) {
+  if ((!conv.lead_name || !conv.lead_email) && (account.location_id || account.pit_token) && !esSim(evt.contactId)) {
     ghl.getContact(account, evt.contactId)
       .then((c) => {
         const name = [c?.firstName, c?.lastName].filter(Boolean).join(' ') || c?.name || c?.contactName || '';
@@ -689,11 +695,11 @@ export async function handleInbound(account, evt) {
   // culpando al CULPABLE correcto — `account` aquí puede venir fusionado con el setter (mergeSetter
   // pisa bot_enabled con el AND), así que se usan los flags de la conexión capturados al entrar.
   if (respond && (!connAi || !connBot)) {
-    const fresh = await redis.set(`offlog:${account.id}`, '1', 'EX', 3600, 'NX').catch(() => null);
+    const fresh = esSim(evt.contactId) ? true : await redis.set(`offlog:${account.id}`, '1', 'EX', 3600, 'NX').catch(() => null);
     if (fresh) await logEvent('lead_sin_respuesta_conexion_apagada', { account: account.id, ai: connAi, bot: connBot, contactId: evt.contactId }).catch(() => {});
   } else if (respond && connAi && connBot && !account.bot_enabled) {
     // la conexión está encendida: lo apagado es el SETTER asignado a esta conversación
-    const fresh = await redis.set(`offlog:${account.id}`, '1', 'EX', 3600, 'NX').catch(() => null);
+    const fresh = esSim(evt.contactId) ? true : await redis.set(`offlog:${account.id}`, '1', 'EX', 3600, 'NX').catch(() => null);
     if (fresh) await logEvent('lead_sin_respuesta_setter_apagado', { account: account.id, setter: conv.setter_id || account.setter_id || null, contactId: evt.contactId }).catch(() => {});
   }
 
@@ -809,24 +815,30 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   }
   // historial del contacto en GHL (si falla o no hay, se sigue con lo que tengamos local)
   let ghlHistory = { conversationId: null, messages: [], lastInboundAt: null };
-  try {
-    ghlHistory = await ghl.listContactMessages(account, contactId, 20);
-  } catch (err) {
-    await logEvent('activador_sin_historial', { setter: setter.id, contactId, error: String(err.message).slice(0, 200) });
+  if (!esSim(contactId)) { // 🧪 un contacto simulado no existe en GHL: su historial es solo el local
+    try {
+      ghlHistory = await ghl.listContactMessages(account, contactId, 20);
+    } catch (err) {
+      await logEvent('activador_sin_historial', { setter: setter.id, contactId, error: String(err.message).slice(0, 200) });
+    }
   }
   const last = ghlHistory.messages[ghlHistory.messages.length - 1];
   // opts.canal ancla la activación a la conversación AUDITADA (rescate): sin esto, un contacto
   // multicanal podía aterrizar en OTRA conversación suya (p. ej. la de WhatsApp ya atendida).
-  const channel = normalizeChannel(opts.canal) || normalizeChannel(last?.type) || (Array.isArray(merged.channels) && merged.channels[0]) || 'IG';
+  let channel = normalizeChannel(opts.canal) || normalizeChannel(last?.type) || (Array.isArray(merged.channels) && merged.channels[0]) || 'IG';
+  if (esSim(contactId)) { // 🧪 la simulación vive en la conversación que creó el simulador (no abrir otra por canal)
+    const simConv = await one(`SELECT channel FROM conversations WHERE account_id = $1 AND ghl_contact_id = $2 AND simulada ORDER BY id LIMIT 1`, [account.id, String(contactId)]);
+    if (simConv?.channel) channel = simConv.channel;
+  }
 
   const conv = await one(
-    `INSERT INTO conversations (account_id, ghl_contact_id, ghl_conversation_id, channel, lead_name, updated_at)
-     VALUES ($1, $2, $3, $4, '', now())
+    `INSERT INTO conversations (account_id, ghl_contact_id, ghl_conversation_id, channel, lead_name, updated_at, simulada)
+     VALUES ($1, $2, $3, $4, '', now(), $5)
      ON CONFLICT (account_id, ghl_contact_id, channel) DO UPDATE SET
        ghl_conversation_id = COALESCE(EXCLUDED.ghl_conversation_id, conversations.ghl_conversation_id),
        updated_at = now()
      RETURNING *`,
-    [account.id, String(contactId), ghlHistory.conversationId, channel]
+    [account.id, String(contactId), ghlHistory.conversationId, channel, esSim(contactId)]
   );
   await aplicarContextoCtaPendiente(account, conv); // si la conversación nace aquí, hereda el CTA
   // Una activación por etiqueta es una ORDEN EXPLÍCITA del negocio, así que gana a la AUTO-pausa por
@@ -873,7 +885,7 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   // NOMBRE DEL LEAD: aquí la conversación puede NACER (no vino de un mensaje entrante), y sin nombre el
   // prompt aplica su «regla fija» de preguntarlo — que se come la única pregunta del turno y pisa las
   // instrucciones de la etiqueta ("entra retomando el precio, sin presentarte"). Lo rellenamos ANTES.
-  if (!conv.lead_name) {
+  if (!conv.lead_name && !esSim(contactId)) {
     try {
       const c = await ghl.getContact(account, contactId);
       const nombre = [c?.firstName, c?.lastName].filter(Boolean).join(' ') || c?.name || c?.contactName || '';
@@ -978,6 +990,7 @@ export async function scheduleDebounce(account, conversationId, delayMs = null) 
   const token = crypto.randomUUID();
   await redis.set(debKey(conversationId), token, 'EX', 60 * 60 * 24 * 3);
   const delay = delayMs ?? Math.max(5, account.debounce_seconds || 35) * 1000;
+  await redis.set(`debat:${conversationId}`, String(Date.now() + delay), 'EX', 60 * 60 * 24 * 3).catch(() => {}); // instante objetivo (informativo)
   await debounceQueue.add('debounce', { conversationId, token }, { delay });
 }
 
@@ -1256,7 +1269,7 @@ export async function applyStage(conv, account, newStage, reason, syncGhl = true
   await q(`INSERT INTO stage_history (conversation_id, from_stage, to_stage, reason) VALUES ($1, $2, $3, $4)`, [
     conv.id, conv.stage, newStage, reason || '',
   ]);
-  if (syncGhl && account.sync_tags && (account.location_id || account.pit_token)) {
+  if (syncGhl && account.sync_tags && (account.location_id || account.pit_token) && !esSim(conv.ghl_contact_id)) {
     const oldTag = TAG_PREFIX + conv.stage;
     const newTag = TAG_PREFIX + newStage;
     ghl.addTags(account, conv.ghl_contact_id, [newTag]).catch((e) => logEvent('error_tags', { conv: conv.id, e: e.message }));
@@ -1304,6 +1317,8 @@ async function loadContext(conversationId) {
 // Se consulta el contacto en GHL (con caché de 60 s) y ante cualquier duda NO se responde.
 // Etiquetas del contacto en GHL (minúsculas), cacheadas 60s.
 async function getContactTags(account, conv) {
+  // 🧪 contacto simulado: sus «etiquetas de GHL» son las que puso el simulador (sin llamada ni caché)
+  if (esSim(conv.ghl_contact_id)) return (await getSimTags(conv.account_id, conv.ghl_contact_id)).map((t) => String(t).trim().toLowerCase());
   const cacheKey = ctagsKey(conv);
   const cached = await redis.get(cacheKey);
   if (cached !== null) { try { return JSON.parse(cached); } catch { return []; } }
@@ -1430,7 +1445,7 @@ async function consumeToken(key, token) {
 }
 const consumeDebounceToken = (conversationId, token) => consumeToken(debKey(conversationId), token);
 
-export async function processDebounce(job) {
+async function processDebounceInner(job) {
   const { conversationId, token } = job.data;
   if (token && token !== (await redis.get(debKey(conversationId)))) return; // job viejo
 
@@ -1512,7 +1527,12 @@ export async function processDebounce(job) {
     return;
   }
 
-  const windowDelay = delayToActiveWindow(account);
+  // 🧪 en una simulación el horario activo no aplaza (se traza que lo habría hecho): la prueba es ahora
+  let windowDelay = delayToActiveWindow(account);
+  if (windowDelay > 0 && esSim(conv.ghl_contact_id)) {
+    await logEvent('sim_horario_ignorado', { conv: conv.id, minutos: Math.round(windowDelay / 60000), nota: 'en producción esta respuesta esperaría a la apertura del horario activo' });
+    windowDelay = 0;
+  }
   if (windowDelay > 0) {
     // Fuera del horario activo aplazamos hasta la apertura (puede ser ~24 h). Hay que RENOVAR la
     // activación pendiente: si no, la clave caduca durante la espera y la activación (y su contexto)
@@ -1545,6 +1565,14 @@ export async function processDebounce(job) {
   // Fail-open por diseño: con la integración apagada o el marketplace mudo, se atiende igual.
   {
     const puerta = await puedeAtender(account).catch(() => ({ atender: true }));
+    if (!puerta.atender && esSim(conv.ghl_contact_id)) {
+      // 🧪 una simulación usa IA y se cobra como una conversación real: sin saldo no se atiende. Pero no
+      // se queda 6 h reintentando en silencio: se descarta ya, con traza, para que el laboratorio lo enseñe.
+      await q(`UPDATE conversations SET followup_state = 'sin_saldo', updated_at = now() WHERE id = $1`, [conv.id]);
+      await logEvent('sim_sin_saldo_marketplace', { conv: conv.id, nota: 'sin saldo en el marketplace: la simulación no puede usar la IA (recarga y repite)' });
+      await descartarActivacion('sin_saldo_marketplace');
+      return;
+    }
     if (!puerta.atender) {
       // El saldo lo comparten TODAS las apps del marketplace y se recarga en caliente: un «sin
       // fondos» suele ser transitorio. NO se descarta el mensaje ni la activación/rescate: se
@@ -1594,7 +1622,7 @@ export async function processDebounce(job) {
     }
     return;
   }
-  const gasto = await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'reply', variantId, setterId);
+  const gasto = await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, esSim(conv.ghl_contact_id) ? 'simulador' : 'reply', variantId, setterId);
   const debugId = await saveLlmDebug({
     convId: conv.id,
     source: activacion ? 'activacion' : 'reply',
@@ -1721,7 +1749,13 @@ export async function processSend(job) {
   // es el precio de no duplicarla — y queda trazado.
   await redis.setex(sentKey, 3600, '1').catch(() => {});
   let res;
-  try {
+  const simulado = esSim(conv.ghl_contact_id);
+  if (simulado) {
+    // 🧪 SIMULACIÓN: el mensaje «sale» solo hacia la base de datos (nunca a GHL ni al lead) y queda trazado.
+    // Todo lo anterior (pausa, ventana de Meta, snapshot) se ha comprobado igual que en producción.
+    res = { messageId: null, simulado: true };
+    await logEvent('sim_mensaje_enviado', { conv: conv.id, source: source || 'bot', body: String(body || '').slice(0, 160) }).catch(() => {});
+  } else try {
     res = await ghl.sendMessage(account, { channel: conv.channel, contactId: conv.ghl_contact_id, message: body });
   } catch (err) {
     const st = Number(err?.status) || 0;
@@ -1743,7 +1777,7 @@ export async function processSend(job) {
     // Guardamos SIEMPRE que se pueda el id real de GHL: es lo que evita que el import de la activación
     // reimporte nuestro propio mensaje y lo re-etiquete como 'humano'. Cubrimos las variantes del payload.
     const ghlMessageId = res?.messageId || res?.messageIds?.[0] || res?.msg?.id || res?.message?.id || null;
-    if (!ghlMessageId) await logEvent('envio_sin_message_id', { conv: conv.id, keys: Object.keys(res || {}) });
+    if (!ghlMessageId && !simulado) await logEvent('envio_sin_message_id', { conv: conv.id, keys: Object.keys(res || {}) });
     if (ghlMessageId) await redis.setex(`sent:${ghlMessageId}`, 86400, '1');
     await q(
       `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id, gasto_prompt_tokens, gasto_completion_tokens, gasto_usd, gasto_modelo, gasto_debug_id)
@@ -1761,6 +1795,7 @@ export async function processSend(job) {
   // enviar. La unidad es «una conversación por día natural»: el primer mensaje del día crea la
   // fila y encola el cobro; los siguientes no hacen ni una llamada (lo corta el event_id).
   // Va en try/catch mudo: un fallo aquí no puede afectar a un mensaje que el lead YA recibió.
+  // 🧪 Las simulaciones que usan IA se cobran IGUAL que una conversación real (una conversación por día).
   try {
     await registrarConsumo({ account, conversationId: conv.id });
   } catch { /* lo recoge el barrido de marketplace.js */ }
@@ -1883,6 +1918,7 @@ export async function scheduleNextFollowup(account, conv, extraMs = 0, acordadoH
   // TTL del token en función del delay: con un acuerdo largo («en un mes» = 720h) el TTL fijo de
   // 30 días caducaba justo antes de disparar y el job se descartaba como viejo.
   await redis.set(fuKey(conv.id), token, 'EX', Math.max(60 * 60 * 24 * 30, Math.ceil(delay / 1000) + 86_400));
+  await redis.set(`fuat:${conv.id}`, String(Date.now() + delay), 'EX', Math.max(60 * 60 * 24 * 30, Math.ceil(delay / 1000) + 86_400)).catch(() => {});
   await followupQueue.add('followup', { conversationId: conv.id, token }, { delay });
 }
 
@@ -1908,10 +1944,48 @@ AVISO — ESTE LEAD NO TE IGNORÓ: te pidió que le escribieras más adelante y 
 async function rearmFollowup(conversationId, delayMs) {
   const token = crypto.randomUUID();
   await redis.set(fuKey(conversationId), token, 'EX', 60 * 60 * 24 * 30);
+  await redis.set(`fuat:${conversationId}`, String(Date.now() + delayMs), 'EX', 60 * 60 * 24 * 30).catch(() => {});
   await followupQueue.add('followup', { conversationId, token }, { delay: delayMs });
 }
 
-export async function processFollowup(job) {
+// 🧪 Simulador: dispara AHORA el siguiente paso de seguimiento de la conversación (mismo processFollowup
+// que en producción, con todos sus cortes: lead que ya respondió, ventana de Meta, chequeo IA…). Devuelve
+// false si la cadena no puede continuar (sin pasos configurados o cadena agotada).
+export async function forzarSeguimientoAhora(conversationId) {
+  const { conv, account, provider, history } = await loadContext(conversationId);
+  if (!conv || !account) return { ok: false, motivo: 'conversación no encontrada' };
+  const steps = Array.isArray(account.followups) ? account.followups : [];
+  const step = conv.followup_step || 0;
+  if (!steps[step]) return { ok: false, motivo: steps.length ? `cadena agotada (${steps.length} pasos ya enviados)` : 'el setter no tiene seguimientos configurados' };
+  // Los cortes DETERMINISTAS de processFollowup, aquí con motivo (allí son returns mudos). Los que dependen del
+  // momento (ventana de Meta, chequeo IA, filtro de etiquetas) se dejan al motor para que la traza los enseñe.
+  if (!account.ai_enabled || !account.bot_enabled) return { ok: false, motivo: 'la IA o el bot están apagados' };
+  if (conv.bot_paused) return { ok: false, motivo: `el bot está en pausa (${conv.paused_by || 'auto'})` };
+  if (conv.stage === 'atencion_humana') return { ok: false, motivo: 'la conversación requiere atención humana' };
+  if (['descartado', 'agendado'].includes(conv.stage)) return { ok: false, motivo: `estado «${conv.stage}»: la cadena de seguimientos está cortada` };
+  if (!provider) return { ok: false, motivo: 'sin proveedor de IA' };
+  if (await redis.get(activarKey(conversationId))) return { ok: false, motivo: 'hay una activación en cola: primero tiene que responder' };
+  if (await redis.get(debKey(conversationId))) return { ok: false, motivo: 'hay una respuesta en cola: primero tiene que salir' };
+  const ultimo = Array.isArray(history) && history.length ? history[history.length - 1] : null;
+  if (!ultimo) return { ok: false, motivo: 'la conversación aún no tiene mensajes: un seguimiento retoma algo ya hablado' };
+  if (ultimo.direction === 'inbound') return { ok: false, motivo: 'el último mensaje es del lead: eso lo responde el ciclo normal, no un seguimiento' };
+  if (conv.last_inbound_at && conv.last_outbound_at && new Date(conv.last_inbound_at) > new Date(conv.last_outbound_at)) return { ok: false, motivo: 'el lead respondió después del último mensaje del setter' };
+  await olvidarAjuste(conversationId);
+  await rearmFollowup(conversationId, 300);
+  return { ok: true, paso: step + 1, horas_configuradas: Number(steps[step].hours) || 0 };
+}
+
+// 🧪 Simulador: acelera la respuesta pendiente (debounce o activación) a unos segundos. Reprograma con un
+// token nuevo: el job largo original muere solo al despertar. No se salta ninguna comprobación.
+export async function acelerarRespuesta(conversationId, delayMs = 2500) {
+  const { conv, account } = await loadContext(conversationId);
+  if (!conv || !account) return false;
+  await redis.del(ctaKey(conversationId)); // la espera de inserción/CTA ya quedó trazada; no la arrastramos
+  await scheduleDebounce(account, conversationId, delayMs);
+  return true;
+}
+
+async function processFollowupInner(job) {
   const { conversationId, token } = job.data;
   if (token && token !== (await redis.get(fuKey(conversationId)))) return; // cancelado o reprogramado
 
@@ -1942,6 +2016,13 @@ export async function processFollowup(job) {
   // de seguimientos girando indefinidamente. Al agotarlo se corta la cadena con traza.
   {
     const puerta = await puedeAtender(account).catch(() => ({ atender: true }));
+    if (!puerta.atender && esSim(conv.ghl_contact_id)) {
+      // 🧪 simulación sin saldo: se corta ya con traza (no 6 h de aplazamientos mudos)
+      await q(`UPDATE conversations SET followup_state = 'sin_saldo', updated_at = now() WHERE id = $1`, [conv.id]);
+      await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
+      await logEvent('sim_sin_saldo_marketplace', { conv: conv.id, nota: 'sin saldo en el marketplace: el seguimiento simulado no puede usar la IA' });
+      return;
+    }
     if (!puerta.atender) {
       const esperas = await redis.incr(`mdfuwait:${conversationId}`);
       await redis.expire(`mdfuwait:${conversationId}`, 24 * 3600);
@@ -1979,7 +2060,7 @@ export async function processFollowup(job) {
     await logEvent('seguimiento_ventana_cerrada', { conv: conv.id, canal: conv.channel });
     return;
   }
-  const windowDelay = delayToActiveWindow(account);
+  const windowDelay = esSim(conv.ghl_contact_id) ? 0 : delayToActiveWindow(account); // 🧪 la simulación no espera al horario
   if (windowDelay > 0) {
     await rearmFollowup(conversationId, windowDelay);
     return;
@@ -1994,7 +2075,7 @@ export async function processFollowup(job) {
     } catch (err) {
       await logEvent('followup_check_error', { conv: conv.id, error: err.message });
     }
-    if (decision.usage) await recordUsage(conv.account_id, conv.id, provider, decision.model, decision.usage, 'seguimiento', variantId, setterId);
+    if (decision.usage) await recordUsage(conv.account_id, conv.id, provider, decision.model, decision.usage, esSim(conv.ghl_contact_id) ? 'simulador' : 'seguimiento', variantId, setterId);
     if (!decision.seguir) {
       await logEvent('followup_omitido_ia', { conv: conv.id, stage: conv.stage, motivo: decision.motivo || '' });
       await q(`UPDATE conversations SET followup_state = 'detenido_ia', updated_at = now() WHERE id = $1`, [conv.id]);
@@ -2028,7 +2109,7 @@ export async function processFollowup(job) {
     return;
   }
   await redis.del(`furetry:${conversationId}`);
-  const gastoFu = await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, 'seguimiento', variantId, setterId);
+  const gastoFu = await recordUsage(conv.account_id, conv.id, provider, result.model, result.usage, esSim(conv.ghl_contact_id) ? 'simulador' : 'seguimiento', variantId, setterId);
   const debugIdFu = await saveLlmDebug({
     convId: conv.id, source: 'seguimiento', result,
     historyCount: Array.isArray(history) ? history.length : null,
@@ -2080,4 +2161,36 @@ export async function processFollowup(job) {
   }
   // un seguimiento también puede prometer tiempo («te escribo mañana») → se respeta en el siguiente
   await scheduleNextFollowup(account, { ...conv, followup_step: newStep }, cursor, result.proximoContactoHoras || horasPrometidasEnTexto(result.mensajes));
+}
+
+// 🧪 SIMULADOR: en producción una salida temprana del debounce/seguimiento (bot apagado, filtro, ventana cerrada,
+// lead que ya respondió…) deja el token vivo días y no pasa nada. En el laboratorio ese token se leía como
+// «en cola» para siempre. Solo en simulaciones: si al terminar el token sigue siendo EL DE ESTE JOB (nadie
+// reprogramó ni consumió), se suelta con compare-and-delete y queda trazado. Producción no cambia.
+async function esConvSim(conversationId) {
+  const row = await one(`SELECT ghl_contact_id FROM conversations WHERE id = $1`, [conversationId]).catch(() => null);
+  return Boolean(row && esSim(row.ghl_contact_id));
+}
+export async function processDebounce(job) {
+  await processDebounceInner(job);
+  const { conversationId, token } = job.data || {};
+  if (!token || !conversationId) return;
+  if ((await redis.get(debKey(conversationId))) !== token) return; // reprogramado o consumido: nada que soltar
+  if (!(await esConvSim(conversationId))) return;
+  if (await consumeToken(debKey(conversationId), token)) {
+    await redis.del(`debat:${conversationId}`).catch(() => {});
+    await logEvent('sim_respuesta_no_generada', { conv: conversationId, nota: 'el motor terminó este ciclo sin responder (mira el motivo en la traza: apagado, filtro, ventana, sin proveedor, o el último mensaje ya era del setter)' });
+  }
+}
+export async function processFollowup(job) {
+  await processFollowupInner(job);
+  const { conversationId, token } = job.data || {};
+  if (!token || !conversationId) return;
+  if ((await redis.get(fuKey(conversationId))) !== token) return;
+  if (!(await esConvSim(conversationId))) return;
+  if (await consumeToken(fuKey(conversationId), token)) {
+    await redis.del(`fuat:${conversationId}`).catch(() => {});
+    await olvidarAjuste(conversationId);
+    await logEvent('sim_seguimiento_omitido', { conv: conversationId, nota: 'el motor cortó este seguimiento sin enviarlo (lead que ya respondió, estado, filtro de etiquetas, bot en pausa o sin proveedor)' });
+  }
 }

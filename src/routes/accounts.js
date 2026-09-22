@@ -83,8 +83,8 @@ export default async function accountRoutes(app) {
       SELECT a.*, p.name AS provider_name,
         -- Mismo criterio que en las metricas del setter: una conversacion cuenta cuando el lead
         -- llego a escribir. Las filas que dejaban los salientes fantasma de GHL no son leads.
-        (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id AND c.last_inbound_at IS NOT NULL) AS conversations_count,
-        (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id AND c.last_inbound_at IS NOT NULL AND c.updated_at > now() - interval '24 hours') AS active_24h,
+        (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id AND NOT c.simulada AND c.last_inbound_at IS NOT NULL) AS conversations_count,
+        (SELECT COUNT(*)::int FROM conversations c WHERE c.account_id = a.id AND NOT c.simulada AND c.last_inbound_at IS NOT NULL AND c.updated_at > now() - interval '24 hours') AS active_24h,
         EXISTS(SELECT 1 FROM ghl_tokens t WHERE t.location_id = a.location_id) AS oauth_connected
       FROM accounts a LEFT JOIN providers p ON p.id = a.provider_id
       ${ids ? 'WHERE a.id = ANY($1::int[])' : ''}
@@ -277,7 +277,7 @@ export default async function accountRoutes(app) {
   const candidatosRescate = (accId, desde = null, hasta = null) => q(
     `SELECT c.id, c.ghl_contact_id, c.channel, c.setter_id, c.last_inbound_at
        FROM conversations c
-      WHERE c.account_id = $1 AND c.bot_paused = false
+      WHERE c.account_id = $1 AND c.bot_paused = false AND NOT c.simulada
         AND c.stage NOT IN ('descartado', 'atencion_humana')
         AND ($2::timestamptz IS NULL OR c.last_inbound_at >= $2::timestamptz)
         AND ($3::timestamptz IS NULL OR c.last_inbound_at <= $3::timestamptz)

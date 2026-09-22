@@ -12,6 +12,7 @@ import Providers from './pages/Providers.jsx';
 import Versus from './pages/Versus.jsx';
 import VersusDetail from './pages/VersusDetail.jsx';
 import Playground from './pages/Playground.jsx';
+import Simulador from './pages/Simulador.jsx';
 import Archive from './pages/Archive.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import UsersPage from './pages/Users.jsx';
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/versus/:id" element={<VersusDetail />} />
         <Route path="/competencias" element={<Navigate to="/versus" replace />} />
         <Route path="/prueba" element={<Playground />} />
+        <Route path="/simulador" element={<Simulador />} />
         <Route path="/archivo" element={<Archive />} />
         <Route path="/errores" element={<Bugs />} />
         <Route path="/marketplace" element={<Marketplace />} />

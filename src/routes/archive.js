@@ -16,7 +16,7 @@ const ORIGENES = new Set(['lead', 'bot', 'seguimiento', 'humano', 'automatizacio
 
 // Construye el WHERE de los filtros de la sección.
 function buildFilter(query, ids) {
-  const where = [];
+  const where = ['NOT c.simulada']; // 🧪 las simulaciones no son mensajes reales
   const vals = [];
   if (ids) { vals.push(ids); where.push(`c.account_id = ANY($${vals.length}::int[])`); } // no-admin: solo sus conexiones
   const aid = Number(query.account_id);
