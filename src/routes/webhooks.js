@@ -249,7 +249,11 @@ export async function handleTagActivation(account, p) { // exportada: el 🧪 si
         const ctx = lm
           ? `${fichaLm(lm)}${elegida.contexto.trim() ? ` Instrucciones de entrada que llevaba la etiqueta: ${elegida.contexto.trim()}` : ''}`
           : elegida.contexto;
-        await guardarContextoCta(account, contactId, elegida.tag, ctx, { setterId: s.id }).catch((err) => logEvent('error_contexto_cta', { contactId, error: String(err.message).slice(0, 120) }));
+        // Una activadora GENÉRICA (p. ej. «#702 lm abierto», que vale para todos los materiales) NO pisa el
+        // «qué pidió» que dejó la etiqueta del CTA: si lo hiciera, el setter perdería cuál es el material justo
+        // cuando va a hablar de él (medido en el simulador: «el material que pediste» sin nombrarlo). Sus
+        // instrucciones de entrada viajan igualmente por la activación. Solo rellena si no había CTA.
+        await guardarContextoCta(account, contactId, elegida.tag, ctx, { setterId: s.id, soloSiVacio: !lm }).catch((err) => logEvent('error_contexto_cta', { contactId, error: String(err.message).slice(0, 120) }));
       }
       try {
         const estado = await activateSetterForContact(account, s, contactId, elegida.espera, elegida.contexto, elegida.tag);

@@ -423,7 +423,7 @@ function LabPreguntas({ accountId, opciones, setter }) {
     navigator.clipboard?.writeText(txt).catch(() => {});
   };
   const resumen = useMemo(() => {
-    const mal = resultados.filter((r) => r.error || (r.checks && (r.checks.menciona_material === false || r.checks.pregunta_cual || (r.checks.menciona_otros || []).length > 0))).length;
+    const mal = resultados.filter((r) => r.error || (r.checks && (r.checks.pregunta_cual || (r.checks.menciona_otros || []).length > 0))).length;
     return { ok: resultados.length - mal, mal };
   }, [resultados]);
 
@@ -471,9 +471,10 @@ function LabPreguntas({ accountId, opciones, setter }) {
           {resultados.length === 0 && !running && <p className="py-12 text-center text-sm text-slate-400">Aquí verás cada respuesta con sus comprobaciones: si menciona el material correcto, si pregunta «¿cuál?», si da enlace o si confunde con otro.</p>}
           {resultados.map((r, i) => {
             const c = r.checks || {};
-            const malo = r.error || c.menciona_material === false || c.pregunta_cual || (c.menciona_otros || []).length > 0;
+            const malo = r.error || c.pregunta_cual || (c.menciona_otros || []).length > 0;
+            const aviso = !malo && c.menciona_material === false;
             return (
-              <div key={i} className={`rounded-xl border p-3 ${malo ? 'border-red-200 bg-red-50/40 dark:border-red-900/60 dark:bg-red-950/20' : 'border-emerald-200 bg-emerald-50/30 dark:border-emerald-900/60 dark:bg-emerald-950/20'}`}>
+              <div key={i} className={`rounded-xl border p-3 ${malo ? 'border-red-200 bg-red-50/40 dark:border-red-900/60 dark:bg-red-950/20' : aviso ? 'border-amber-200 bg-amber-50/30 dark:border-amber-900/60 dark:bg-amber-950/20' : 'border-emerald-200 bg-emerald-50/30 dark:border-emerald-900/60 dark:bg-emerald-950/20'}`}>
                 <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
                   <span className="font-semibold text-slate-500">#{i + 1}</span>
                   <span className={`rounded-full px-2 py-0.5 ${r.cta_tag ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}>{r.cta_tag ? `CTA ${r.cta_tag}` : 'sin CTA'}</span>
@@ -484,7 +485,7 @@ function LabPreguntas({ accountId, opciones, setter }) {
                 {r.error ? <p className="text-xs text-red-600">Error: {r.error}</p> : (r.mensajes || []).map((m, j) => <p key={j} className="mb-1 rounded-lg bg-white px-2.5 py-1.5 text-xs text-slate-800 shadow-sm dark:bg-slate-800 dark:text-slate-100">{m}</p>)}
                 {r.checks && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px]">
-                    {c.menciona_material !== null && <span className={c.menciona_material ? 'text-emerald-700' : 'text-red-600'}>{c.menciona_material ? '✓ menciona el material' : '✗ no menciona el material'}</span>}
+                    {c.menciona_material !== null && <span className={c.menciona_material ? 'text-emerald-700' : 'text-amber-700'}>{c.menciona_material ? '✓ nombra el material' : '⚠ no lo nombra (lee la respuesta: puede describirlo sin nombrarlo)'}</span>}
                     {c.pregunta_cual && <span className="text-red-600">✗ pregunta «¿cuál?»</span>}
                     {(c.menciona_otros || []).length > 0 && <span className="text-amber-700">⚠ menciona otros: {c.menciona_otros.join(', ')}</span>}
                     {c.da_enlace && <span className="text-slate-500">🔗 da enlace</span>}

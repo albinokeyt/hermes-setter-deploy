@@ -317,8 +317,10 @@ export default async function simuladorRoutes(app) {
       const mensajes = filtrarRepetidos(r.mensajes, []).unicos;
       const resp = normTag(mensajes.join(' \n '));
       const menciona = (l) => [l.keyword, l.name].map(normTag).filter((k) => k && k.length >= 4).some((k) => palabra(k).test(resp));
+      // «otros»: solo por NOMBRE de ficha (las palabras clave suelen ser palabras corrientes: email, cliente, precio…)
+      const mencionaNombre = (l) => { const n = normTag(l.name); return n.length >= 8 && palabra(n).test(resp); };
       const objetivo = lm || (p?.ficha ? lms.find((l) => l.name === p.ficha) : null);
-      const otros = lms.filter((l) => l !== objetivo && menciona(l)).map((l) => l.name).slice(0, 3);
+      const otros = lms.filter((l) => l !== objetivo && mencionaNombre(l)).map((l) => l.name).slice(0, 3);
       const checks = {
         menciona_material: objetivo ? menciona(objetivo) : null,
         pregunta_cual: /(a )?(cu[aá]l|qu[eé]) (gu[ií]a|material|recurso|de ellos|te refieres|pediste|pidi[oó])|a qu[eé] te refieres/i.test(mensajes.join(' ')),
