@@ -51,7 +51,15 @@ export default async function conversationRoutes(app) {
               st.name AS setter_name,
               ${humanExists} AS human_touched,
               (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message,
-              (SELECT m.direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_direction
+              (SELECT m.direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_direction,
+              -- 🛒 compras que cuentan (reales, pagadas, no anuladas) del lead: importe POR MONEDA (nunca se suman
+              -- divisas distintas), nº y productos; y su última cita
+              (SELECT COALESCE(jsonb_object_agg(x.currency, x.total), '{}'::jsonb) FROM (
+                 SELECT p.currency, SUM(p.amount) AS total FROM purchases p WHERE p.conversation_id = c.id AND p.cuenta GROUP BY p.currency) x) AS compra_por_moneda,
+              (SELECT COUNT(*)::int FROM purchases p WHERE p.conversation_id = c.id AND p.cuenta) AS compra_n,
+              (SELECT COALESCE(jsonb_agg(DISTINCT i->>'name'), '[]'::jsonb) FROM purchases p, jsonb_array_elements(p.items) i
+                WHERE p.conversation_id = c.id AND p.cuenta AND COALESCE(i->>'name', '') <> '') AS compra_productos,
+              (SELECT ap.start_time FROM appointments ap WHERE ap.conversation_id = c.id AND ap.status = 'agendado' ORDER BY ap.created_at DESC LIMIT 1) AS cita_at
        FROM conversations c
        JOIN accounts a ON a.id = c.account_id
        LEFT JOIN setters st ON st.id = c.setter_id
@@ -80,12 +88,14 @@ export default async function conversationRoutes(app) {
       [conv.id]
     );
     const history = await q(`SELECT * FROM stage_history WHERE conversation_id = $1 ORDER BY id DESC LIMIT 20`, [conv.id]);
+    const compras = await q(`SELECT id, ghl_order_id, amount, currency, status, payment_status, items, source, live_mode, cuenta, atribuida, origen, ordered_at, created_at FROM purchases WHERE conversation_id = $1 ORDER BY ordered_at DESC LIMIT 20`, [conv.id]);
+    const citas = await q(`SELECT id, status, start_time, title, calendar_id, created_at FROM appointments WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 10`, [conv.id]);
     // El COSTO real de IA por mensaje (gasto_*) es SOLO para el admin: la UI lo oculta, pero la API
     // también debe (mismo criterio que dashboard.js) — un cliente vería el margen en devtools.
     const visibles = req.auth?.role === 'admin'
       ? messages
       : messages.map(({ gasto_prompt_tokens, gasto_completion_tokens, gasto_usd, gasto_modelo, gasto_debug_id, ...m }) => m);
-    return { ...conv, messages: visibles, stage_history: history };
+    return { ...conv, messages: visibles, stage_history: history, compras, citas };
   });
 
   // 🔍 detalle de la llamada de IA que generó un mensaje (input completo + respuesta cruda): SOLO admin

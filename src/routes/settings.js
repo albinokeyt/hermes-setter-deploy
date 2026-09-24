@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { q, getSetting, setSetting } from '../db.js';
-import { config, OAUTH_SCOPES } from '../config.js';
+import { config, scopesOAuth, OAUTH_SCOPE_PEDIDOS } from '../config.js';
 import { requireAdmin } from '../lib/session.js';
 import { DEFAULT_GUARDRAIL, invalidateGuardrailCache } from '../services/agent.js';
 import { DEFAULT_ARCHITECT, DEFAULT_CORRECTOR } from './promptEditor.js';
@@ -75,7 +75,7 @@ export default async function settingsRoutes(app) {
       ? 'https://marketplace.gohighlevel.com/oauth/chooselocation' +
         `?response_type=code&redirect_uri=${encodeURIComponent(`${config.appBaseUrl}/api/oauth/callback`)}` +
         `&client_id=${encodeURIComponent(app_.client_id)}` +
-        `&scope=${OAUTH_SCOPES.map(encodeURIComponent).join('%20')}`
+        `&scope=${scopesOAuth(app_).map(encodeURIComponent).join('%20')}`
       : '';
     return {
       client_id: app_.client_id || '',
@@ -87,7 +87,9 @@ export default async function settingsRoutes(app) {
       marketplace_webhook_url: `${config.appBaseUrl}/api/webhooks/inbox`,
       agency_menu_url: `${config.appBaseUrl}/ghl-app?key=${ak}&location_id={{location.id}}&email={{user.email}}&name={{user.name}}`,
       custom_page_url: `${config.appBaseUrl}/`,
-      scopes: OAUTH_SCOPES,
+      scopes: scopesOAuth(app_),
+      scope_pedidos: Boolean(app_.scope_pedidos),
+      scope_pedidos_nombre: OAUTH_SCOPE_PEDIDOS,
       signature_check: !config.allowUnsignedWebhooks,
     };
   });
@@ -99,6 +101,7 @@ export default async function settingsRoutes(app) {
       client_id: b.client_id !== undefined ? String(b.client_id).trim() : current.client_id || '',
       client_secret: b.client_secret ? String(b.client_secret).trim() : current.client_secret || '',
       sso_secret: b.sso_secret ? String(b.sso_secret).trim() : current.sso_secret || '',
+      scope_pedidos: b.scope_pedidos !== undefined ? Boolean(b.scope_pedidos) : Boolean(current.scope_pedidos),
     };
     await setSetting('ghl_app', next);
     return { ok: true };

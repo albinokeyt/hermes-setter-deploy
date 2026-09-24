@@ -203,6 +203,25 @@ export default function ConversationDetail() {
             )}
           </Card>
 
+          {((conv.compras || []).length > 0 || (conv.citas || []).length > 0) && (
+            <Card className="p-5">
+              <h3 className="mb-2 text-sm font-semibold text-slate-700">Compras y citas</h3>
+              {(conv.compras || []).map((p) => (
+                <div key={p.id} className={`mb-1.5 rounded-xl px-3 py-2 text-xs ${p.cuenta ? 'bg-green-50 text-green-800' : 'bg-slate-50 text-slate-600'}`}>
+                  <b>🛒 {Number(p.amount).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {p.currency}</b>
+                  {!p.live_mode && ' · pedido de prueba'}{p.live_mode && !p.cuenta && ` · ${p.payment_status || p.status || 'no pagado'}`}
+                  {p.cuenta && !p.atribuida && ' · compra anterior a la conversación'}
+                  <span className="block">{(p.items || []).map((i) => `${i.qty > 1 ? i.qty + '× ' : ''}${i.name}`).join(', ') || 'sin detalle de productos'}</span>
+                  <span className="block text-[10px] opacity-70">{timeAgo(p.ordered_at || p.created_at)}{p.source?.name ? ` · ${p.source.name}` : ''}</span>
+                </div>
+              ))}
+              {(conv.citas || []).map((c) => (
+                <div key={c.id} className={`mb-1.5 rounded-xl px-3 py-2 text-xs ${c.status === 'agendado' ? 'bg-blue-50 text-blue-800' : 'bg-slate-50 text-slate-600'}`}>
+                  <b>📅 {c.status}</b>{c.start_time ? ` · ${new Date(c.start_time).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}{c.title ? ` · ${c.title}` : ''}
+                </div>
+              ))}
+            </Card>
+          )}
           <Card data-tour="chat-memoria" className="p-5">
             <h3 className="mb-2 text-sm font-semibold text-slate-700">Memoria del lead</h3>
             {Object.keys(conv.memory || {}).length === 0 ? (

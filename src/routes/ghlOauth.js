@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
-import { config, OAUTH_SCOPES } from '../config.js';
+import { config, scopesOAuth } from '../config.js';
 import { exchangeCodeForLocation, saveTokens, getLocationName } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
 import { requireAdmin } from '../lib/session.js';
@@ -29,7 +29,7 @@ export default async function ghlOauthRoutes(app) {
       'https://marketplace.gohighlevel.com/oauth/chooselocation' +
       `?response_type=code&redirect_uri=${encodeURIComponent(redirect)}` +
       `&client_id=${encodeURIComponent(creds.client_id)}` +
-      `&scope=${OAUTH_SCOPES.map(encodeURIComponent).join('%20')}` +
+      `&scope=${scopesOAuth(creds).map(encodeURIComponent).join('%20')}` +
       `&state=${nonce}`;
     return { url };
   });

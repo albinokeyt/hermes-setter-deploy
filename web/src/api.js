@@ -21,6 +21,15 @@ export const api = {
   del: (url) => request('DELETE', url),
 };
 
+// 🛒 Importes agrupados por moneda ({EUR: 294, USD: 17}) → «294,00 EUR + 17,00 USD». Nunca se suman divisas distintas.
+export function fmtMonedas(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  return Object.entries(obj)
+    .filter(([, v]) => Number(v) > 0)
+    .map(([cur, v]) => `${Number(v).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur || ''}`.trim())
+    .join(' + ');
+}
+
 // Enlace al perfil del contacto en GoHighLevel
 export function ghlContactUrl(locationId, contactId) {
   if (!locationId || !contactId) return null;

@@ -41,7 +41,8 @@ export const STAGES = [
   { key: 'calificado', label: 'Calificado', color: '#8b5cf6', desc: 'Cumple el filtro y mostró interés real; listo para llevarlo al objetivo (cita o enlace).' },
   { key: 'seguimiento_calificado', label: 'Seguimiento calificado', color: '#d946ef', desc: 'Estaba calificado pero aún no dio el paso final (agendar o el enlace); el setter le hace seguimiento.' },
   { key: 'en_conversion', label: 'En conversión', color: '#10b981', desc: 'Dio el paso clave hacia el objetivo: aceptó la propuesta, pidió/recibió el enlace (venta, recurso o agenda) o está reservando.' },
-  { key: 'agendado', label: 'Agendado', color: '#14b8a6', desc: 'Reservó una cita en el calendario de GHL. Solo aplica si el objetivo del setter es agendar; lo detecta el sistema.' },
+  { key: 'agendado', label: 'Agendado', color: '#1d4ed8', desc: 'Reservó una cita en el calendario de GHL. Solo aplica si el objetivo del setter es agendar; lo detecta el sistema.' },
+  { key: 'comprador', label: 'Comprador', color: '#16a34a', desc: 'Pagó un pedido en GHL (formulario de pedido de un embudo, tienda o factura). Lo detecta el sistema; el importe y los productos se ven en el lead.' },
   { key: 'agenda_cancelada', label: 'Agenda cancelada', color: '#fb7185', desc: 'Su cita fue cancelada en el calendario de GHL.' },
   { key: 'no_asistio', label: 'No asistió', color: '#f43f5e', desc: 'Tenía cita y no se presentó. NO es lo mismo que cancelar: este lead ya dijo que sí, así que se le puede proponer otra hora.' },
   { key: 'descartado', label: 'Descartado', color: '#ef4444', desc: 'No cumple el filtro, no le interesa o es spam; el setter deja de perseguirlo.' },
@@ -49,7 +50,7 @@ export const STAGES = [
 ];
 
 // Etiquetas que pone el sistema (calendario, seguimientos o handoff a humano), nunca la IA por «etiqueta».
-export const SYSTEM_STAGES = ['agendado', 'agenda_cancelada', 'no_asistio', 'seguimiento_calificado', 'atencion_humana'];
+export const SYSTEM_STAGES = ['agendado', 'agenda_cancelada', 'no_asistio', 'comprador', 'seguimiento_calificado', 'atencion_humana'];
 
 export const STAGE_KEYS = STAGES.map((s) => s.key);
 
@@ -68,3 +69,7 @@ export const OAUTH_SCOPES = [
   'calendars/events.readonly',
   'users.readonly', // para autorizar el acceso al portal por los usuarios reales de la subcuenta
 ];
+// 🛒 Permiso de pedidos (productos e importes comprados). Solo se pide si el admin confirma en Configuración que
+// la app del marketplace YA lo tiene: pedir un scope que la app no tiene rompe la instalación y la reconexión.
+export const OAUTH_SCOPE_PEDIDOS = 'payments/orders.readonly';
+export const scopesOAuth = (creds) => (creds && creds.scope_pedidos ? [...OAUTH_SCOPES, OAUTH_SCOPE_PEDIDOS] : OAUTH_SCOPES);

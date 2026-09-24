@@ -29,7 +29,7 @@ function stageGuide() {
 - "calificado": cumple el filtro definido en el FLUJO y mostró interés real; listo para llevarlo al objetivo.
 - "en_conversion": dio el paso clave hacia el OBJETIVO del flujo — aceptó la propuesta, pidió o recibió el enlace (de venta, de recurso o de agenda), o está reservando. El objetivo NO siempre es agendar.
 - "descartado": no cumple el filtro, no le interesa, o es spam.
-(Las etiquetas "agendado", "agenda_cancelada" y "seguimiento_calificado" las pone el sistema automáticamente: NO las uses tú. Si el objetivo es agendar y el lead dice que reservó, usa "en_conversion" — el sistema lo pasará a "agendado" al detectar la cita.)`;
+(Las etiquetas "agendado", "agenda_cancelada", "comprador" y "seguimiento_calificado" las pone el sistema automáticamente (cita reservada o pedido pagado en GHL): NO las uses tú. Si el objetivo es agendar y el lead dice que reservó, usa "en_conversion" — el sistema lo pasará a "agendado" al detectar la cita.)`;
 }
 
 function styleRules(account) {
@@ -195,6 +195,20 @@ Tiene cita reservada para el ${cuando}.
 // contexto de la etiqueta se consumía en una respuesta y al turno siguiente el setter ya no sabía qué
 // guía había pedido («¿a qué guía te refieres?»). Ahora vive en la conversación hasta que otro CTA
 // lo sustituya.
+// 🛒 Lo que ya ha comprado el lead (pedidos pagados en GHL): es cliente, no se le vuelve a vender lo mismo.
+function bloqueCompras(compras) {
+  const lista = Array.isArray(compras) ? compras.filter(Boolean) : [];
+  if (!lista.length) return '';
+  const fecha = (d) => { try { return new Date(d).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }); } catch { return ''; } };
+  const lineas = lista.map((p) => {
+    const prods = (Array.isArray(p.items) ? p.items : []).map((i) => i?.name).filter(Boolean).join(', ') || 'un pedido';
+    return `- ${fecha(p.ordered_at)} · ${prods} (${Number(p.amount) || 0} ${p.currency || ''})`.trim();
+  }).join('\n');
+  return `=== LO QUE YA HA COMPRADO ESTE LEAD (pedidos pagados en GHL) ===
+${lineas}
+Es CLIENTE: no le vuelvas a vender lo que ya tiene ni lo cualifiques como si no te conociera. Ayúdale con lo que pregunte y, solo si encaja con tu FLUJO, habla del siguiente paso.`;
+}
+
 function bloqueCta(conversation) {
   const tag = String(conversation?.cta_tag || '').trim();
   if (!tag) return '';
@@ -260,6 +274,7 @@ export function buildSystemPrompt(account, conversation, opts = {}) {
     // La cita va DESPUÉS del flujo del cliente a propósito: manda sobre él. Un flujo que dice
     // «sigues SIEMPRE estas fases» no debe hacer que se cualifique a alguien que ya tiene hora.
     bloqueCita(opts.cita, account),
+    bloqueCompras(opts.compras),
     // Qué pidió el lead (CTA) y el catálogo de lead magnets: después del flujo para que manden sobre
     // él, y antes del estilo (que solo dice CÓMO escribir, no QUÉ saber).
     bloqueCta(conversation),
@@ -403,9 +418,9 @@ export function parseAgentJson(content, account) {
   };
 }
 
-export async function generateReply({ account, provider, conversation, history, followupInstruction = null, followupNumber = 1, activation = null, cita = null }) {
+export async function generateReply({ account, provider, conversation, history, followupInstruction = null, followupNumber = 1, activation = null, cita = null, compras = null }) {
   const guardrail = await getGuardrail();
-  const system = `${guardrail}\n\n${buildSystemPrompt(account, conversation, { followupInstruction, followupNumber, activation, cita, history })}`;
+  const system = `${guardrail}\n\n${buildSystemPrompt(account, conversation, { followupInstruction, followupNumber, activation, cita, compras, history })}`;
   const messages = [{ role: 'system', content: system }, ...historyToMessages(history)];
   if (activation) {
     // ACTIVACIÓN: la orden va SIEMPRE como ÚLTIMO mensaje, con el texto de la etiqueta LITERAL.

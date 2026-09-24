@@ -173,6 +173,11 @@ export default function SettingsPage() {
             <CopyField label="Redirect URL (OAuth)" value={cfg.redirect_url} />
             <CopyField label="Webhook URL (eventos de mensajes)" value={cfg.marketplace_webhook_url} />
             <CopyField label="Scopes (cópialos tal cual)" value={cfg.scopes.join(' ')} />
+            <label className="flex items-start gap-2 text-xs text-slate-600">
+              <input type="checkbox" className="mt-0.5" checked={Boolean(cfg.scope_pedidos)}
+                onChange={async (e) => { await api.put('/api/settings/ghl', { scope_pedidos: e.target.checked }); load(); }} />
+              <span>🛒 <b>La app del marketplace ya tiene el permiso de pedidos</b> (<code>{cfg.scope_pedidos_nombre || 'payments/orders.readonly'}</code>). Márcalo SOLO después de añadirlo en la app (Scopes): desde ese momento el enlace de instalación lo pide y, al volver a autorizar cada subcuenta, Hermes puede leer qué productos compró cada lead. Las compras y sus importes llegan igualmente por el evento de pedidos.</span>
+            </label>
             <div className={`flex items-center gap-2 text-xs font-medium ${cfg.signature_check ? 'text-emerald-600' : 'text-amber-600'}`}>
               {cfg.signature_check ? <ShieldCheck size={15} /> : <ShieldAlert size={15} />}
               {cfg.signature_check

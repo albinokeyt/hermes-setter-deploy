@@ -2,10 +2,11 @@ import crypto from 'node:crypto';
 import { one, q, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
-import { handleInbound, handleOutboundEvent, handleAppointmentEvent, accountByLocation, logEvent, activateSetterForContact, guardarContextoCta, limpiarContextoCta } from '../services/pipeline.js';
+import { handleInbound, handleOutboundEvent, handleAppointmentEvent, handleOrderEvent, accountByLocation, logEvent, activateSetterForContact, guardarContextoCta, limpiarContextoCta } from '../services/pipeline.js';
 import { tagsDeLeadMagnet } from '../lib/tags.js';
 
 const APPOINTMENT_TYPES = ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'];
+const ORDER_TYPES = ['OrderStatusUpdate']; // 🛒 pedidos (activar el evento en la app del marketplace)
 
 function tryVerify(algo, pem, raw, sigB64) {
   try {
@@ -343,7 +344,7 @@ export default async function webhookRoutes(app) {
       }
 
       const type = p.type;
-      if (type !== 'InboundMessage' && type !== 'OutboundMessage' && type !== 'ContactTagUpdate' && !APPOINTMENT_TYPES.includes(type)) {
+      if (type !== 'InboundMessage' && type !== 'OutboundMessage' && type !== 'ContactTagUpdate' && !APPOINTMENT_TYPES.includes(type) && !ORDER_TYPES.includes(type)) {
         await logEvent('evento_otro', { type, locationId: p.locationId });
         return;
       }
@@ -358,6 +359,10 @@ export default async function webhookRoutes(app) {
       }
       if (APPOINTMENT_TYPES.includes(type)) {
         await handleAppointmentEvent(account, type, p);
+        return;
+      }
+      if (ORDER_TYPES.includes(type)) {
+        await handleOrderEvent(account, p);
         return;
       }
       await logEvent(type === 'InboundMessage' ? 'mensaje_recibido' : 'mensaje_saliente', {

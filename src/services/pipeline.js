@@ -598,6 +598,7 @@ export async function handleInbound(account, evt) {
   // Si el CTA le llegó ANTES de escribir (comentó, le etiquetaron, y ahora contesta al DM), la
   // conversación nace aquí y hereda ese contexto: el setter responde sabiendo qué pidió.
   await aplicarContextoCtaPendiente(account, conv);
+  await enlazarComprasPrevias(account, conv); // 🛒 compró antes de hablar con el setter: se enlaza (no cuenta como venta suya)
   // 🧪 el lead simulado nace en el simulador (no aquí): su primer mensaje debe contar como ENTRADA igualmente
   if (esSim(conv.ghl_contact_id) && (await redis.del(`simentrada:${conv.id}`)) === 1) conv.is_new = true;
 
@@ -1263,9 +1264,213 @@ export async function handleAppointmentEvent(account, type, p) {
 
 // ─── Etiquetas ───────────────────────────────────────────────────────────────
 
-export async function applyStage(conv, account, newStage, reason, syncGhl = true) {
+// ─── 🛒 Compras (OrderStatusUpdate del marketplace / sincronización con la API de pedidos) ─────────
+// Una sola definición de «cuenta como venta»: pedido en modo real, pagado y no anulado. Se guarda en la
+// columna purchases.cuenta y TODAS las consultas (dashboard, pipeline, listados) usan esa columna.
+const ESTADOS_ANULADOS = ['refunded', 'cancelled', 'canceled', 'voided', 'void', 'failed'];
+const PAGOS_NO_VALIDOS = ['refunded', 'failed', 'void', 'voided', 'unpaid'];
+export function pedidoCuenta(o) {
+  if (o?.liveMode === false) return false;
+  const est = String(o?.status || '').toLowerCase();
+  const pay = String(o?.paymentStatus || '').toLowerCase();
+  if (ESTADOS_ANULADOS.includes(est) || PAGOS_NO_VALIDOS.includes(pay)) return false;
+  return pay === 'paid' || pay === 'partially_paid' || est === 'completed';
+}
+
+// Pedido de la API de GHL o del webhook OrderStatusUpdate → forma única. `source` solo con los campos que
+// traen valor (vacío = {} para que un evento sin origen no pise el que ya teníamos).
+export function normalizarPedido(o) {
+  const items = (Array.isArray(o?.items) ? o.items : []).map((it) => ({
+    name: String(it?.name || it?.product?.name || '').slice(0, 160),
+    qty: Number(it?.qty) || 1,
+    price: Number(it?.price?.amount ?? it?.amount ?? 0) || 0,
+    product_id: String(it?.product?._id || it?.product?.id || it?.productId || ''),
+  })).filter((i) => i.name || i.product_id);
+  const src = {
+    type: o?.source?.type || o?.sourceType || '', subType: o?.source?.subType || o?.sourceSubType || '',
+    name: o?.source?.name || o?.sourceName || '', id: o?.source?.id || o?.sourceId || '',
+  };
+  const source = Object.fromEntries(Object.entries(src).filter(([, v]) => v));
+  const meta = o?.source?.meta || o?.sourceMeta;
+  if (meta && typeof meta === 'object' && Object.keys(meta).length) source.meta = meta;
+  return {
+    orderId: String(o?._id || o?.orderId || o?.id || ''),
+    contactId: String(o?.contactId || o?.contact?.id || o?.contactSnapshot?.id || o?.contactSnapshot?._id || ''),
+    status: String(o?.status || '').toLowerCase(),
+    paymentStatus: String(o?.paymentStatus || '').toLowerCase(),
+    liveMode: o?.liveMode !== false,
+    amount: Number(o?.amount) || 0,
+    currency: String(o?.currency || '').toUpperCase(),
+    items,
+    source,
+    orderedAt: o?.createdAt || null,
+  };
+}
+
+// Registra/actualiza un pedido y aplica sus consecuencias en el lead UNA sola vez:
+//  · solo cuando el pedido EMPIEZA a contar como venta (o se atribuye por primera vez) se pone «comprador»
+//    y se cortan los seguimientos. Un evento repetido o una sincronización no vuelven a sellar el status
+//    ni pisan un cambio manual.
+//  · si deja de contar (reembolso/cancelación) y el lead no tiene otra venta viva, se revierte a «en conversión».
+//  · «atención humana» no se pisa: la compra queda registrada y visible, y lo decide la persona.
+// La conversación destino es la ya atribuida al pedido (sticky); si no hay, la del contacto que habló con el
+// setter (con mensajes del lead; nunca simulada). `atribuida` = la conversación ya existía cuando compró: es
+// la que cuenta como venta del setter en el dashboard (una compra anterior a hablar con él solo informa).
+export async function registrarCompra(account, o, opts = {}) {
+  const orderId = String(o?.orderId || '');
+  const contactId = String(o?.contactId || '');
+  if (!orderId || !contactId) return { registrada: false, motivo: 'sin orderId o contactId' };
+  const sync = opts.origen === 'sincronizacion';
+  const cuenta = pedidoCuenta(o);
+  const items = Array.isArray(o.items) ? o.items : [];
+  const previa = await one(`SELECT id, conversation_id, cuenta FROM purchases WHERE account_id = $1 AND ghl_order_id = $2`, [account.id, orderId]);
+  let conv = previa?.conversation_id ? await one(`SELECT * FROM conversations WHERE id = $1`, [previa.conversation_id]) : null;
+  if (!conv) {
+    conv = await one(
+      `SELECT c.* FROM conversations c
+        WHERE c.account_id = $1 AND c.ghl_contact_id = $2 AND NOT c.simulada
+          AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'inbound')
+        ORDER BY (c.setter_id IS NOT NULL) DESC, c.updated_at DESC
+        LIMIT 1`,
+      [account.id, contactId]
+    );
+  }
+  const orderedAt = o.orderedAt && !Number.isNaN(new Date(o.orderedAt).getTime()) ? new Date(o.orderedAt) : new Date();
+  const atribuida = Boolean(conv && new Date(conv.created_at) <= orderedAt);
+  const fila = await one(
+    `INSERT INTO purchases (account_id, conversation_id, setter_id, ghl_order_id, ghl_contact_id, amount, currency, status, payment_status, items, source, live_mode, cuenta, atribuida, origen, ordered_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16)
+     ON CONFLICT (account_id, ghl_order_id) DO UPDATE SET
+       status = EXCLUDED.status, payment_status = EXCLUDED.payment_status, amount = EXCLUDED.amount, currency = EXCLUDED.currency,
+       items = CASE WHEN jsonb_array_length(EXCLUDED.items) > 0 THEN EXCLUDED.items ELSE purchases.items END,
+       source = CASE WHEN EXCLUDED.source <> '{}'::jsonb THEN EXCLUDED.source ELSE purchases.source END,
+       live_mode = EXCLUDED.live_mode, cuenta = EXCLUDED.cuenta,
+       atribuida = CASE WHEN purchases.conversation_id IS NOT NULL THEN purchases.atribuida ELSE EXCLUDED.atribuida END,
+       conversation_id = COALESCE(purchases.conversation_id, EXCLUDED.conversation_id),
+       setter_id = COALESCE(purchases.setter_id, EXCLUDED.setter_id),
+       updated_at = now()
+     RETURNING id, conversation_id`,
+    [account.id, conv?.id || null, conv?.setter_id || null, orderId, contactId, Number(o.amount) || 0, String(o.currency || ''), String(o.status || ''), String(o.paymentStatus || ''),
+     JSON.stringify(items), JSON.stringify(o.source || {}), o.liveMode !== false, cuenta, atribuida, opts.origen || 'webhook', orderedAt.toISOString()]
+  );
+  const empiezaAContar = cuenta && !previa?.cuenta;
+  const recienAtribuida = cuenta && !previa?.conversation_id && Boolean(fila?.conversation_id);
+  const dejaDeContar = !cuenta && Boolean(previa?.cuenta);
+  // traza: siempre en tiempo real; en la sincronización solo lo que cambia algo (no inundar el registro)
+  if (!sync || empiezaAContar || recienAtribuida || dejaDeContar) {
+    await logEvent('compra_registrada', {
+      account: account.id, contactId, orderId, status: o.status, pago: o.paymentStatus, cuenta, live: o.liveMode !== false,
+      amount: Number(o.amount) || 0, currency: o.currency || '', productos: items.map((i) => i.name).filter(Boolean).slice(0, 5),
+      conv: conv?.id || null, atribuida, nueva: !previa, origen: opts.origen || 'webhook',
+    });
+  }
+  if (dejaDeContar && conv && conv.stage === 'comprador') {
+    const otra = await one(`SELECT 1 AS ok FROM purchases WHERE conversation_id = $1 AND cuenta AND ghl_order_id <> $2 LIMIT 1`, [conv.id, orderId]);
+    if (!otra) {
+      await applyStage(conv, account, 'en_conversion', `pedido ${o.status || o.paymentStatus || 'anulado'}: venta revertida`.slice(0, 200));
+      await logEvent('compra_revertida', { conv: conv.id, orderId, status: o.status, pago: o.paymentStatus });
+    }
+  }
+  if (!cuenta) return { registrada: true, conversationId: conv?.id || null, cuenta: false };
+  if (!conv) {
+    if (!sync) await logEvent('compra_sin_lead', { account: account.id, contactId, orderId, nota: 'el contacto no ha hablado con el setter: la compra queda registrada y se enlazará si escribe' });
+    return { registrada: true, conversationId: null, cuenta: true };
+  }
+  if (!(empiezaAContar || recienAtribuida)) return { registrada: true, conversationId: conv.id, cuenta: true, ya_aplicada: true };
+  if (sync) {
+    // Primera sincronización de un pedido ANTIGUO: si el status del lead cambió después de comprar (p. ej.
+    // compró hace 80 días y luego agendó), ese status posterior manda y no se toca.
+    const ult = await one(`SELECT MAX(created_at) AS at FROM stage_history WHERE conversation_id = $1`, [conv.id]).catch(() => null);
+    if (ult?.at && new Date(ult.at) > orderedAt) {
+      await logEvent('compra_status_conservado', { conv: conv.id, orderId, stage: conv.stage, nota: 'compra antigua (sincronización): el status del lead cambió después de comprar y se respeta' });
+      return { registrada: true, conversationId: conv.id, cuenta: true };
+    }
+  }
+  await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); // ya compró: fuera seguimientos pendientes
+  if (conv.stage === 'atencion_humana') {
+    await logEvent('compra_status_conservado', { conv: conv.id, orderId, stage: conv.stage, nota: 'compró mientras lo atiende una persona: no se mueve de «atención humana»' });
+    return { registrada: true, conversationId: conv.id, cuenta: true };
+  }
+  const desc = items.map((i) => `${i.qty > 1 ? i.qty + '× ' : ''}${i.name}`).filter(Boolean).join(', ');
+  await applyStage(conv, account, 'comprador', `compró ${desc || 'un pedido'} por ${Number(o.amount) || 0} ${o.currency || ''}`.slice(0, 200));
+  return { registrada: true, conversationId: conv.id, cuenta: true };
+}
+
+// Compra «fría»: el pedido llegó antes de que el contacto hablara con el setter. Cuando escribe, se enlaza a su
+// conversación (se ve en el pipeline y el setter sabe que es cliente) pero NO cuenta como venta del setter.
+async function enlazarComprasPrevias(account, conv) {
+  if (!conv?.id || conv.simulada || esSim(conv.ghl_contact_id)) return;
+  const filas = await q(
+    `UPDATE purchases SET conversation_id = $1, setter_id = COALESCE(setter_id, $2), atribuida = false, updated_at = now()
+      WHERE account_id = $3 AND ghl_contact_id = $4 AND conversation_id IS NULL
+      RETURNING cuenta, ghl_order_id`,
+    [conv.id, conv.setter_id || null, account.id, conv.ghl_contact_id]
+  ).catch(() => []);
+  if (!filas.length) return;
+  await logEvent('compras_previas_enlazadas', { conv: conv.id, pedidos: filas.map((f) => f.ghl_order_id).slice(0, 10) });
+  if (filas.some((f) => f.cuenta) && !['comprador', 'atencion_humana'].includes(conv.stage)) {
+    await applyStage(conv, account, 'comprador', 'ya era cliente: compró antes de hablar con el setter');
+    conv.stage = 'comprador';
+  }
+}
+
+// Webhook OrderStatusUpdate (la app del marketplace lo envía con cada cambio de estado del pedido).
+export async function handleOrderEvent(account, p) {
+  const o = normalizarPedido(p);
+  if (!o.orderId || !o.contactId) { await logEvent('compra_ignorada', { account: account.id, motivo: 'sin id de pedido o de contacto', campos: Object.keys(p || {}) }); return; }
+  // El evento puede venir sin productos: se piden UNA vez por pedido (permiso payments/orders.readonly). Sin el
+  // permiso no se reintenta durante 1 h (cada intento no debe quemar nada ni saturar la API).
+  if (!o.items.length && pedidoCuenta(o) && !(await redis.get(`ordperm:${account.id}`).catch(() => null))) {
+    const ya = await one(`SELECT jsonb_array_length(items) AS n FROM purchases WHERE account_id = $1 AND ghl_order_id = $2`, [account.id, o.orderId]).catch(() => null);
+    if (!(Number(ya?.n) > 0)) {
+      try {
+        o.items = normalizarPedido(await ghl.getOrder(account, o.orderId)).items;
+      } catch (err) {
+        const st = Number(err?.status) || 0;
+        if (st === 401 || st === 403) {
+          await redis.set(`ordperm:${account.id}`, '1', 'EX', 3600).catch(() => {});
+          await logEvent('compra_sin_productos', { account: account.id, orderId: o.orderId, status: st, nota: 'la app no tiene el permiso payments/orders.readonly en esta subcuenta: se registra la compra sin productos (vuelve a autorizar la app para verlos)' });
+        } else {
+          await logEvent('compra_sin_productos', { account: account.id, orderId: o.orderId, status: st, error: String(err.message).slice(0, 160) });
+        }
+      }
+    }
+  }
+  return registrarCompra(account, o, { origen: 'webhook' });
+}
+
+// Lo que ya compró el lead (para que el setter no le venda lo que tiene y lo trate como cliente).
+async function comprasDelLead(conv) {
+  if (!conv?.ghl_contact_id) return [];
+  try {
+    return await q(
+      `SELECT amount, currency, items, ordered_at FROM purchases
+        WHERE account_id = $1 AND ghl_contact_id = $2 AND cuenta
+        ORDER BY ordered_at DESC LIMIT 5`,
+      [conv.account_id, conv.ghl_contact_id]
+    );
+  } catch {
+    return [];
+  }
+}
+
+export async function applyStage(conv, account, newStage, reason, syncGhl = true, opts = {}) {
   if (!STAGE_KEYS.includes(newStage) || conv.stage === newStage) return conv.stage;
-  await q(`UPDATE conversations SET stage = $1, updated_at = now() WHERE id = $2`, [newStage, conv.id]);
+  if (opts.cas) {
+    // Cambio propuesto por el MODELO: compare-and-set sobre el status que se leyó al empezar. Si entretanto el
+    // sistema puso otro (p. ej. «comprador» al llegar el pedido mientras el LLM pensaba), no se pisa.
+    const noSi = Array.isArray(opts.noSi) ? opts.noSi : [];
+    const upd = await q(
+      `UPDATE conversations SET stage = $1, updated_at = now() WHERE id = $2 AND stage = $3${noSi.length ? ' AND NOT (stage = ANY($4::text[]))' : ''} RETURNING id`,
+      noSi.length ? [newStage, conv.id, conv.stage, noSi] : [newStage, conv.id, conv.stage]
+    );
+    if (!upd.length) {
+      await logEvent('status_no_aplicado', { conv: conv.id, propuesto: newStage, leido: conv.stage, motivo: 'el status cambió mientras se generaba la respuesta' }).catch(() => {});
+      return conv.stage;
+    }
+  } else {
+    await q(`UPDATE conversations SET stage = $1, updated_at = now() WHERE id = $2`, [newStage, conv.id]);
+  }
   await q(`INSERT INTO stage_history (conversation_id, from_stage, to_stage, reason) VALUES ($1, $2, $3, $4)`, [
     conv.id, conv.stage, newStage, reason || '',
   ]);
@@ -1603,6 +1808,7 @@ async function processDebounceInner(job) {
       // seguimiento sus instrucciones quedaban diluidas y contradichas ("el lead dejó de responder…").
       activation: activacion ? { contexto: activContexto } : null,
       cita: await citaDelLead(conv),
+      compras: await comprasDelLead(conv),
     });
     await redis.del(`llmretry:${conversationId}`);
   } catch (err) {
@@ -1644,7 +1850,13 @@ async function processDebounceInner(job) {
       JSON.stringify(result.memoria), conv.id,
     ]);
   }
-  if (result.etiqueta) await applyStage(conv, account, result.etiqueta, result.motivo);
+  if (result.etiqueta) {
+    // «comprador» y «agendado» los pone el SISTEMA por hechos (pedido pagado, cita reservada): el modelo no
+    // los pisa con un «en_conversacion» porque el lead dijo «gracias». Solo un descarte o atención humana los mueven.
+    const protegido = ['comprador', 'agendado'].includes(conv.stage) && !['descartado', 'atencion_humana'].includes(result.etiqueta);
+    if (protegido) await logEvent('status_protegido', { conv: conv.id, actual: conv.stage, propuesto: result.etiqueta }).catch(() => {});
+    else await applyStage(conv, account, result.etiqueta, result.motivo, true, { cas: true, noSi: ['descartado', 'atencion_humana'].includes(result.etiqueta) ? [] : ['comprador', 'agendado'] });
+  }
 
   // Anti-repetición SOLO dentro de la tanda (burbujas duplicadas de una misma llamada al LLM).
   // Contra el historial NO se filtra aquí a propósito: si el lead re-pregunta («¿cuánto me
@@ -1962,7 +2174,7 @@ export async function forzarSeguimientoAhora(conversationId) {
   if (!account.ai_enabled || !account.bot_enabled) return { ok: false, motivo: 'la IA o el bot están apagados' };
   if (conv.bot_paused) return { ok: false, motivo: `el bot está en pausa (${conv.paused_by || 'auto'})` };
   if (conv.stage === 'atencion_humana') return { ok: false, motivo: 'la conversación requiere atención humana' };
-  if (['descartado', 'agendado'].includes(conv.stage)) return { ok: false, motivo: `estado «${conv.stage}»: la cadena de seguimientos está cortada` };
+  if (['descartado', 'agendado', 'comprador'].includes(conv.stage)) return { ok: false, motivo: `estado «${conv.stage}»: la cadena de seguimientos está cortada` };
   if (!provider) return { ok: false, motivo: 'sin proveedor de IA' };
   if (await redis.get(activarKey(conversationId))) return { ok: false, motivo: 'hay una activación en cola: primero tiene que responder' };
   if (await redis.get(debKey(conversationId))) return { ok: false, motivo: 'hay una respuesta en cola: primero tiene que salir' };
@@ -1997,7 +2209,7 @@ async function processFollowupInner(job) {
   // Gate duro por estado (sin coste): descartado (fuera) o agendado (objetivo cumplido) → nunca.
   // El resto (en_conversion, calificado, etc.) lo decide el chequeo IA leyendo los mensajes,
   // porque un lead que pidió el enlace pero se quedó callado sí conviene retomarlo.
-  if (['descartado', 'agendado'].includes(conv.stage)) {
+  if (['descartado', 'agendado', 'comprador'].includes(conv.stage)) {
     await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); // cortar la cadena de seguimientos
     return;
   }
@@ -2095,6 +2307,7 @@ async function processFollowupInner(job) {
       followupInstruction: await instruccionConAjuste(conversationId, token, stepConf.instruction || 'Retoma la conversación de forma breve y amable.'),
       followupNumber: step + 1,
       cita: await citaDelLead(conv),
+      compras: await comprasDelLead(conv),
     });
   } catch (err) {
     const retries = await redis.incr(`furetry:${conversationId}`);
@@ -2155,9 +2368,9 @@ async function processFollowupInner(job) {
   ]);
   if (conv.stage === 'calificado' || conv.stage === 'seguimiento_calificado') {
     // estaba calificado pero no agendó → seguimiento específico de calificación
-    await applyStage(conv, account, 'seguimiento_calificado', `seguimiento #${newStep} (calificado sin agendar)`);
-  } else if (!['en_conversion', 'descartado', 'agendado', 'agenda_cancelada'].includes(conv.stage)) {
-    await applyStage(conv, account, 'en_seguimiento', `seguimiento #${newStep} enviado`);
+    await applyStage(conv, account, 'seguimiento_calificado', `seguimiento #${newStep} (calificado sin agendar)`, true, { cas: true, noSi: ['comprador', 'agendado'] });
+  } else if (!['en_conversion', 'descartado', 'agendado', 'agenda_cancelada', 'comprador'].includes(conv.stage)) {
+    await applyStage(conv, account, 'en_seguimiento', `seguimiento #${newStep} enviado`, true, { cas: true, noSi: ['comprador', 'agendado'] });
   }
   // un seguimiento también puede prometer tiempo («te escribo mañana») → se respeta en el siguiente
   await scheduleNextFollowup(account, { ...conv, followup_step: newStep }, cursor, result.proximoContactoHoras || horasPrometidasEnTexto(result.mensajes));

@@ -141,11 +141,13 @@ export async function ghlApi(account, method, path, { body, version = V_CONVERSA
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(30_000),
   });
-  if (res.status === 401 && retry && account.mode === 'oauth' && account.location_id) {
+  const text = await res.text();
+  // 401 por token caducado → refresh y un reintento. Un 401 por FALTA DE PERMISO (scope) no se arregla
+  // refrescando: se devuelve tal cual para no quemar rotaciones del refresh_token de la subcuenta.
+  if (res.status === 401 && retry && account.mode === 'oauth' && account.location_id && !/scope/i.test(text)) {
     await q(`UPDATE ghl_tokens SET expires_at = now() - interval '1 minute' WHERE location_id = $1`, [account.location_id]);
     return ghlApi(account, method, path, { body, version, retry: false });
   }
-  const text = await res.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!res.ok) throw new GhlError(`GHL ${method} ${path} → ${res.status}: ${text.slice(0, 300)}`, res.status, data);
@@ -197,6 +199,22 @@ export async function listContactMessages(account, contactId, limit = 20) {
     }))
     .reverse(); // GHL devuelve recientes primero → cronológico
   return { conversationId: convId, messages, lastInboundAt: lastInboundAt ? lastInboundAt.toISOString() : null };
+}
+
+// 🛒 Pedidos (Payments → Orders). Permiso: payments/orders.readonly. El listado NO trae los productos: para
+// eso está getOrder (items[]). altId/altType identifican la subcuenta.
+const V_PAYMENTS = '2021-07-28';
+export async function listOrders(account, { contactId = '', startAt = '', endAt = '', paymentStatus = '', limit = 100, offset = 0 } = {}) {
+  const qs = new URLSearchParams({ altId: account.location_id, altType: 'location', locationId: account.location_id, limit: String(limit), offset: String(offset) });
+  if (contactId) qs.set('contactId', contactId);
+  if (startAt) qs.set('startAt', startAt);
+  if (endAt) qs.set('endAt', endAt);
+  if (paymentStatus) qs.set('paymentStatus', paymentStatus);
+  return ghlApi(account, 'GET', `/payments/orders?${qs.toString()}`, { version: V_PAYMENTS });
+}
+export async function getOrder(account, orderId) {
+  const qs = new URLSearchParams({ altId: account.location_id, altType: 'location', locationId: account.location_id });
+  return ghlApi(account, 'GET', `/payments/orders/${encodeURIComponent(orderId)}?${qs.toString()}`, { version: V_PAYMENTS });
 }
 
 export async function getContact(account, contactId) {

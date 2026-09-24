@@ -36,6 +36,7 @@ export default async function dashboardRoutes(app) {
     const condA = inIds ? `AND ap.account_id IN (${inIds})` : '';
     const condU = inIds ? `AND u.account_id IN (${inIds})` : '';
     const condCm = inIds ? `AND cm.account_id IN (${inIds})` : '';
+    const condP = inIds ? `AND pu.account_id IN (${inIds})` : ''; // 🛒 compras
     // Identidad del comentarista: contacto de GHL → nombre → id de la fila (para "nuevos usuarios")
     const CM_UID = `COALESCE(NULLIF(cm.author_id,''), NULLIF(cm.author,''), cm.id::text)`;
 
@@ -48,6 +49,13 @@ export default async function dashboardRoutes(app) {
         (SELECT COUNT(*)::int FROM messages m WHERE m.direction = 'outbound' AND m.created_at BETWEEN $1 AND $2 ${condM}) AS enviados,
         (SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'agendado' AND ap.created_at BETWEEN $1 AND $2 ${condA}) AS agendas,
         (SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'cancelado' AND ap.created_at BETWEEN $1 AND $2 ${condA}) AS canceladas,
+        -- 🛒 Ventas = compras que cuentan y que hizo un lead que YA hablaba con el setter (mismo criterio que
+        -- «Agendas»). Importes agrupados por moneda: nunca se suman divisas distintas.
+        (SELECT COUNT(*)::int FROM purchases pu WHERE pu.cuenta AND pu.atribuida AND pu.ordered_at BETWEEN $1 AND $2 ${condP}) AS ventas,
+        (SELECT COALESCE(jsonb_object_agg(x.currency, x.total), '{}'::jsonb) FROM (
+           SELECT pu.currency, SUM(pu.amount) AS total FROM purchases pu
+            WHERE pu.cuenta AND pu.atribuida AND pu.ordered_at BETWEEN $1 AND $2 ${condP} GROUP BY pu.currency) x) AS ingresos_por_moneda,
+        (SELECT COUNT(*)::int FROM purchases pu WHERE pu.cuenta AND pu.ordered_at BETWEEN $1 AND $2 ${condP}) AS ventas_subcuenta,
         (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2 ${condU}) AS gasto,
         (SELECT COALESCE(SUM(COALESCE(u.billed_usd, u.cost_usd)), 0) FROM llm_usage u WHERE u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2 ${condU}) AS facturado,
         (SELECT COUNT(*)::int FROM comments cm WHERE cm.created_at BETWEEN $1 AND $2 ${condCm}) AS comentarios,
@@ -69,6 +77,7 @@ export default async function dashboardRoutes(app) {
         COALESCE((SELECT COUNT(*)::int FROM messages m WHERE m.direction='inbound' AND m.created_at::date = d ${condM}), 0) AS recibidos,
         COALESCE((SELECT COUNT(*)::int FROM messages m WHERE m.direction='outbound' AND m.created_at::date = d ${condM}), 0) AS enviados,
         COALESCE((SELECT COUNT(*)::int FROM appointments ap WHERE ap.status = 'agendado' AND ap.created_at::date = d ${condA}), 0) AS agendas,
+        COALESCE((SELECT COUNT(*)::int FROM purchases pu WHERE pu.cuenta AND pu.atribuida AND pu.ordered_at::date = d ${condP}), 0) AS ventas,
         COALESCE((SELECT COUNT(*)::int FROM conversations c2 WHERE c2.created_at::date = d AND c2.last_inbound_at IS NOT NULL ${condC}), 0) AS leads_nuevos,
         COALESCE((SELECT COUNT(*)::int FROM comments cm WHERE cm.created_at::date = d ${condCm}), 0) AS comentarios,
         COALESCE((SELECT COUNT(*)::int FROM (
@@ -86,6 +95,12 @@ export default async function dashboardRoutes(app) {
         COUNT(c.id) FILTER (WHERE c.stage = 'en_conversion')::int AS en_conversion,
         COUNT(c.id) FILTER (WHERE c.stage IN ('en_seguimiento','seguimiento_calificado'))::int AS en_seguimiento,
         COUNT(c.id) FILTER (WHERE c.updated_at BETWEEN $1 AND $2)::int AS activas,
+        COUNT(c.id) FILTER (WHERE c.stage = 'agendado')::int AS agendados,
+        COUNT(c.id) FILTER (WHERE c.stage = 'comprador')::int AS compradores,
+        (SELECT COUNT(*)::int FROM purchases pu WHERE pu.account_id = a.id AND pu.cuenta AND pu.atribuida AND pu.ordered_at BETWEEN $1 AND $2) AS ventas,
+        (SELECT COALESCE(jsonb_object_agg(x.currency, x.total), '{}'::jsonb) FROM (
+           SELECT pu.currency, SUM(pu.amount) AS total FROM purchases pu
+            WHERE pu.account_id = a.id AND pu.cuenta AND pu.atribuida AND pu.ordered_at BETWEEN $1 AND $2 GROUP BY pu.currency) x) AS ingresos_por_moneda,
         (SELECT COALESCE(SUM(u.cost_usd), 0) FROM llm_usage u WHERE u.account_id = a.id AND u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2) AS gasto,
         (SELECT COALESCE(SUM(COALESCE(u.billed_usd, u.cost_usd)), 0) FROM llm_usage u WHERE u.account_id = a.id AND u.source <> 'archivo' AND u.created_at BETWEEN $1 AND $2) AS facturado
       FROM accounts a LEFT JOIN conversations c ON c.account_id = a.id AND NOT c.simulada

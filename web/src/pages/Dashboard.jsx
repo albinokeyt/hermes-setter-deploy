@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { MessagesSquare, Flame, ArrowDownToLine, ArrowUpFromLine, Wallet, CalendarCheck, Info, ChevronDown } from 'lucide-react';
+import { MessagesSquare, Flame, ArrowDownToLine, ArrowUpFromLine, Wallet, CalendarCheck, Info, ChevronDown, ShoppingBag } from 'lucide-react';
 import { useMe } from '../components/Layout.jsx';
 import { ComposedChart, Area, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { api, timeAgo } from '../api.js';
+import { api, timeAgo, fmtMonedas } from '../api.js';
 import { STAGES } from '../stages.js';
 import { Card, SectionTitle, StatCard, StagePill, Avatar, Select } from '../components/ui.jsx';
 
@@ -92,12 +92,13 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div data-tour="dash-stats" className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
+      <div data-tour="dash-stats" className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
         <StatCard label="Conversaciones nuevas" value={t.nuevas ?? 0} sub={`${t.conversaciones_total ?? 0} en total`} icon={MessagesSquare} tone="violet" />
         <StatCard label="Activas" value={t.activas ?? 0} sub="con actividad en el rango" icon={Flame} tone="amber" />
         <StatCard label="Recibidos" value={t.recibidos ?? 0} sub="mensajes de leads" icon={ArrowDownToLine} tone="blue" />
         <StatCard label="Enviados" value={t.enviados ?? 0} sub="respuestas del setter" icon={ArrowUpFromLine} tone="emerald" />
-        <StatCard label="Agendas" value={t.agendas ?? 0} sub={`${t.canceladas ?? 0} canceladas`} icon={CalendarCheck} tone="emerald" />
+        <StatCard label="Agendas" value={t.agendas ?? 0} sub={`${t.canceladas ?? 0} canceladas`} icon={CalendarCheck} tone="blue" />
+        <StatCard label="Ventas" value={t.ventas ?? 0} sub={`${fmtMonedas(t.ingresos_por_moneda) || 'sin ingresos'}${(t.ventas_subcuenta ?? 0) > (t.ventas ?? 0) ? ` · ${t.ventas_subcuenta} en la subcuenta` : ''}`} icon={ShoppingBag} tone="emerald" />
         {me?.role === 'admin' ? (
           <>
             <StatCard label="Costo IA" value={fmtUsd(t.gasto)} sub="lo que pagas · clic: desglose" icon={Wallet} tone="violet" onClick={() => setShowSpend((v) => !v)} />
@@ -195,7 +196,8 @@ export default function Dashboard() {
                 <Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
                 <Area type="monotone" dataKey="recibidos" name="Recibidos" stroke="#b58a2e" strokeWidth={2} fill="url(#gIn)" />
                 <Area type="monotone" dataKey="enviados" name="Enviados" stroke="#10b981" strokeWidth={2} fill="url(#gOut)" />
-                <Line type="monotone" dataKey="agendas" name="Agendas" stroke="#0d9488" strokeWidth={2.5} dot={{ r: 2.5 }} />
+                <Line type="monotone" dataKey="agendas" name="Agendas" stroke="#1d4ed8" strokeWidth={2.5} dot={{ r: 2.5 }} />
+                <Line type="monotone" dataKey="ventas" name="Ventas" stroke="#16a34a" strokeWidth={2.5} dot={{ r: 2.5 }} />
                 <Line type="monotone" dataKey="leads_nuevos" name="Leads nuevos" stroke="#3b82f6" strokeWidth={2} strokeDasharray="5 3" dot={false} />
                 <Line type="monotone" dataKey="comentarios" name="Comentarios" stroke="#8b5cf6" strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="comentarios_nuevos" name="Coment. nuevos" stroke="#d946ef" strokeWidth={2} strokeDasharray="4 3" dot={false} />
@@ -242,6 +244,9 @@ export default function Dashboard() {
                   <th className="px-3 py-3 font-medium">En seguimiento</th>
                   <th className="px-3 py-3 font-medium">Calificados</th>
                   <th className="px-3 py-3 font-medium">En conversión</th>
+                  <th className="px-3 py-3 font-medium">Agendados</th>
+                  <th className="px-3 py-3 font-medium">Compradores</th>
+                  <th className="px-3 py-3 font-medium">Ventas</th>
                   <th className="px-3 py-3 font-medium">{me?.role === 'admin' ? 'Costo' : 'Gasto'}</th>
                   {me?.role === 'admin' && <th className="px-3 py-3 font-medium">Facturado</th>}
                   <th className="px-5 py-3 font-medium text-right">Bot</th>
@@ -258,6 +263,9 @@ export default function Dashboard() {
                     <td className="px-3 py-3">{a.en_seguimiento}</td>
                     <td className="px-3 py-3 font-semibold text-violet-600">{a.calificados}</td>
                     <td className="px-3 py-3 font-semibold text-emerald-600">{a.en_conversion}</td>
+                    <td className="px-3 py-3 font-semibold text-blue-700">{a.agendados ?? 0}</td>
+                    <td className="px-3 py-3 font-semibold text-green-700">{a.compradores ?? 0}</td>
+                    <td className="px-3 py-3 text-green-700"><b>{a.ventas ?? 0}</b>{fmtMonedas(a.ingresos_por_moneda) && <span className="ml-1 text-xs text-slate-500">{fmtMonedas(a.ingresos_por_moneda)}</span>}</td>
                     <td className="px-3 py-3 text-slate-600">{fmtUsd(me?.role === 'admin' ? a.gasto : (a.facturado ?? a.gasto))}</td>
                     {me?.role === 'admin' && <td className="px-3 py-3 font-semibold text-emerald-600">{fmtUsd(a.facturado)}</td>}
                     <td className="px-5 py-3 text-right">

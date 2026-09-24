@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Plus, Trash2, Sparkles, ChevronRight, Bot } from 'lucide-react';
-import { api } from '../api.js';
+import { api, fmtMonedas } from '../api.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 import { AccessManager } from '../components/AccessManager.jsx';
@@ -41,6 +41,9 @@ export default function AccountEdit() {
   const [aliasDraft, setAliasDraft] = useState('');
   const [recuperando, setRecuperando] = useState(false);
   const [recupResultado, setRecupResultado] = useState(null); // resultado de «Recuperar nombres»
+  const [sincCompras, setSincCompras] = useState(false); // 🛒 sincronización de compras
+  const [sincResultado, setSincResultado] = useState(null);
+  const [compras, setCompras] = useState(null);
   // 📣 Rescate de leads sin responder
   const [rescInfo, setRescInfo] = useState(null); // { total, dentro_ventana, fuera_ventana }
   const [rescContexto, setRescContexto] = useState('Este lead escribió y nunca le respondimos. Discúlpate breve y con naturalidad por la demora (sin excusas técnicas ni mencionar sistemas) y retoma tu flujo desde el principio.');
@@ -64,6 +67,12 @@ export default function AccountEdit() {
       api.get(`/api/accounts/${id}/calendars`).then(setCalendars).catch(() => setCalendars({ calendars: [], source: 'error' }));
     }
   }, [tab, id, calendars]);
+
+  useEffect(() => {
+    if (tab === 'conexion' && isAdmin && compras === null) {
+      api.get(`/api/compras?account_id=${id}&limit=30`).then(setCompras).catch(() => setCompras([]));
+    }
+  }, [tab, id, compras, isAdmin]);
 
   if (!acc) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 
@@ -109,6 +118,24 @@ export default function AccountEdit() {
       const extra = d.actualizados != null ? ` (antes del corte: ${d.actualizados} recuperados${d.pendientes ? `, ${d.pendientes} pendientes` : ''})` : '';
       setRecupResultado({ tone: 'error', text: err.message + extra });
     } finally { setRecuperando(false); }
+  };
+
+  // 🛒 trae de GHL los pedidos de los últimos 90 días y los enlaza a sus leads (idempotente)
+  const sincronizarCompras = async () => {
+    setSincCompras(true); setSincResultado(null);
+    try {
+      const r = await api.post(`/api/accounts/${id}/compras/sincronizar`, { dias: 90 });
+      if (r.error_permiso) { setSincResultado({ tone: 'warn', text: r.mensaje }); return; }
+      const partes = [`✓ ${r.leidos} pedidos leídos · ${r.ventas} ventas`, `${r.con_lead} con lead`];
+      if (r.nuevas) partes.push(`${r.nuevas} nuevas`);
+      if (r.sin_lead) partes.push(`${r.sin_lead} de contactos que no hablaron con el setter`);
+      if (r.sin_productos_pendientes) partes.push(`${r.sin_productos_pendientes} sin productos aún (vuelve a sincronizar)`);
+      const avisos = [r.aviso, r.aviso_productos].filter(Boolean).join(' ');
+      setSincResultado({ tone: avisos ? 'warn' : 'ok', text: partes.join(' · ') + (avisos ? ` — ${avisos}` : '') });
+      setCompras(null); // recarga la lista
+    } catch (err) {
+      setSincResultado({ tone: 'error', text: err.message });
+    } finally { setSincCompras(false); }
   };
 
   const rangoQS = () => {
@@ -507,6 +534,30 @@ export default function AccountEdit() {
                 <CopyField label="URL de webhook para el workflow de GHL" value={acc.webhook_url || ''} hint='Workflow: Trigger "Customer Replied" → Custom Webhook (POST) a esta URL.' />
               </div>
             )}
+          </Card>
+
+          <Card className="space-y-3 p-6">
+            <h3 className="text-sm font-bold text-slate-700">🛒 Compras de GHL</h3>
+            <p className="text-xs text-slate-500">Las compras llegan solas por el evento de pedidos de la app: el lead pasa a <b>Comprador</b> con el importe y los productos. Este botón trae el histórico de los últimos 90 días y completa los productos que falten; se puede repetir sin duplicar nada.</p>
+            <Button variant="secondary" loading={sincCompras} onClick={sincronizarCompras}>🛒 Sincronizar compras (90 días)</Button>
+            {sincResultado && <Banner tone={sincResultado.tone}>{sincResultado.text}</Banner>}
+            {compras && compras.length > 0 && (
+              <div className="max-h-72 space-y-1.5 overflow-y-auto">
+                {compras.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold text-slate-700">{p.lead_name || 'Contacto sin conversación'}{p.stage ? ` · ${p.stage}` : ''}{!p.atribuida && p.conversation_id ? ' · ya era cliente' : ''}</div>
+                      <div className="truncate text-slate-500">{(p.items || []).map((i) => i.name).filter(Boolean).join(', ') || 'sin detalle de productos'}</div>
+                    </div>
+                    <div className="shrink-0 text-right font-semibold text-green-700">
+                      {fmtMonedas({ [p.currency]: p.amount })}
+                      <div className="text-[10px] font-normal text-slate-400">{new Date(p.ordered_at || p.created_at).toLocaleDateString('es-ES')}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {compras && compras.length === 0 && <p className="text-xs text-slate-400">Aún no hay compras registradas en esta conexión.</p>}
           </Card>
 
           {isAdmin && (

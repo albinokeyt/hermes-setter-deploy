@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Info, Loader2 } from 'lucide-react';
-import { api, timeAgo } from '../api.js';
+import { api, timeAgo, fmtMonedas } from '../api.js';
 import { STAGES, CHANNEL_LABEL } from '../stages.js';
 import { SectionTitle, Avatar } from '../components/ui.jsx';
 
@@ -91,6 +91,21 @@ export default function Kanban() {
                       </div>
                     </Link>
                     <p className="mt-2 line-clamp-2 text-xs text-slate-500">{card.last_message || '—'}</p>
+                    {(Number(card.compra_n) > 0 || card.cita_at) && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {Number(card.compra_n) > 0 && (
+                          <span className="rounded-full bg-green-600 px-2 py-0.5 text-[10px] font-semibold text-white" title={(card.compra_productos || []).join(', ')}>
+                            🛒 {fmtMonedas(card.compra_por_moneda) || 'compra'}
+                            {(card.compra_productos || []).length > 0 && ` · ${card.compra_productos.slice(0, 2).join(', ')}${card.compra_productos.length > 2 ? '…' : ''}`}
+                          </span>
+                        )}
+                        {card.cita_at && (
+                          <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold text-white">
+                            📅 {new Date(card.cita_at).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <div className="mt-2.5 flex items-center justify-between">
                       <span className="text-[10px] text-slate-400">{timeAgo(card.updated_at)}</span>
                       <select value={card.stage} onChange={(e) => move(card.id, e.target.value)}

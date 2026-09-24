@@ -13,6 +13,7 @@ import providerRoutes from './routes/providers.js';
 import accountRoutes from './routes/accounts.js';
 import setterRoutes from './routes/setters.js';
 import conversationRoutes from './routes/conversations.js';
+import comprasRoutes from './routes/compras.js';
 import dashboardRoutes from './routes/dashboard.js';
 import playgroundRoutes from './routes/playground.js';
 import simuladorRoutes from './routes/simulador.js';
@@ -57,6 +58,7 @@ async function main() {
   await app.register(accountRoutes);
   await app.register(setterRoutes);
   await app.register(conversationRoutes);
+  await app.register(comprasRoutes);
   await app.register(dashboardRoutes);
   await app.register(playgroundRoutes);
   await app.register(simuladorRoutes);

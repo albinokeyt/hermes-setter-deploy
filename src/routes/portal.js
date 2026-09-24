@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { one, q, getSetting, setSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { createSession, setSessionCookie } from '../lib/session.js';
-import { config, OAUTH_SCOPES } from '../config.js';
+import { config, scopesOAuth } from '../config.js';
 import { getLocationName, listLocationUsers } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
 import { decryptGhlSso } from '../lib/sso.js';
@@ -206,7 +206,7 @@ export default async function portalRoutes(app) {
       'https://marketplace.gohighlevel.com/oauth/chooselocation' +
       `?response_type=code&redirect_uri=${encodeURIComponent(redirect)}` +
       `&client_id=${encodeURIComponent(creds.client_id)}` +
-      `&scope=${OAUTH_SCOPES.map(encodeURIComponent).join('%20')}` +
+      `&scope=${scopesOAuth(creds).map(encodeURIComponent).join('%20')}` +
       `&state=${nonce}`;
     // OJO: este menú se abre DENTRO de un iframe de GHL, y marketplace.gohighlevel.com prohíbe
     // cargarse en iframe. Por eso no redirigimos aquí: servimos nuestra página (sí carga en el
