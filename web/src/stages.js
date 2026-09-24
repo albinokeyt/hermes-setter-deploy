@@ -15,6 +15,19 @@ export const STAGES = [
 
 export const stageByKey = (key) => STAGES.find((s) => s.key === key) || STAGES[0];
 
+// 🥧 La torta del dashboard agrupa los status en 6 porciones (más de 6 ya no se leen de un vistazo). El orden es
+// el del embudo y también el del anillo; los colores están validados para daltonismo en claro y en oscuro
+// (validate_palette.js, pares contiguos incluido el cierre Perdidos→Nuevos). «Atención humana» no es una
+// porción: es un aviso aparte, porque pide acción. El detalle status a status está en la hoja del ojito.
+export const STATUS_GRUPOS = [
+  { key: 'nuevos', label: 'Nuevos', stages: ['nuevo'], light: '#4a3aa7', dark: '#9085e9', desc: 'Acaban de escribir; todavía no hay conversación real.' },
+  { key: 'conversando', label: 'Conversando', stages: ['en_conversacion', 'calificado', 'en_conversion'], light: '#1baf7a', dark: '#199e70', desc: 'En conversación, calificados o dando el paso hacia el objetivo.' },
+  { key: 'seguimiento', label: 'En seguimiento', stages: ['en_seguimiento', 'seguimiento_calificado'], light: '#eda100', dark: '#c98500', desc: 'Dejaron de responder y el setter los está retomando.' },
+  { key: 'agendados', label: 'Agendados', stages: ['agendado'], light: '#2a78d6', dark: '#3987e5', desc: 'Tienen una cita reservada en el calendario.' },
+  { key: 'compradores', label: 'Compradores', stages: ['comprador'], light: '#008300', dark: '#008300', desc: 'Pagaron un pedido en GHL.' },
+  { key: 'perdidos', label: 'Perdidos', stages: ['agenda_cancelada', 'no_asistio', 'descartado'], light: '#e87ba4', dark: '#d55181', desc: 'Cancelaron la cita, no se presentaron o se descartaron.' },
+];
+
 export const CHANNELS = ['IG', 'WhatsApp', 'FB', 'SMS', 'Live_Chat'];
 
 export const CHANNEL_LABEL = { IG: 'Instagram', WhatsApp: 'WhatsApp', FB: 'Facebook', SMS: 'SMS', Live_Chat: 'Chat web' };

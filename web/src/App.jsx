@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout.jsx';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import DashboardDetalle from './pages/DashboardDetalle.jsx';
 import Conversations from './pages/Conversations.jsx';
 import ConversationDetail from './pages/ConversationDetail.jsx';
 import Kanban from './pages/Kanban.jsx';
@@ -25,6 +26,7 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
+        <Route path="/dashboard/detalle" element={<DashboardDetalle />} />
         <Route path="/conversaciones" element={<Conversations />} />
         <Route path="/conversaciones/:id" element={<ConversationDetail />} />
         <Route path="/etiquetas" element={<Kanban />} />

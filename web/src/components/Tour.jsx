@@ -27,9 +27,9 @@ function buildSteps(me, ctx) {
     // ── Dashboard ──
     { route: '/', sel: 'page:dash', title: 'Dashboard', text: 'Tu resumen general: cuántas personas han escrito, mensajes enviados y recibidos, citas agendadas y lo que llevas gastado en IA.' },
     { route: '/', sel: 'dash-rango', title: 'Elige el periodo', text: 'Con estos botones cambias el rango de fechas (hoy, 7, 30, 90 días o uno personalizado). Todo lo de abajo se recalcula para ese periodo.' },
-    { route: '/', sel: 'dash-stats', title: 'Los números clave', text: `Conversaciones nuevas y activas, mensajes recibidos y enviados, y agendas conseguidas.${isAdmin ? ' Como admin también ves el costo de IA (lo que pagas) y lo facturado (lo que cobras): pulsa la tarjeta de costo para ver el desglose.' : ''}` },
-    { route: '/', sel: 'dash-etapas', title: 'Tus leads por status', text: 'Cuántos leads hay en cada status (nuevo, en conversación, calificado, agendado…). La tarjeta 🚨 avisa si alguien pidió hablar con una persona. Pulsa cualquiera para ir al tablero.' },
-    { route: '/', sel: 'dash-grafica', title: 'La actividad día a día', text: 'Mensajes recibidos y enviados, leads nuevos y agendas de cada día. De un vistazo ves si la máquina está funcionando.' },
+    { route: '/', sel: 'dash-stats', title: 'Los números clave', text: `Conversaciones nuevas, agendas y ventas del periodo.${isAdmin ? ' Como admin también ves el costo de IA y lo facturado (clic para el desglose).' : ' Y lo que llevas gastado en IA.'}` },
+    { route: '/', sel: 'dash-etapas', title: 'Tus leads por status', text: 'La torta agrupa a todos tus leads en 6 porciones: nuevos, conversando, en seguimiento, agendados (azul), compradores (verde) y perdidos. El aviso 🚨 sale si alguien pidió hablar con una persona. Con el ojito «Ver detalle» abres la hoja con cada status uno por uno y el resto de indicadores.' },
+    { route: '/', sel: 'dash-grafica', title: 'La evolución día a día', text: 'Leads nuevos, agendas y ventas de cada día. La actividad completa (mensajes, comentarios…) está en la hoja de detalle.' },
 
     // ── Paso 1 (admin): APIs ──
     { route: '/apis', sel: 'page:apis', title: 'Para montar el sistema, paso 1: APIs de IA', text: 'Aquí conectas los «cerebros» que usarán tus asistentes. Con «Añadir API» pegas la clave de tu proveedor (OpenRouter, por ejemplo), eliges el modelo, marcas para qué sirve (texto, ver fotos, escuchar audios) y defines costo y precio.' },
