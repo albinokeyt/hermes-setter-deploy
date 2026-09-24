@@ -128,7 +128,7 @@ async function tokenFor(account) {
   return row.access_token;
 }
 
-export async function ghlApi(account, method, path, { body, version = V_CONVERSATIONS, retry = true } = {}) {
+export async function ghlApi(account, method, path, { body, version = V_CONVERSATIONS, retry = true, timeoutMs = 30_000 } = {}) {
   const token = await tokenFor(account);
   const res = await fetch(`${GHL_API}${path}`, {
     method,
@@ -139,14 +139,14 @@ export async function ghlApi(account, method, path, { body, version = V_CONVERSA
       accept: 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await res.text();
   // 401 por token caducado → refresh y un reintento. Un 401 por FALTA DE PERMISO (scope) no se arregla
   // refrescando: se devuelve tal cual para no quemar rotaciones del refresh_token de la subcuenta.
   if (res.status === 401 && retry && account.mode === 'oauth' && account.location_id && !/scope/i.test(text)) {
     await q(`UPDATE ghl_tokens SET expires_at = now() - interval '1 minute' WHERE location_id = $1`, [account.location_id]);
-    return ghlApi(account, method, path, { body, version, retry: false });
+    return ghlApi(account, method, path, { body, version, retry: false, timeoutMs });
   }
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
@@ -196,6 +196,9 @@ export async function listContactMessages(account, contactId, limit = 20) {
       type: m.messageType || m.type || '',
       // hora REAL del mensaje en GHL, para ordenar cronológicamente al importar (no por id de inserción)
       dateAdded: m.dateAdded || m.dateUpdated || null,
+      // ORIGEN según GHL: 'app' = lo escribió una persona (panel o móvil); 'workflow', 'campaign', 'bulk_actions'… =
+      // automatización. Es lo que distingue a Georgi escribiendo desde el móvil de un DM de workflow.
+      source: String(m.source || ''),
     }))
     .reverse(); // GHL devuelve recientes primero → cronológico
   return { conversationId: convId, messages, lastInboundAt: lastInboundAt ? lastInboundAt.toISOString() : null };
@@ -215,6 +218,12 @@ export async function listOrders(account, { contactId = '', startAt = '', endAt 
 export async function getOrder(account, orderId) {
   const qs = new URLSearchParams({ altId: account.location_id, altType: 'location', locationId: account.location_id });
   return ghlApi(account, 'GET', `/payments/orders/${encodeURIComponent(orderId)}?${qs.toString()}`, { version: V_PAYMENTS });
+}
+
+// Un mensaje concreto (para saber su ORIGEN cuando el webhook OutboundMessage no lo trae).
+export async function getMessage(account, messageId) {
+  const data = await ghlApi(account, 'GET', `/conversations/messages/${encodeURIComponent(messageId)}`, { version: V_CONVERSATIONS, timeoutMs: 8000 });
+  return data?.message || data;
 }
 
 export async function getContact(account, contactId) {

@@ -1,6 +1,6 @@
 import { q, one } from '../db.js';
 import { STAGES, STAGE_KEYS } from '../config.js';
-import { applyStage, cancelBotJobs, invalidateContactTags, markOwnOutbound, markSentMessage } from '../services/pipeline.js';
+import { applyStage, cancelBotJobs, invalidateContactTags, markOwnOutbound, markSentMessage, marcarReactivado } from '../services/pipeline.js';
 import * as ghl from '../services/ghl.js';
 import { accessibleAccountIds, canAccessAccount } from '../lib/session.js';
 import { esSim } from '../lib/sim.js';
@@ -121,12 +121,15 @@ export default async function conversationRoutes(app) {
       const pausedBy = b.bot_paused ? 'manual' : '';
       await q(`UPDATE conversations SET bot_paused = $1, paused_by = $2, updated_at = now() WHERE id = $3`, [b.bot_paused, pausedBy, conv.id]);
       await cancelBotJobs(conv.id); // cancela debounce, seguimientos y cualquier reactivación pendiente
+      // reactivado A MANO: la red de «una persona escribió hace poco» no debe volver a pausarlo por mensajes anteriores
+      if (!b.bot_paused) await marcarReactivado(conv.id);
     }
     if (b.stage && STAGE_KEYS.includes(b.stage) && b.stage !== conv.stage) {
       await applyStage(conv, account, b.stage, 'cambio manual desde el panel');
       // Sacar la conversación de «atención humana» reactiva el bot (quita la pausa que puso la IA).
       if (conv.stage === 'atencion_humana' && b.stage !== 'atencion_humana' && conv.paused_by === 'ia') {
         await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
+        await marcarReactivado(conv.id); // devuelto al setter a mano: lo que escribió la persona antes ya no lo pausa
       }
     }
     if (b.memory && typeof b.memory === 'object') {
@@ -204,6 +207,7 @@ export default async function conversationRoutes(app) {
       return reply.code(502).send({ error: `No se pudo quitar la etiqueta en GHL: ${err.message}` });
     }
     await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
+    await marcarReactivado(conv.id);
     await invalidateContactTags(account.id, conv.ghl_contact_id);
     return { ok: true };
   });

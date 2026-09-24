@@ -8,6 +8,7 @@ import { config } from './config.js';
 import { migrate } from './db.js';
 import { seedAdmin, authHook } from './lib/session.js';
 import { startWorkers } from './workers.js';
+import { cargarHumanoFiableDesde } from './services/pipeline.js';
 import authRoutes from './routes/auth.js';
 import providerRoutes from './routes/providers.js';
 import accountRoutes from './routes/accounts.js';
@@ -33,6 +34,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   await migrate();
+  await cargarHumanoFiableDesde(); // corte de «mensaje humano fiable» (se fija en el primer arranque)
   await seedAdmin();
 
   // bodyLimit alto: el arquitecto de prompts puede enviar imágenes en base64

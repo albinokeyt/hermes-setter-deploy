@@ -4,6 +4,7 @@ import { redis } from '../lib/redis.js';
 import { normTag } from '../lib/tags.js';
 // 🧪 Simulador: contactos «sim:…» recorren este motor sin tocar GHL ni cobrar (ver lib/sim.js)
 import { esSim, getSimTags } from '../lib/sim.js';
+import { quitarPresentacionRepetida } from './agent.js';
 import { debounceQueue, sendQueue, followupQueue, reactivateQueue } from '../queues.js';
 import { generateReply, shouldFollowup } from './agent.js';
 // 💳 Marketplace Disruptivo: puerta de acceso antes de atender y registro de consumo al entregar.
@@ -34,11 +35,37 @@ const fuKey = (id) => `futoken:${id}`;
 const ctaKey = (id) => `ctawait:${id}`; // instante (ms) hasta el que el setter espera por un CTA
 const activarKey = (id) => `activar:${id}`; // activación externa pendiente (el setter escribe él solo)
 const rescConvKey = (id) => `rescconv:${id}`; // la activación pendiente es un RESCATE (re-chequear al disparar)
+const activarAtKey = (id) => `activarat:${id}`; // cuándo se puso la activación pendiente (para juntar solo las «casi a la vez»)
+// Un saliente ajeno está pendiente de saber si lo escribió una persona (consulta a GHL): el setter espera a saberlo.
+const outPendKey = (id) => `outpendset:${id}`; // SET de messageIds cuyo origen se está resolviendo
+async function esperarOrigenPendiente(conversationId, maxMs = 20_000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs && Number(await redis.scard(outPendKey(conversationId)).catch(() => 0)) > 0) {
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+// Reactivación EXPLÍCITA (panel o reactivación por tiempo): los mensajes humanos anteriores ya no vuelven a pausar.
+export const manualOnKey = (id) => `manualon:${id}`;
+export const marcarReactivado = (id) => redis.set(manualOnKey(id), String(Date.now()), 'EX', 7 * 86400).catch(() => {});
 const insFreshKey = (id) => `insfresh:${id}`; // pendiente de re-leer etiquetas frescas tras la inserción
 // Marca de "este texto lo enviamos NOSOTROS": se pone ANTES de enviar, para reconocer el eco que nos
 // devuelve el webhook aunque el envío falle después y no lleguemos a guardar nada.
 const ecoKey = (convId, body) => `eco:${convId}:${crypto.createHash('sha1').update(String(body || '')).digest('hex')}`;
 const ctagsKey = (conv) => `ctags:${conv.account_id}:${conv.ghl_contact_id}`; // caché de etiquetas del contacto
+
+// ¿El origen que da GHL es una AUTOMATIZACIÓN? ('workflow', 'campaign', 'bulk_actions', 'api'…). 'app' es una
+// persona escribiendo desde el panel o el móvil.
+export const esOrigenAutomatico = (src) => /workflow|campaign|bulk|automation|automatizacion|trigger|api/.test(String(src || '').toLowerCase());
+// Hasta este despliegue los DMs de workflow se guardaban como 'humano' (no se distinguía el origen): las redes de
+// seguridad «una persona escribió hace poco» solo cuentan mensajes humanos a partir de aquí.
+// El valor real es el PRIMER arranque de este código (migración 053, lo carga index.js); la fecha fija es solo un suelo.
+export let HUMANO_FIABLE_DESDE = Date.parse('2026-09-24T12:00:00Z');
+export async function cargarHumanoFiableDesde() {
+  const v = await getSetting('humano_fiable_desde').catch(() => null);
+  const t = Date.parse(v?.at || '');
+  if (Number.isFinite(t)) HUMANO_FIABLE_DESDE = Math.max(HUMANO_FIABLE_DESDE, t);
+}
+const esHumanoFiable = (m) => m && m.direction === 'outbound' && m.source === 'humano' && new Date(m.created_at).getTime() >= HUMANO_FIABLE_DESDE;
 
 export function normalizeChannel(raw) {
   const s = String(raw || '').toUpperCase();
@@ -63,10 +90,10 @@ export async function logEvent(kind, payload) {
 }
 
 // ── Registro de activaciones por etiqueta (para el panel en vivo de la sección Activaciones) ──
-async function activationLogStart(account, setter, conv, { tag = '', contexto = '', waitSeconds = 0 }) {
+async function activationLogStart(account, setter, conv, { tag = '', contexto = '', waitSeconds = 0, motivoPrevia = 'reemplazada' }) {
   try {
     // una activación nueva reemplaza a la anterior pendiente de esta conversación (last-wins)
-    await q(`UPDATE activation_log SET status = 'descartado', motivo = 'reemplazada', updated_at = now() WHERE conversation_id = $1 AND status = 'esperando'`, [conv.id]);
+    await q(`UPDATE activation_log SET status = 'descartado', motivo = $2, updated_at = now() WHERE conversation_id = $1 AND status = 'esperando'`, [conv.id, motivoPrevia]);
     // $8::int en las DOS posiciones: sin el cast, Postgres no sabe de qué tipo es el parámetro dentro
     // de «$8 * interval» y rechaza el INSERT entero. Fallaba en silencio (lo tragaba el catch de
     // abajo), así que la tabla llevaba VACÍA desde que se creó y el panel de Activaciones no mostraba
@@ -849,8 +876,20 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   // La etiqueta es la orden MÁS RECIENTE y EXPLÍCITA del negocio: gana a la auto-pausa por
   // intervención externa Y a la pausa manual del panel («si el setter está apagado, la etiqueta lo
   // enciende»). Solo se respetan la exclusión (sin-ia), la pausa pedida por la IA y atención humana.
-  const pausaSuperable = conv.bot_paused && conv.stage !== 'atencion_humana'
+  let pausaSuperable = conv.bot_paused && conv.stage !== 'atencion_humana'
     && conv.paused_by !== 'excluido' && conv.paused_by !== 'ia';
+  // …salvo que la pausa sea porque una PERSONA está atendiendo ahora: si escribió hace menos de 72 h, la etiqueta
+  // no la pisa (Georgi contestando desde el móvil y un workflow poniendo una etiqueta a la vez). Vale también para la
+  // pausa manual del panel (el operador pausó y sigue escribiendo desde el móvil: paused_by se queda en 'manual').
+  // Una reactivación explícita posterior (panel, reactivación por tiempo) deja de contar lo anterior.
+  if (pausaSuperable && (conv.paused_by === 'humano' || conv.paused_by === 'manual')) {
+    const ultHumano = await one(`SELECT MAX(created_at) AS at FROM messages WHERE conversation_id = $1 AND direction = 'outbound' AND source = 'humano' AND created_at >= to_timestamp($2 / 1000.0)`, [conv.id, HUMANO_FIABLE_DESDE]).catch(() => null);
+    const manualOn = Number(await redis.get(manualOnKey(conv.id)).catch(() => 0)) || 0;
+    if (ultHumano?.at && Date.now() - new Date(ultHumano.at).getTime() < 72 * 3600_000 && new Date(ultHumano.at).getTime() > manualOn) {
+      pausaSuperable = false;
+      await logEvent('activador_respeta_pausa_humana', { conv: conv.id, setter: setter.id, humano_hace_h: Number(((Date.now() - new Date(ultHumano.at).getTime()) / 3600_000).toFixed(1)) }).catch(() => {});
+    }
+  }
   if (!opts.respetarPausaHumano && pausaSuperable) {
     await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
     await cancelReactivate(conv.id);
@@ -866,6 +905,7 @@ export async function activateSetterForContact(account, setter, contactId, waitS
     return 'bloqueado';
   }
   // la activación RECLAMA la conversación para este setter
+  const setterPrevio = conv.setter_id; // (para no juntar esta activación con una pendiente de OTRO setter)
   if (conv.setter_id !== setter.id) {
     await q(`UPDATE conversations SET setter_id = $1 WHERE id = $2`, [setter.id, conv.id]);
     conv.setter_id = setter.id;
@@ -920,19 +960,43 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   // TTL HOLGADO y por encima de la espera: si caduca antes de que corra el debounce, la activación
   // se perdería en silencio (y con espera=3600 caducaba justo al ejecutarse).
   const ttlActivar = Math.max(86400, (Number(waitSeconds) || 0) * 2 + 3600);
-  await redis.set(activarKey(conv.id), String(contexto || '').trim().slice(0, 1500) || '1', 'EX', ttlActivar);
+  // Si ya había una activación PENDIENTE (el lead pidió varias guías casi a la vez), se JUNTAN: un solo mensaje
+  // que atiende todo, en vez de uno por petición.
+  // Solo se juntan peticiones del MISMO setter que iban a responderse casi a la vez (horas objetivo a menos de 5 min)
+  // y que no sean un rescate (el rescate lleva «nadie te respondió…», que no casa con un DM de workflow recién enviado).
+  // En los demás casos gana la última, como siempre: una activación vieja de un job que falló no se arrastra, y una
+  // instrucción «a la hora» no se ejecuta a los segundos por juntarse con otra.
+  // Espera configurable tras la etiqueta antes de que el setter entre (mín. 3 s para que no sea instantáneo). Tope
+  // normal 1 h; el GOTEO del rescate necesita esperas de horas → opts.maxEsperaS (el token del debounce vive 3 días y
+  // ttlActivar escala con la espera, así que aguantan).
+  const topeEsperaS = Math.max(3600, Math.min(Number(opts.maxEsperaS) || 3600, 172_800));
+  const delayMs = Math.max(3, Math.min(Number(waitSeconds) || 0, topeEsperaS)) * 1000;
+  const dueNueva = Date.now() + delayMs;
+  let valorActivar = String(contexto || '').trim().slice(0, 1400);
+  let juntada = false;
+  const previaActivar = await redis.get(activarKey(conv.id)).catch(() => null);
+  const previaDue = Number(await redis.get(activarAtKey(conv.id)).catch(() => 0)) || 0;
+  const previaEsRescate = previaActivar ? Boolean(await redis.get(rescConvKey(conv.id)).catch(() => null)) : false;
+  const juntable = previaActivar && previaActivar !== '1' && tag !== 'rescate' && !previaEsRescate
+    && setterPrevio === setter.id && previaDue > 0 && Math.abs(dueNueva - previaDue) < 5 * 60_000;
+  if (juntable) {
+    if (!valorActivar || previaActivar.includes(valorActivar)) valorActivar = previaActivar; // nada nuevo: se conserva lo pendiente
+    else {
+      // se reserva sitio para lo nuevo sin recortar lo pendiente (que puede traer ya dos peticiones juntas)
+      valorActivar = `${previaActivar.slice(0, Math.max(800, 3200 - valorActivar.length - 150))}\n\nADEMÁS, casi a la vez llegó otra petición de este mismo lead (atiéndelas JUNTAS en un solo mensaje, sin repetir saludo): ${valorActivar}`;
+      juntada = true;
+      await logEvent('activaciones_juntadas', { conv: conv.id, setter: setter.id, tag }).catch(() => {});
+    }
+  }
+  await redis.set(activarKey(conv.id), valorActivar.slice(0, 3200) || '1', 'EX', ttlActivar);
+  await redis.set(activarAtKey(conv.id), String(dueNueva), 'EX', ttlActivar).catch(() => {}); // hora objetivo de la respuesta
   // los RESCATES se re-chequean al disparar (con goteo de horas, un humano pudo atender entretanto)
   if (tag === 'rescate') await redis.set(rescConvKey(conv.id), '1', 'EX', ttlActivar);
   else await redis.del(rescConvKey(conv.id)).catch(() => {}); // una activación normal posterior pisa el marcador
   await logEvent('activador_externo', { conv: conv.id, setter: setter.id, contactId, canal: channel, mensajes_importados: ghlHistory.messages.length, espera_s: waitSeconds });
-  // espera configurable tras la etiqueta antes de que el setter entre (mín. 3 s para que no sea
-  // instantáneo). Tope normal 1h; el GOTEO del rescate necesita esperas de horas → opts.maxEsperaS
-  // (el token del debounce vive 3 días y ttlActivar escala con la espera, así que aguantan).
-  const topeEsperaS = Math.max(3600, Math.min(Number(opts.maxEsperaS) || 3600, 172_800));
-  const delayMs = Math.max(3, Math.min(Number(waitSeconds) || 0, topeEsperaS)) * 1000;
   await scheduleDebounce(merged, conv.id, delayMs);
   // registro en vivo (panel de Activaciones): esperando, con la hora objetivo real del temporizador
-  await activationLogStart(account, setter, conv, { tag, contexto, waitSeconds: delayMs / 1000 });
+  await activationLogStart(account, setter, conv, { tag, contexto: juntada ? valorActivar : contexto, waitSeconds: delayMs / 1000, motivoPrevia: juntada ? 'juntada_con_la_siguiente' : 'reemplazada' });
   return 'activado';
 }
 
@@ -972,12 +1036,19 @@ async function saveGhlMessages(conv, messages) {
       );
       if (linked.length) continue; // era un mensaje que ya teníamos (propio o ya capturado)
 
-      // (A) mensaje NUEVO que no teníamos → insertar con su fecha real para que el orden sea correcto
+      // (A) mensaje NUEVO que no teníamos → insertar con su fecha real para que el orden sea correcto.
+      // Origen: GHL marca como 'app' tanto a una persona como las burbujas del PROPIO setter; las nuestras se
+      // reconocen por la marca `sent:{id}` (24 h, sobrevive a borrar la conversación del panel).
+      let origen = 'lead';
+      if (m.direction !== 'inbound') {
+        const nuestro = await redis.get(`sent:${m.id}`).catch(() => null);
+        origen = nuestro ? 'bot' : (esOrigenAutomatico(m.source) ? 'automatizacion' : 'humano');
+      }
       const r = await q(
         `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id, created_at)
          VALUES ($1,$2,$3,$4,$5, COALESCE($6::timestamptz, now()))
          ON CONFLICT (ghl_message_id) WHERE ghl_message_id IS NOT NULL DO NOTHING RETURNING id`,
-        [conv.id, m.direction, m.direction === 'inbound' ? 'lead' : 'humano', m.body, String(m.id), when]
+        [conv.id, m.direction, origen, m.body, String(m.id), when]
       );
       if (r.length) imported++;
     } catch (err) {
@@ -1077,49 +1148,75 @@ export async function handleOutboundEvent(account, evt) {
     if (propio) return;
   }
 
-  if (body) {
-    // ORIGEN del saliente. OJO: `userId` NO sirve para distinguir persona de automatización — GHL solo
-    // lo manda cuando escriben desde el panel web; desde el MÓVIL (app de WhatsApp/LC Phone) no viene,
-    // y marcábamos como "automatización" a personas escribiendo desde su teléfono. Como GHL no
-    // documenta ningún campo de origen, ahora exigimos EVIDENCIA POSITIVA: por defecto es humano.
-    const pista = String(evt.origen || '').toLowerCase();
-    const esAuto = /workflow|automation|automatizacion|bulk|campaign|api|trigger/.test(pista);
-    const origen = esAuto ? 'automatizacion' : 'humano';
-    await one(
-      `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id)
-       VALUES ($1, 'outbound', $4, $2, $3)
-       ON CONFLICT (ghl_message_id) WHERE ghl_message_id IS NOT NULL DO NOTHING RETURNING id`,
-      [conv.id, body, evt.messageId || null, origen]
-    );
-    await q(`UPDATE conversations SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
-  }
+  // ORIGEN del saliente. OJO: `userId` NO sirve (GHL solo lo manda desde el panel web; desde el MÓVIL no viene).
+  // Lo que sí sirve es `source`: el webhook OutboundMessage lo trae ('app' = persona en panel o móvil;
+  // 'workflow', 'campaign', 'bulk_actions'… = automatización). Si no viene, se pregunta a GHL por el mensaje; y si
+  // tampoco, un texto IDÉNTICO enviado a otros contactos en los últimos 30 días es una plantilla (lo que escribe
+  // una persona es casi siempre único). Sin ninguna evidencia de automatización, es una persona.
+  let pista = '';
+  let esAuto = false;
+  // Mientras se averigua el origen (consulta a GHL) y hasta que la pausa esté APLICADA, este saliente frena las
+  // respuestas y los envíos del setter: outpendset:{conv} lleva un miembro por mensaje, así que un evento que se
+  // resuelve antes no libera la espera de otro que sigue consultando.
+  let pendId = null;
+  try {
+    if (body) {
+      pista = String(evt.origen || '').toLowerCase();
+      if (!pista && evt.messageId && !esSim(evt.contactId)) {
+        // El webhook ya se contestó (se procesa después), así que se puede esperar: si GHL aún no tiene el mensaje
+        // guardado cuando llega el evento, un segundo intento a los 3 s.
+        pendId = String(evt.messageId);
+        await redis.multi().sadd(outPendKey(conv.id), pendId).expire(outPendKey(conv.id), 45).exec().catch(() => {});
+        for (let intento = 0; intento < 2 && !pista; intento++) {
+          if (intento) await new Promise((r) => setTimeout(r, 3000));
+          try { pista = String((await ghl.getMessage(account, evt.messageId))?.source || '').toLowerCase(); } catch { /* sin origen: heurística */ }
+        }
+        if (!pista) await logEvent('saliente_origen_desconocido', { conv: conv.id, messageId: evt.messageId }).catch(() => {});
+      }
+      esAuto = esOrigenAutomatico(pista);
+      if (!pista && body.length >= 25) {
+        const plantilla = await one(
+          `SELECT 1 AS ok FROM messages m JOIN conversations c ON c.id = m.conversation_id
+            WHERE c.account_id = $1 AND c.id <> $2 AND m.direction = 'outbound' AND m.source IN ('humano', 'automatizacion')
+              AND btrim(m.body) = btrim($3) AND m.created_at >= now() - interval '30 days' LIMIT 1`,
+          [account.id, conv.id, body]
+        ).catch(() => null);
+        if (plantilla) esAuto = true;
+      }
+      const origen = esAuto ? 'automatizacion' : 'humano';
+      await one(
+        `INSERT INTO messages (conversation_id, direction, source, body, ghl_message_id)
+         VALUES ($1, 'outbound', $4, $2, $3)
+         ON CONFLICT (ghl_message_id) WHERE ghl_message_id IS NOT NULL DO NOTHING RETURNING id`,
+        [conv.id, body, evt.messageId || null, origen]
+      );
+      await q(`UPDATE conversations SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
+    }
 
-  // PAUSA POR INTERVENCIÓN EXTERNA. Antes se exigía `evt.userId`, que GHL solo manda cuando se escribe
-  // desde su panel WEB: si el equipo contestaba desde el MÓVIL el bot no se apartaba y hablaba encima
-  // de ellos. GHL no da ningún campo de origen (verificado en su API), así que no se puede distinguir
-  // persona de workflow: se pausa con CUALQUIER saliente que no hayamos enviado nosotros. Lo que llega
-  // aquí ya está filtrado (guard `sent:` + respaldo anti-eco por texto), así que es intervención ajena.
-  if (account.auto_handoff) {
-    // La pausa existe para NO PISAR a quien ya conversa con el lead. Si el setter aún no ha dicho
-    // NADA en esta conversación (lead recién entrado; la automatización del funnel manda su primer
-    // toque con texto), pausar aquí lo dejaba fuera para siempre: el lead "entraba con el bot en
-    // pausa" y el setter no hablaba nunca. Regla: sin mensaje previo del setter, no hay pausa.
-    const setterHablo = await one(
-      `SELECT 1 AS ok FROM messages WHERE conversation_id = $1 AND direction = 'outbound' AND source IN ('bot', 'seguimiento') LIMIT 1`,
-      [conv.id]
-    );
-    if (!setterHablo) {
-      const fresh = await redis.set(`nopause:${conv.id}`, '1', 'EX', 600, 'NX').catch(() => null);
-      if (fresh) await logEvent('externo_sin_pausar_setter_no_hablo', { conv: conv.id }).catch(() => {});
-      return;
+    // PAUSA POR INTERVENCIÓN EXTERNA. Lo que llega aquí ya está filtrado (guard `sent:` + respaldo anti-eco por
+    // texto): no lo mandó el setter. Se decide por el ORIGEN calculado arriba.
+    if (account.auto_handoff) {
+      // Una AUTOMATIZACIÓN (DM de workflow, campaña) no es nadie tomando la conversación: no pausa. Antes, como no
+      // se distinguía, se pausaba con cualquier saliente ajeno y se eximía cuando el setter aún no había hablado —
+      // y esa exención dejaba a Sofía contestar encima de Georgi cuando él escribía PRIMERO desde el móvil
+      // (clientes del programa, leads antiguos, familia: 14 casos en 12 días en Despierta en Pareja).
+      if (esAuto) {
+        const fresh = await redis.set(`nopause:${conv.id}`, '1', 'EX', 600, 'NX').catch(() => null);
+        if (fresh) await logEvent('externo_automatizacion_sin_pausa', { conv: conv.id, origen: pista || 'plantilla' }).catch(() => {});
+        return;
+      }
+      // Una PERSONA escribió (panel o móvil): el setter se aparta SIEMPRE, haya hablado o no.
+      // (sobre el estado ACTUAL de la fila: durante la consulta del origen pudo pausarse de otra forma y no se pisa)
+      const pausada = await q(`UPDATE conversations SET bot_paused = true, paused_by = 'humano', updated_at = now() WHERE id = $1 AND NOT bot_paused RETURNING id`, [conv.id]);
+      if (pausada.length) {
+        await cancelBotJobs(conv.id);
+        await logEvent('handoff_humano', { conversation: conv.id, userId: evt.userId || null, desde: evt.userId ? 'panel' : 'externo', origen: pista || 'desconocido' });
+      }
+      // reprograma la reactivación en cada mensaje humano (el reloj se reinicia)
+      await scheduleReactivate(account, conv.id);
     }
-    if (!conv.bot_paused) {
-      await q(`UPDATE conversations SET bot_paused = true, paused_by = 'humano', updated_at = now() WHERE id = $1`, [conv.id]);
-      await cancelBotJobs(conv.id);
-      await logEvent('handoff_humano', { conversation: conv.id, userId: evt.userId || null, desde: evt.userId ? 'panel' : 'externo' });
-    }
-    // reprograma la reactivación en cada mensaje humano (el reloj se reinicia)
-    await scheduleReactivate(account, conv.id);
+  } finally {
+    if (pendId) await redis.srem(outPendKey(conv.id), pendId).catch(() => {});
   }
 }
 
@@ -1150,6 +1247,7 @@ export async function processReactivate(job) {
   const conv = await one(`SELECT * FROM conversations WHERE id = $1`, [conversationId]);
   if (!conv || !conv.bot_paused || conv.paused_by !== 'humano') return;
   await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conversationId]);
+  await marcarReactivado(conversationId); // que la red de «una persona escribió hace poco» no deshaga esta reactivación
   await logEvent('bot_reactivado', { conversation: conversationId, motivo: 'tiempo sin mensaje humano' });
 }
 
@@ -1653,6 +1751,7 @@ const consumeDebounceToken = (conversationId, token) => consumeToken(debKey(conv
 async function processDebounceInner(job) {
   const { conversationId, token } = job.data;
   if (token && token !== (await redis.get(debKey(conversationId)))) return; // job viejo
+  await esperarOrigenPendiente(conversationId); // ¿acaba de escribir una persona? (se está consultando a GHL)
 
   const { conv, account, provider, history, variantId, setterId } = await loadContext(conversationId);
   if (!conv || !account) return;
@@ -1662,8 +1761,8 @@ async function processDebounceInner(job) {
   // CONSUMIRLA si el bot no puede atenderla: si la dejáramos viva, al reanudar el bot el siguiente
   // mensaje del lead se trataría como activación (saltándose modo test y etiquetas requeridas).
   const activarRaw = await redis.get(activarKey(conversationId));
-  const activacion = Boolean(activarRaw);
-  const activContexto = activarRaw && activarRaw !== '1' ? activarRaw : '';
+  let activacion = Boolean(activarRaw);
+  let activContexto = activarRaw && activarRaw !== '1' ? activarRaw : '';
   const descartarActivacion = async (motivo) => {
     if (!activacion) return;
     await redis.del(activarKey(conversationId));
@@ -1696,8 +1795,60 @@ async function processDebounceInner(job) {
       return;
     }
   }
+  // 🙋 RED DE SEGURIDAD: si una PERSONA escribió en esta conversación en las últimas 12 h (y nadie reactivó el
+  // setter a mano después), el setter no entra aunque la pausa no se hubiera puesto (webhook perdido, mensaje
+  // importado del historial…). Se pausa ahora, con rastro.
+  if (account.auto_handoff) {
+    const ultHumano = [...history].reverse().find(esHumanoFiable);
+    if (ultHumano && Date.now() - new Date(ultHumano.created_at).getTime() < 12 * 3600_000) {
+      const manualOn = Number(await redis.get(manualOnKey(conversationId)).catch(() => 0)) || 0;
+      if (new Date(ultHumano.created_at).getTime() > manualOn) {
+        const pausada = await q(`UPDATE conversations SET bot_paused = true, paused_by = 'humano', updated_at = now() WHERE id = $1 AND NOT bot_paused RETURNING id`, [conv.id]);
+        if (pausada.length) await scheduleReactivate(account, conv.id); // política de la cuenta (0 min = hasta reactivar a mano)
+        await logEvent('pausa_por_humano_reciente', { conv: conv.id, humano_hace_min: Math.round((Date.now() - new Date(ultHumano.created_at).getTime()) / 60000) });
+        await descartarActivacion('humano_reciente');
+        return;
+      }
+    }
+  }
+
   // nada nuevo que responder (el último mensaje ya es nuestro)
   const lastMsg = history[history.length - 1];
+  // 🔕 ACTIVACIÓN CON LA CONVERSACIÓN VIVA: si el setter habló hace menos de 3 h, una etiqueta nueva (p. ej. «no abrió
+  // la guía» que salta cuando el lead ESCRIBIÓ en vez de pulsar el botón, o la 2.ª guía pedida seguida) no debe
+  // generar otro mensaje. Si el lead tiene un mensaje sin contestar, se le responde como conversación normal (sin las
+  // instrucciones de entrada de la etiqueta). El DATO de la etiqueta no se pierde: las activadoras de lead magnet ya
+  // lo guardaron en el contexto del CTA; las demás, si la conversación ya tenía CTA, no (webhook con soloSiVacio),
+  // así que se añade aquí al contexto como dato, no como orden.
+  if (activacion) {
+    const ultBot = [...history].reverse().find((m) => m.direction === 'outbound' && (m.source === 'bot' || m.source === 'seguimiento'));
+    const ultLead = [...history].reverse().find((m) => m.direction === 'inbound');
+    // «Viva» = el setter habló hace <3 h RESPONDIENDO (o el lead escribió en ese rato). Un seguimiento a un lead callado
+    // no cuenta: una etiqueta de negocio que llega después («agendó», «abrió la guía») sí debe entrar.
+    const viva = ultBot && Date.now() - new Date(ultBot.created_at).getTime() < 3 * 3600_000
+      && (ultBot.source === 'bot' || (ultLead && Date.now() - new Date(ultLead.created_at).getTime() < 3 * 3600_000));
+    if (viva) {
+      if (activContexto) {
+        const act = await one(
+          `UPDATE conversations SET cta_context = left(COALESCE(cta_context, '') || $2, 3000)
+            WHERE id = $1 AND COALESCE(cta_tag, '') <> '' AND position($3 in COALESCE(cta_context, '')) = 0 RETURNING cta_context`,
+          [conv.id, ` Después llegó otra etiqueta del flujo (ya dentro de esta conversación; es un DATO, no la repitas ni vuelvas a presentarte): ${activContexto.slice(0, 1200)}`, activContexto.slice(0, 120)]
+        ).catch(() => null);
+        if (act) conv.cta_context = act.cta_context;
+      }
+      const pendiente = lastMsg && lastMsg.direction === 'inbound' && new Date(lastMsg.created_at) >= new Date(ultBot.created_at);
+      if (!pendiente) { await descartarActivacion('conversacion_activa'); return; }
+      // Absorber = responder como conversación normal. Si el setter solo puede hablar entrando por activación (modo
+      // test o etiquetas requeridas), absorberla lo dejaría mudo: entonces sigue siendo activación, como antes.
+      // Estricto (=== true): allowedByTags devuelve 'error' si GHL no deja leer las etiquetas, y eso no es permiso.
+      if ((await allowedByTags(account, conv, false)) === true) {
+        await redis.del(activarKey(conversationId)); await redis.del(rescConvKey(conversationId));
+        await logEvent('activacion_absorbida', { conv: conv.id, nota: 'el lead tenía un mensaje sin contestar: se responde normal, sin la entrada de la etiqueta' });
+        await activationLogDone(conversationId, 'descartado', 'absorbida_en_la_conversacion');
+        activacion = false; activContexto = '';
+      }
+    }
+  }
   if (!activacion && (!lastMsg || lastMsg.direction === 'outbound')) return;
 
   // Si venimos de una espera de INSERCIÓN, invalidamos la caché de etiquetas para leerlas FRESCAS:
@@ -1858,6 +2009,9 @@ async function processDebounceInner(job) {
     else await applyStage(conv, account, result.etiqueta, result.motivo, true, { cas: true, noSi: ['descartado', 'atencion_humana'].includes(result.etiqueta) ? [] : ['comprador', 'agendado'] });
   }
 
+  // 👋 Ya se presentó: fuera el «soy Sofía, la asistente virtual…» repetido (salvo que pregunten si es un bot).
+  result.mensajes = quitarPresentacionRepetida(result.mensajes, history);
+
   // Anti-repetición SOLO dentro de la tanda (burbujas duplicadas de una misma llamada al LLM).
   // Contra el historial NO se filtra aquí a propósito: si el lead re-pregunta («¿cuánto me
   // dijiste?»), la re-respuesta es legítimamente idéntica y tirarla dejaría su pregunta sin
@@ -1905,7 +2059,7 @@ async function processDebounceInner(job) {
     // lead descartado: no programamos seguimientos ni lo perseguimos
     await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
   } else {
-    await scheduleNextFollowup(account, { ...conv, followup_step: 0 }, cursor, result.proximoContactoHoras || horasPrometidasEnTexto(result.mensajes));
+    await scheduleNextFollowup(account, { ...conv, followup_step: 0 }, cursor, horasAcordadas(result, account.timezone, history));
   }
 }
 
@@ -1925,6 +2079,7 @@ export async function processSend(job) {
     return;
   }
 
+  await esperarOrigenPendiente(conversationId); // si una persona acaba de escribir, la pausa llega antes que la burbuja
   const { conv, account } = await loadContext(conversationId);
   if (!conv || !account) return;
   // Un descarte AQUÍ es silencioso para el resto del sistema: el seguimiento ya se marcó «enviado_N»
@@ -1939,6 +2094,18 @@ export async function processSend(job) {
   };
   if ((conv.bot_paused && !bypassPause) || !account.bot_enabled || !account.ai_enabled) { await descartado(conv.bot_paused ? 'conversacion_pausada' : 'ia_o_bot_apagado'); return; }
   if (snapshotId && (await lastInboundId(conversationId)) !== snapshotId) return; // el lead volvió a escribir: el ciclo normal responde
+  // Burbuja IDÉNTICA a una que el setter mandó hace menos de 10 min y sin que el lead escribiera entre medias
+  // (dos ciclos respondiendo a lo mismo): no se manda dos veces.
+  if (source === 'bot' || source === 'seguimiento') {
+    const dup = await one(
+      `SELECT 1 AS ok FROM messages m WHERE m.conversation_id = $1 AND m.direction = 'outbound' AND m.source IN ('bot', 'seguimiento')
+         AND btrim(m.body) = btrim($2) AND m.created_at >= now() - interval '10 minutes'
+         AND NOT EXISTS (SELECT 1 FROM messages i WHERE i.conversation_id = $1 AND i.direction = 'inbound' AND i.created_at > m.created_at)
+       LIMIT 1`,
+      [conv.id, body]
+    ).catch(() => null);
+    if (dup) { await logEvent('envio_duplicado_evitado', { conv: conv.id, source, body: String(body || '').slice(0, 80) }).catch(() => {}); return; }
+  }
   if (windowBlocked(conv)) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
     await logEvent('envio_descartado', { conv: conv.id, motivo: 'ventana_cerrada_al_enviar', source: source || 'bot', canal: conv.channel }).catch(() => {});
@@ -2040,23 +2207,102 @@ async function citaDelLead(conv) {
  * exactamente lo que el cliente reportó una y otra vez. Aquí se lee el texto que se acaba de enviar
  * y se deduce el plazo prometido. Solo actúa como respaldo: si el modelo dio el dato, manda el suyo.
  */
-function horasPrometidasEnTexto(mensajes) {
-  const t = (Array.isArray(mensajes) ? mensajes.join(' ') : String(mensajes || '')).toLowerCase();
-  if (!t) return null;
+// Promesa del SETTER de volver a escribir: futuro en primera persona dirigido al lead. «te escribo porque/para/por…»
+// (el motivo), «hablamos» en pasado («lo que hablamos el martes»), «te aviso/te pregunto/te cuento» no son promesas.
+// (?![a-záéíóúñ]) tras «escrib…»: sin la bandera u, «escribiré para…» se colaba por retroceso.
+const VERBO_SETTER = /\b(?:(?:te|os)\s+(?:vuelvo\s+a\s+|volver[eé]\s+a\s+)?escrib(?:o|ir[eé]|iremos|ir)(?![a-záéíóúñ])(?!\s+(?:porque|para|por)\b)|vuelvo\s+a\s+escribir(?:te|os)|(?:te|os)\s+(?:contacto|busco|llamo)|(?:te|os)\s+(?:mando|digo)\s+(?:algo|un\s+mensaj)|(?<!(?:como|que|cuando|seg[uú]n)\s)hablamos|nos\s+leemos|retomamos|seguimos\s+hablando)/;
+// Lo que pide o promete el LEAD sobre cuándo seguir («escríbeme la semana que viene», «te digo algo en unos días»).
+const VERBO_LEAD = /\b(?:escr[ií]beme|escr[ií]bame|escr[ií]benos|me\s+escrib(?:es|as|ir[aá]s)|h[aá]blame|cont[aá]ctame|(?:te|os)\s+(?:digo|escribo|cuento|aviso|contesto|respondo|confirmo)|(?<!(?:como|que|cuando|seg[uú]n)\s)hablamos|lo\s+hablamos)/;
+function horasPrometidasEnTexto(mensajes, timeZone, quien = 'setter') {
+  const lista = Array.isArray(mensajes) ? mensajes : [String(mensajes || '')];
+  // cada burbuja es su propia frase (una burbuja sin punto final no se funde con la siguiente)
+  const t = lista.map((x) => String(x || '')).join('\n').toLowerCase();
+  if (!t.trim()) return null;
   let horas = null;
   const anota = (h) => { if (Number.isFinite(h) && h > 0 && (horas === null || h > horas)) horas = h; };
 
-  const m = (re) => { const x = t.match(re); return x ? Number(x[1]) : null; };
-  anota(m(/\ben\s+(\d{1,2})\s*d[ií]as?\b/) * 24);
-  anota(m(/\ben\s+(\d{1,2})\s*horas?\b/));
-  anota(m(/\bdentro\s+de\s+(\d{1,2})\s*d[ií]as?\b/) * 24);
-  if (/\bpasado\s+ma[ñn]ana\b/.test(t)) anota(48);
-  // «mañana» como DÍA, no como franja horaria: se descartan «por la mañana», «esta mañana», etc.
-  if (/(?<!por\s|de\s|esta\s|la\s|una\s)\bma[ñn]ana\b(?!\s+por\s)/.test(t)) anota(24);
-  if (/\b(la\s+semana\s+que\s+viene|la\s+pr[oó]xima\s+semana|en\s+una\s+semana)\b/.test(t)) anota(168);
+  // números en cifra o en letra: «en 3 días», «en tres días», «dentro de un par de días», «en una semana»
+  const NUM = { un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, 'un par de': 2, unos: 3, unas: 3 };
+  const n = (s) => (/^\d+$/.test(s) ? Number(s) : NUM[s] ?? null);
+  const CANT = '(\\d{1,2}|un par de|unos|unas|una|uno|un|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)';
+  const cuenta = (texto, unidad, mult, max = Infinity) => {
+    for (const x of texto.matchAll(new RegExp(`\\b(?:en|dentro\\s+de)\\s+${CANT}\\s*${unidad}\\b`, 'g'))) { const v = n(x[1]); if (v && v * mult <= max) anota(v * mult); }
+  };
+  // «mañana» como DÍA («mañana por la tarde» también), no como franja: fuera «por la mañana», «esta mañana»…
+  const MANANA = /(?<!por\s|de\s|esta\s|la\s|una\s|pasado\s)\bma[ñn]ana\b/;
+  // El plazo cuenta si va en la MISMA cláusula que el verbo (entre comas, dos puntos o punto y coma): «te escribo desde el
+  // equipo de Ana, el lunes empieza el reto» no promete nada.
+  const clausulas = t.split(/(?<=[.!?])\s+|\n+/).flatMap((f) => f.split(/[,:;]/)).map((c) => c.trim()).filter(Boolean);
+  let promesas;
+  if (quien === 'lead') promesas = clausulas.filter((c) => VERBO_LEAD.test(c));
+  else {
+    // «El lunes te escribo para ver…», «Te escribo por aquí la semana que viene»: el plazo PEGADO al verbo es promesa
+    // aunque luego venga un «para/por».
+    const ESCRIBO = String.raw`(?:te|os)\s+(?:vuelvo\s+a\s+|volver[eé]\s+a\s+)?escrib(?:o|ir[eé]|iremos|ir)(?![a-záéíóúñ])`;
+    const PLAZO = String.raw`(?:ma[ñn]ana|esta\s+(?:tarde|noche)|(?:el\s+pr[oó]ximo|este|el)\s+(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|finde|fin\s+de\s+semana)|la\s+(?:semana\s+que\s+viene|pr[oó]xima\s+semana)|(?:en|dentro\s+de)\s+${CANT}\s*(?:horas?|d[ií]as?|semanas?)|(?:los|estos)\s+pr[oó]ximos\s+d[ií]as)`;
+    const VERBO_PLAZO = new RegExp(String.raw`\b${PLAZO}\s+${ESCRIBO}|\b${ESCRIBO}(?:\s+por\s+aqu[ií])?\s+${PLAZO}`);
+    promesas = clausulas.filter((c) => VERBO_SETTER.test(c) || VERBO_PLAZO.test(c));
+  }
+  // Una promesa CORTA explícita manda sobre cualquier plazo suelto (es lo único que el prompt deja prometer en los
+  // canales con ventana). Dentro de una cláusula manda el MAYOR («¿se lo dices esta noche y te escribo mañana?» = 24:
+  // la noche es del lead, la promesa es mañana); entre cláusulas, el menor.
+  if (quien !== 'lead') {
+    const cortas = promesas.map((f) => (MANANA.test(f) ? 24 : /\besta\s+noche\b/.test(f) ? 8 : /\besta\s+tarde\b/.test(f) ? 5 : null)).filter(Boolean);
+    if (cortas.length) return Math.min(...cortas);
+  }
+  const p = promesas.join(' ; ');
+  if (p) {
+    cuenta(p, 'horas?', 1);
+    cuenta(p, 'd[ií]as?', 24);
+    cuenta(p, 'semanas?', 168);
+    // rangos «en 2 o 3 días», «en 2-3 días»: manda el mayor
+    for (const x of p.matchAll(new RegExp(String.raw`\b(?:en|dentro\s+de)\s+${CANT}\s*(?:o|-|a|y)\s*${CANT}\s*d[ií]as?\b`, 'g'))) { const v = Math.max(n(x[1]) || 0, n(x[2]) || 0); if (v) anota(v * 24); }
+    if (/\b(?:los|estos)\s+pr[oó]ximos\s+d[ií]as\b/.test(p)) anota(72);
+    // «el lunes», «el próximo viernes», «este finde»: horas hasta ese día, contando el día de HOY en la zona de la cuenta
+    // (el contenedor corre en UTC: con getDay() el día cambiaba a las 2:00 en Madrid y a las 20:00 en Caracas)
+    const tz = String(timeZone || '').trim() || 'Europe/Madrid';
+    let hoy;
+    try { hoy = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 }[new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(new Date()).toLowerCase()]; } catch { /* zona inválida */ }
+    if (hoy === undefined) hoy = new Date().getDay();
+    const DIAS = { domingo: 0, lunes: 1, martes: 2, 'miércoles': 3, miercoles: 3, jueves: 4, viernes: 5, 'sábado': 6, sabado: 6 };
+    for (const x of p.matchAll(/\b(el\s+pr[oó]ximo|este|el)\s+(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b/g)) {
+      let dd = (DIAS[x[2]] - hoy + 7) % 7;
+      if (dd === 0) { if (x[1] === 'este') continue; dd = 7; } // «este sábado» dicho en sábado es hoy
+      anota(dd * 24);
+    }
+    const finde = p.match(/\b(este|el)\s+(?:finde|fin\s+de\s+semana)\b/);
+    if (finde) {
+      if (finde[1] === 'este' && (hoy === 6 || hoy === 0)) { if (hoy === 6) anota(24); } // ya es finde: cabe en hoy/mañana
+      else anota((((6 - hoy + 7) % 7) || 7) * 24);
+    }
+    if (/\bpasado\s+ma[ñn]ana\b/.test(p)) anota(48);
+    if (/\b(la\s+semana\s+que\s+viene|la\s+pr[oó]xima\s+semana)\b/.test(p)) anota(168);
+  }
+  if (quien === 'lead') return horas && horas > 24 ? horas : null; // del lead solo interesan los plazos largos
+  // Sueltos (sin verbo de promesa): solo lo que cabe en la ventana, como siempre
+  cuenta(t, 'horas?', 1, 24);
+  if (MANANA.test(t)) anota(24);
   if (/\besta\s+tarde\b/.test(t)) anota(5);
   if (/\besta\s+noche\b/.test(t)) anota(8);
   return horas;
+}
+
+// Plazo acordado con el lead para el siguiente mensaje del setter:
+//  · el dato del modelo (proximo_contacto_horas), salvo que el TEXTO que leyó el lead prometa algo más largo
+//    («te escribo el lunes» con 24 h del modelo haría escribir el sábado);
+//  · si el LEAD pidió o prometió un plazo largo en los mensajes que se acaban de contestar («escríbeme la semana que
+//    viene», «te digo algo en unos días»), no se le escribe antes.
+function horasAcordadas(result, timeZone, history = null) {
+  const m = Number(result?.proximoContactoHoras) || null;
+  const t = horasPrometidasEnTexto(result?.mensajes, timeZone);
+  let h = m && t > 24 && t > m ? t : (m || t);
+  if (Array.isArray(history) && history.length) {
+    let i = history.length; while (i > 0 && history[i - 1]?.direction !== 'outbound') i--;
+    const delLead = history.slice(i).filter((x) => x && x.direction === 'inbound').map((x) => String(x.body || ''));
+    const pedidas = delLead.length ? horasPrometidasEnTexto(delLead, timeZone, 'lead') : null;
+    if (pedidas && (!h || pedidas > h)) h = pedidas;
+  }
+  return h;
 }
 
 export async function scheduleNextFollowup(account, conv, extraMs = 0, acordadoHoras = null) {
@@ -2081,12 +2327,31 @@ export async function scheduleNextFollowup(account, conv, extraMs = 0, acordadoH
       // configurada y queda trazado.
       const desdeInboundH = conv.last_inbound_at ? (Date.now() - new Date(conv.last_inbound_at).getTime()) / 3_600_000 : 0;
       const restante = 23 - desdeInboundH;
-      if (restante < 0.25) {
-        await logEvent('seguimiento_acuerdo_fuera_ventana', { conv: conv.id, horas_acordadas: acordadoHoras, ventana_restante_h: Math.max(0, restante).toFixed(1) });
-        efectivas = null;
-      } else {
-        efectivas = Math.min(acordadoHoras, restante);
+      // Lo prometido va MÁS ALLÁ DE MAÑANA («te escribo en 3 días», «el lunes», «pasado mañana»): no cabe en la ventana
+      // de Meta y escribir antes (a las 8 o a las 23 h) es incumplir la promesa, que es justo lo que el cliente
+      // reporta. No se programa nada y se corta la cadena pendiente: el lead retoma cuando escriba (el prompt ya
+      // prohíbe prometer más allá de «mañana»). «Mañana» a cualquier hora («mañana por la tarde» dicho a las 10:00
+      // ≈ 30 h) SÍ es una promesa permitida: se programa recortada a la ventana, como siempre.
+      let horaLocal = 12;
+      try {
+        const tz = String(account?.timezone || '').trim() || 'Europe/Madrid';
+        const pz = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+          .formatToParts(new Date()).map((x) => [x.type, x.value]));
+        horaLocal = Number(pz.hour) + Number(pz.minute) / 60;
+      } catch { /* zona inválida: mediodía */ }
+      const topeManana = Math.max(24, 48 - horaLocal); // hasta el final del día de mañana en la zona de la cuenta
+      // Lo pactado cae mañana pero la ventana acaba HOY (el último mensaje del lead es de ayer, p. ej. prometiendo desde
+      // un seguimiento o una activación): recortar sería escribirle hoy tras decirle «mañana». Tolerancia de 3 h.
+      const hastaFinDeHoy = 24 - horaLocal;
+      const restanteEnvio = account.followup_fit_window ? restante - 1 : restante; // el ajuste a ventana recorta 1 h más
+      const saldriaHoy = acordadoHoras > hastaFinDeHoy && restanteEnvio < hastaFinDeHoy && acordadoHoras - restanteEnvio > 3;
+      if (restante < 0.25 || acordadoHoras > topeManana || saldriaHoy) {
+        await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); await redis.del(`fuat:${conv.id}`).catch(() => {});
+        await logEvent('seguimiento_acuerdo_fuera_ventana', { conv: conv.id, horas_acordadas: acordadoHoras, ventana_restante_h: Number(Math.max(0, restante).toFixed(1)), nota: saldriaHoy ? 'la ventana acaba hoy y se prometió mañana' : 'no se escribe antes de lo prometido' });
+        await q(`UPDATE conversations SET followup_state = 'acuerdo_fuera_ventana', updated_at = now() WHERE id = $1`, [conv.id]).catch(() => {});
+        return;
       }
+      efectivas = Math.min(acordadoHoras, restante);
       // Recorte REAL (más de 3 h antes de lo pactado: por debajo no lo nota nadie y disculparse
       // suena peor que callar). Se anota para que el mensaje no parezca una promesa incumplida.
       recorte = Boolean(efectivas) && acordadoHoras - efectivas > 3;
@@ -2251,6 +2516,15 @@ async function processFollowupInner(job) {
     await redis.del(`mdfuwait:${conversationId}`).catch(() => {});
   }
 
+  // 🙋 una persona escribió hace menos de 12 h (y nadie reactivó a mano): ningún seguimiento automático encima
+  if (account.auto_handoff) {
+    const ultHumano = [...history].reverse().find(esHumanoFiable);
+    const manualOn = Number(await redis.get(manualOnKey(conversationId)).catch(() => 0)) || 0;
+    if (ultHumano && Date.now() - new Date(ultHumano.created_at).getTime() < 12 * 3600_000 && new Date(ultHumano.created_at).getTime() > manualOn) {
+      await logEvent('seguimiento_omitido_humano_reciente', { conv: conv.id });
+      return;
+    }
+  }
   const permisoFu = await allowedByTags(account, conv);
   if (permisoFu === 'error') {
     // No se han podido leer las etiquetas: NO se manda a ciegas (el contacto podría llevar "sin-ia"),
@@ -2332,6 +2606,8 @@ async function processFollowupInner(job) {
   // ¿el lead respondió mientras generábamos? → el ciclo normal (debounce) responde; este seguimiento sobra
   if ((await lastInboundId(conversationId)) !== snapshotId) return;
 
+  result.mensajes = quitarPresentacionRepetida(result.mensajes, history); // 👋 ya se presentó
+
   // Anti-repetición CON historial solo aquí: en un seguimiento el lead NO ha escrito desde nuestro
   // último mensaje, así que un toque que calca el anterior jamás es una re-respuesta pedida — es el
   // modelo repitiéndose. El filtro garantiza al menos UNA burbuja, así que el followup_state
@@ -2373,7 +2649,7 @@ async function processFollowupInner(job) {
     await applyStage(conv, account, 'en_seguimiento', `seguimiento #${newStep} enviado`, true, { cas: true, noSi: ['comprador', 'agendado'] });
   }
   // un seguimiento también puede prometer tiempo («te escribo mañana») → se respeta en el siguiente
-  await scheduleNextFollowup(account, { ...conv, followup_step: newStep }, cursor, result.proximoContactoHoras || horasPrometidasEnTexto(result.mensajes));
+  await scheduleNextFollowup(account, { ...conv, followup_step: newStep }, cursor, horasAcordadas(result, account.timezone, history));
 }
 
 // 🧪 SIMULADOR: en producción una salida temprana del debounce/seguimiento (bot apagado, filtro, ventana cerrada,

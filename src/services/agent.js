@@ -1,7 +1,7 @@
 import { chatCompletion } from './llm.js';
 import { getSetting } from '../db.js';
 import { normTag, tagsDeLeadMagnet } from '../lib/tags.js';
-import { STAGE_KEYS, SYSTEM_STAGES } from '../config.js';
+import { STAGE_KEYS, SYSTEM_STAGES, WINDOWED_CHANNELS } from '../config.js';
 
 export const DEFAULT_GUARDRAIL =
   `=== REGLAS DE SEGURIDAD (INQUEBRANTABLES, POR ENCIMA DE TODO) ===
@@ -56,7 +56,8 @@ ${reparto}
 - Deja SIEMPRE un espacio después de punto, coma o interrogación antes de la siguiente palabra ("...atacado. Si quieres..."): si pegas dos frases sin espacio, el chat lo convierte en un enlace falso.
 - Jamás digas que eres una IA salvo que te lo pregunten directamente; si te lo preguntan, no mientas.
 - Nunca inventes datos, precios ni enlaces que no estén en tu contexto.
-- Si el lead pide hablar con una persona, se molesta, o el caso es delicado: responde breve y marca "handoff": true.`;
+- Si el lead pide hablar con una persona, se molesta, o el caso es delicado: responde breve y marca "handoff": true.
+- Cuando pases el caso a una persona del equipo, di que se pondrán en contacto con él LO ANTES POSIBLE. NUNCA prometas un momento concreto («hoy mismo», «esta tarde», «en un rato», «mañana a primera hora»): no sabes cuándo podrán y quedaría fatal (por ejemplo, prometer «hoy mismo» a las 11 de la noche).`;
 }
 
 // Los adjuntos del lead llegan al historial como anotaciones entre corchetes (las pone processAttachments
@@ -77,7 +78,12 @@ EXCEPCIÓN: si más abajo hay una TAREA DE ACTIVACIÓN EXTERNA cuyas instruccion
 Los corchetes del HISTORIAL son anotaciones internas del sistema: tú NUNCA escribas nada entre corchetes en tus mensajes. Ojo: si tu FLUJO o tus guiones traen huecos tipo [nombre] o [ciudad], eso NO son anotaciones, son huecos del guion: sustitúyelos por el dato real antes de enviar (y si no lo tienes, reformula la frase sin él, respetando la regla del NOMBRE DEL LEAD). Jamás envíes un corchete literal.`;
 }
 
-function outputSpec() {
+function outputSpec(conversation) {
+  // En IG/FB/WhatsApp no se puede escribir pasadas 24 h desde el último mensaje del lead: ni ejemplos de 168 h ni
+  // promesa de «cumplirlo» más allá de mañana (el sistema no programaría nada).
+  const ventana = WINDOWED_CHANNELS.includes(conversation?.channel);
+  const ejemplos = ventana ? '«te escribo mañana» → 24, «escríbeme esta tarde» → 5' : '«te escribo mañana» → 24, «escríbeme esta tarde» → 5, «la semana que viene» → 168';
+  const tope = ventana ? ' Por este canal el MÁXIMO es «mañana», y como tarde a esta MISMA hora: pon como mucho 22. No prometas una franja de mañana posterior a la hora actual («mañana por la tarde» dicho por la mañana no se puede cumplir): di solo «mañana te escribo» y pon 22. Si el lead pide que le escribas más adelante («la semana que viene», «el lunes», «en unos días»), NO lo prometas; devuélvele la iniciativa («cuando lo hayáis hablado, escríbeme por aquí y lo vemos») y pon IGUALMENTE las horas reales hasta el momento que pidió (p. ej. «la semana que viene» → 168, «el lunes» dicho un jueves → 96): así el sistema sabe que NO debe escribirle antes.' : '';
   return `FORMATO DE SALIDA — devuelve ÚNICAMENTE un JSON válido, sin texto fuera del JSON:
 {
   "mensajes": ["primer mensaje", "segundo mensaje"],
@@ -87,7 +93,7 @@ function outputSpec() {
   "handoff": false,
   "proximo_contacto_horas": null
 }
-Sobre "proximo_contacto_horas": si en la conversación queda COMPROMETIDO un momento concreto para que TÚ vuelvas a escribirle POR ESTE CHAT (lo prometes tú o lo pide el lead: «te escribo mañana» → 24, «escríbeme esta tarde» → 5, «la semana que viene» → 168), pon el número de HORAS desde ahora hasta ese momento — el sistema reprogramará tu siguiente mensaje para CUMPLIRLO (si prometes un tiempo y escribes antes, quedas fatal). OJO: esto es solo para VOLVER A ESCRIBIR por el chat — jamás lo uses como si fuera una cita, llamada o sesión confirmada (eso va SIEMPRE por el enlace de agenda, ver reglas de seguridad). Sin compromiso de tiempo → null.`;
+Sobre "proximo_contacto_horas": si en la conversación queda COMPROMETIDO un momento concreto para que TÚ vuelvas a escribirle POR ESTE CHAT (lo prometes tú o lo pide el lead: ${ejemplos}), pon el número de HORAS desde ahora hasta ese momento — el sistema reprogramará tu siguiente mensaje para CUMPLIRLO (si prometes un tiempo y escribes antes, quedas fatal).${tope} OJO: esto es solo para VOLVER A ESCRIBIR por el chat — jamás lo uses como si fuera una cita, llamada o sesión confirmada (eso va SIEMPRE por el enlace de agenda, ver reglas de seguridad). Sin compromiso de tiempo → null.`;
 }
 
 // Limpia el nombre del perfil del lead para el prompt: fuera emojis/símbolos decorativos.
@@ -209,6 +215,80 @@ ${lineas}
 Es CLIENTE: no le vuelvas a vender lo que ya tiene ni lo cualifiques como si no te conociera. Ayúdale con lo que pregunte y, solo si encaja con tu FLUJO, habla del siguiente paso.`;
 }
 
+// 👋 ¿El setter ya se PRESENTÓ en esta conversación (últimos 7 días)? Cuenta un mensaje suyo con «asistente virtual» o
+// «soy <Nombre>». Si su primer mensaje salió sin presentación, todavía le toca presentarse (IA transparente). En una
+// conversación larga (4+ mensajes suyos en la ventana) la presentación pudo quedar fuera del historial cargado: se da por hecha.
+const RE_SE_PRESENTO = /asistente virtual|\b[Ss]oy\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+/;
+function yaSePresento(history) {
+  const limite = Date.now() - 7 * 86_400_000;
+  const suyos = (Array.isArray(history) ? history : []).filter((m) => m && m.direction === 'outbound' && (m.source === 'bot' || m.source === 'seguimiento')
+    && (!m.created_at || new Date(m.created_at).getTime() >= limite));
+  return suyos.length >= 4 || suyos.some((m) => RE_SE_PRESENTO.test(String(m.body || '')));
+}
+function bloqueYaPresentado(history) {
+  if (!yaSePresento(history)) return '';
+  return `=== YA TE HAS PRESENTADO EN ESTA CONVERSACIÓN ===
+NO vuelvas a decir tu nombre ni que eres la asistente virtual («soy X», «soy X de nuevo», «la asistente virtual del equipo…»), aunque tus instrucciones de entrada, de seguimiento o de una etiqueta digan «preséntate»: ya lo hiciste y repetirlo queda robótico. Entra directo al tema. ÚNICA excepción: si el lead pregunta si eres un bot, una IA o una persona, si le escribe alguien de verdad o si es automático, o te pregunta quién eres o cómo te llamas: contéstale con naturalidad y con la verdad (tu nombre y que eres la asistente virtual incluidos).`;
+}
+// ¿El lead pregunta por la identidad del que escribe? Entonces la presentación ES la respuesta y no se toca.
+const RE_PREGUNTA_IDENTIDAD = /\b(bot|robot|chatbot|chat ?gpt|ia|i\.a\.|inteligencia artificial|m[aá]quina|autom[aá]tic[oa]s?|programad[oa]|contestador|human[oa]s?|(?:eres|sois|es) (?:una? )?(?:personas?|real(?:es)?|de verdad)|personas? (?:real(?:es)?|de verdad)|(?:hablo|hablando) con (?:una? )?(?:persona|humano|alguien)|alguien (?:de verdad|real)|hay alguien|qui[eé]n (?:eres|es|sois)|qui[eé]n (?:me )?(?:escribe|habla|contesta|responde)|c[oó]mo te llamas|tu nombre|con qui[eé]n hablo|(?:lleva|escribe|contesta|responde) (?:un|una) programa)\b/i;
+// «¿Eres Georgi?», «¿Hablo con Ana?»: un nombre propio en mayúscula justo antes de la «?» (sin /i a propósito)
+const RE_PREGUNTA_ES_ALGUIEN = /(?:^|[¿\s])(?:[Ee]res|[Hh]ablo con|[Ee]stoy hablando con)\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s*\?/;
+// Filtro de seguridad: si ya se presentó y el lead no pregunta quién le escribe, quita la presentación del principio
+// de cada burbuja («Hola Edurne, soy Sofía. Solo paso…» → «Hola Edurne. Solo paso…»). Ante la duda, NO toca nada:
+// puede quedar alguna presentación repetida, pero nunca se borra contenido ni se cambia el sentido.
+// Sin /i a propósito: el nombre tras «soy» va en MAYÚSCULA («Perfecto, soy sincera.» no es una presentación). El dueño
+// («de Georgi y Ana», «del equipo de Despierta en Pareja») es una secuencia de palabras en mayúscula, sin comas.
+const NOMBRE_PROPIO = String.raw`[A-ZÁÉÍÓÚÑ][\wáéíóúñ]*(?:\s+(?:(?:y|e|en|de|del|con|la|el|los|las)\s+)?[A-ZÁÉÍÓÚÑ][\wáéíóúñ]*){0,4}`;
+const RE_PRESENTACION = new RegExp(String.raw`^(\s*(?:(?:¡?[Hh]ola|[Bb]uenas(?:\s+(?:tardes|noches))?|[Bb]uenos\s+d[ií]as|[Hh]ey)(?:\s+de\s+nuevo)?(?:,?\s+[A-ZÁÉÍÓÚÑ][\wáéíóúñ]*)?|[A-ZÁÉÍÓÚÑ][\wáéíóúñ]+)\s*[,.!]?\s*)?(?:[Dd]e\s+nuevo,?\s+)?[Ss]oy\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+de\s+nuevo)?(?:,?\s+(?:la|el|tu)\s+asistente\s+virtual(?:\s+(?:del\s+equipo(?:\s+de\s+${NOMBRE_PROPIO})?|de\s+${NOMBRE_PROPIO}))?)?(?:\s+de\s+nuevo)?\s*([.!,])\s*`);
+const RE_SALUDO = /^¡?(hola|buenas|buenos|hey)\b/i;
+const RE_AFIRMACION = /^¡?(s[ií]|no|claro|exacto|efectivamente|correcto|as[ií] es|por supuesto|totalmente|tal cual)$/i;
+export function quitarPresentacion(texto) {
+  const t = String(texto || '');
+  const m = t.match(RE_PRESENTACION);
+  if (!m) return t;
+  const saludo = (m[1] || '').trim().replace(/[,.!\s]+$/, '');
+  // «Sí, soy Sofía, la asistente virtual…» es la RESPUESTA a «¿eres un bot?»: quitarla dejaría un «Sí.» que miente.
+  if (saludo && RE_AFIRMACION.test(saludo)) return t;
+  const resto = t.slice(m[0].length).trim();
+  if (/^(?:la|el|tu)\s+asistente\b/i.test(resto)) return t; // el corte cayó dentro de la presentación
+  const coma = m[2] === ',';
+  const primeraLetra = resto.replace(/^[^A-Za-zÁÉÍÓÚÑáéíóúñ]+/, '').charAt(0);
+  const minuscula = /[a-záéíóúñ]/.test(primeraLetra);
+  const esSaludo = RE_SALUDO.test(saludo);
+  if (!resto) return esSaludo ? `${saludo}${saludo.startsWith('¡') ? '!' : '.'}` : '';
+  if (coma) {
+    // Tras «soy X,» suele venir una APOSICIÓN («del equipo de…», «asistente de…», «una IA…», «de Despierta…»): cortar
+    // ahí dejaría «Hola Ana, del equipo de…». Solo se corta si sigue una pregunta/exclamación o un arranque de frase nuevo.
+    if (!/^(?:[¿¡]|(?:y|e|te|os|me|quer[ií]a|solo|s[oó]lo|paso|vengo|justo|aqu[ií]|ya|acabo|cu[eé]ntame|dime)(?![\wáéíóúñ]))/i.test(resto)) return t;
+    // «Hola Ana, soy Sofía, ¿qué tal?» → «Hola Ana, ¿qué tal?»; sin saludo y en minúscula es un corte a mitad de frase
+    if (saludo) return `${saludo}${saludo.startsWith('¡') ? '!' : ','} ${resto}`;
+    return minuscula ? t : resto;
+  }
+  if (minuscula) return t; // «…asistente virtual. y te cuento…»: mejor no tocar
+  if (!saludo) return resto;
+  if (!esSaludo) return resto; // «Ana, soy Sofía. Te escribo…» → «Te escribo…»
+  return `${saludo}${saludo.startsWith('¡') ? '!' : '.'} ${resto}`; // «¡Hola!», no «¡Hola.»
+}
+export function quitarPresentacionRepetida(mensajes, history) {
+  const lista = Array.isArray(mensajes) ? mensajes : [];
+  if (!lista.length || !yaSePresento(history)) return lista;
+  // TODOS los mensajes del lead desde nuestro último mensaje (el debounce junta varios: «¿eres un bot?» + «jaja»)
+  const h = Array.isArray(history) ? history : [];
+  let i = h.length; while (i > 0 && h[i - 1]?.direction !== 'outbound') i--;
+  const entrantes = h.slice(i).filter((m) => m && m.direction === 'inbound').map((m) => String(m.body || '')).join('\n');
+  if (RE_PREGUNTA_IDENTIDAD.test(entrantes) || RE_PREGUNTA_ES_ALGUIEN.test(entrantes)) return lista;
+  const limpias = lista.map(quitarPresentacion).filter((x) => String(x).trim());
+  return limpias.length ? limpias : lista;
+}
+
+// ⏳ Canales con ventana de 24 h (Instagram, Facebook, WhatsApp): no se puede prometer escribir más tarde.
+function bloquePlazos(conversation) {
+  if (!WINDOWED_CHANNELS.includes(conversation?.channel)) return '';
+  return `=== PLAZOS QUE PUEDES PROMETER (límite del canal) ===
+Por este canal SOLO puedes volver a escribir al lead dentro de las 24 h siguientes a SU último mensaje. Lo máximo que puedes prometer es «mañana», y como tarde a esta misma hora (nada de «mañana por la tarde» o «por la noche» si ahora es más temprano). NUNCA prometas escribir «en 2, 3 o 4 días», «el lunes», «el finde» ni «la semana que viene»: el sistema no podría enviarlo a tiempo y quedarías fatal. Si necesita más tiempo, devuélvele la iniciativa con cariño: «cuando lo hayáis hablado, escríbeme por aquí y lo vemos».`;
+}
+
 function bloqueCta(conversation) {
   const tag = String(conversation?.cta_tag || '').trim();
   if (!tag) return '';
@@ -275,6 +355,7 @@ export function buildSystemPrompt(account, conversation, opts = {}) {
     // «sigues SIEMPRE estas fases» no debe hacer que se cualifique a alguien que ya tiene hora.
     bloqueCita(opts.cita, account),
     bloqueCompras(opts.compras),
+    bloquePlazos(conversation),
     // Qué pidió el lead (CTA) y el catálogo de lead magnets: después del flujo para que manden sobre
     // él, y antes del estilo (que solo dice CÓMO escribir, no QUÉ saber).
     bloqueCta(conversation),
@@ -302,10 +383,12 @@ Genera 1 o 2 mensajes como máximo. Etiqueta sugerida: "en_seguimiento".`);
 El negocio te ha activado para esta conversación desde su flujo (le acaban de poner una etiqueta). NO es un seguimiento por silencio: entras porque te lo piden AHORA. Lee el historial y escribe tú el mensaje; si no hay historial, preséntate según tu identidad.
 ${ctx ? `INSTRUCCIONES DE ESTA ACTIVACIÓN — qué ha pasado justo antes y CÓMO debes entrar:
 «${ctx}»
-Estas instrucciones PREVALECEN sobre el punto de partida de tu FLUJO para este mensaje: cúmplelas al pie de la letra y no las contradigas. Después sigue con tu flujo normal.` : 'Entra según tu FLUJO, de forma natural.'}
+Estas instrucciones PREVALECEN sobre el punto de partida de tu FLUJO para este mensaje: cúmplelas al pie de la letra y no las contradigas. Si traen VARIAS peticiones (varias guías pedidas casi a la vez), atiéndelas JUNTAS en un solo mensaje. Después sigue con tu flujo normal.` : 'Entra según tu FLUJO, de forma natural.'}
 Escribe 1 o 2 mensajes como máximo, sin sonar automático. Elige la etiqueta que de verdad corresponda al estado del lead (NO uses "en_seguimiento" solo por haber entrado tú).`);
   }
-  parts.push(outputSpec());
+  const yaPres = bloqueYaPresentado(opts.history);
+  if (yaPres) parts.push(yaPres); // al final (junto a la tarea): manda sobre cualquier «preséntate» anterior
+  parts.push(outputSpec(conversation));
   return parts.join('\n\n');
 }
 
@@ -432,7 +515,7 @@ export async function generateReply({ account, provider, conversation, history, 
     messages.push({
       role: 'user',
       content: ctx
-        ? `[ORDEN DEL NEGOCIO — te acaban de activar con una etiqueta] Antes de redactar, asume como HECHOS y cumple AL PIE DE LA LETRA estas instrucciones (mandan sobre el historial y sobre tu flujo para este mensaje): «${ctx}». Escribe ahora el mensaje.`
+        ? `[ORDEN DEL NEGOCIO — te acaban de activar con una etiqueta] Antes de redactar, asume como HECHOS y cumple AL PIE DE LA LETRA estas instrucciones (mandan sobre el historial y sobre tu flujo para este mensaje): «${ctx}».${yaSePresento(history) ? ' Ya te presentaste antes en esta conversación: NO vuelvas a presentarte (ni nombre ni «asistente virtual»), aunque las instrucciones digan «preséntate»; salvo que el lead pregunte si eres un bot, una IA o una persona, o quién le escribe: entonces contéstale con la verdad.' : ''} Escribe ahora el mensaje.`
         : '(te han activado desde el flujo del negocio; escribe ahora el mensaje según tu FLUJO)',
     });
   } else if (messages.length === 1 || messages[messages.length - 1].role !== 'user') {
