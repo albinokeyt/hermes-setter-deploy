@@ -7,6 +7,9 @@ import { config } from './config.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 10 });
+// Sin este listener, cuando Postgres corta una conexión INACTIVA (reinicio de hermes-db, red interna) el pool emite
+// 'error' sin nadie escuchando → excepción no capturada → el proceso cae y el proxy da 502 a todo lo que esté en curso.
+pool.on('error', (err) => console.error('[db] conexión inactiva caída (el pool abre otra cuando haga falta):', err.message));
 
 export async function q(text, params) {
   const res = await pool.query(text, params);

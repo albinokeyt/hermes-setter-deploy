@@ -37,6 +37,8 @@ export function PromptArchitect({ targetPath, mode = 'architect', onApplied, com
   const persistQueueRef = useRef(Promise.resolve());
 
   const loadChats = () => api.get(`${base}/editor-chats?mode=${mode}`).then(setChats).catch(() => {});
+  // al cerrar el modal (desmontar) se invalida la generación: se corta el sondeo y no se guarda nada a destiempo
+  useEffect(() => () => { genRef.current++; }, []);
   useEffect(() => {
     genRef.current++;
     loadChats();
@@ -131,22 +133,27 @@ export function PromptArchitect({ targetPath, mode = 'architect', onApplied, com
     const start = await api.post(`${base}/prompt-editor`, { ...payload, async: true });
     if (!start?.job_id) return start;
     const t0 = Date.now();
-    let fallosRed = 0;
-    while (Date.now() - t0 < 12 * 60_000) {
+    let ultimoOk = Date.now();
+    // el servidor corta cada trabajo a los 9 min: el panel espera algo más para no invitar a reenviar con él vivo
+    while (Date.now() - t0 < 11 * 60_000) {
       await new Promise((res) => setTimeout(res, 2500));
       if (genRef.current !== gen) return null;
       let j;
       try {
-        j = await api.get(`/api/prompt-editor-jobs/${start.job_id}`);
-        fallosRed = 0;
+        j = await api.get(`/api/prompt-editor-jobs/${start.job_id}`, { signal: AbortSignal.timeout(15_000) });
+        ultimoOk = Date.now();
       } catch (err) {
-        if (err.data?.gone || ++fallosRed >= 10) throw err; // trabajo perdido (reinicio) o red caída de verdad
-        continue; // un fallo de red suelto no cancela: el trabajo sigue en el servidor
+        if (err.data?.gone) throw err; // el servidor se reinició y el trabajo ya no existe: su propio mensaje
+        // fallos de red sueltos no cancelan (el trabajo sigue en el servidor); 90 s seguidos sin respuesta, sí
+        if (Date.now() - ultimoOk > 90_000) {
+          throw new Error('Se perdió la conexión con el servidor mientras preparaba el cambio (puede que se esté reiniciando). No se aplicó nada: espera un momento y vuelve a enviar el último mensaje.');
+        }
+        continue;
       }
       if (j.status === 'done') return j;
       if (j.status === 'error') throw new Error(j.error || 'No se pudo preparar el cambio.');
     }
-    throw new Error('El cambio está tardando demasiado. No se perdió nada: vuelve a enviar el último mensaje.');
+    throw new Error('El cambio está tardando demasiado. No se aplicó nada: vuelve a enviar el último mensaje.');
   };
 
   const send = async (e) => {

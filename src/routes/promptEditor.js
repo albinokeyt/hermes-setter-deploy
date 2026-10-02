@@ -214,14 +214,15 @@ REGLAS DE LAS EDICIONES:
 - "buscar" se copia LITERAL del prompt actual (mismas palabras, tildes, mayúsculas y signos), es ÚNICO dentro de su bloque y lo bastante largo para no repetirse (una frase o línea completa, unos 40-200 caracteres). Nunca lo abrevies con "...".
 - "reemplazar" lleva el texto final de ese tramo. Para AÑADIR algo detrás de una línea, repite la línea en "reemplazar" y escribe lo nuevo a continuación. Para BORRAR, deja "reemplazar" vacío.
 - Para una sección NUEVA al final de un bloque usa "anadir_al_final" (sin "buscar").
-- Mejor varias ediciones pequeñas que una enorme. NUNCA copies un bloque entero.`;
+- Mejor varias ediciones pequeñas que una enorme. NUNCA copies un bloque entero.
+Responde en español, cercano y profesional.`;
 
 const CAMPOS = { identidad: 'prompt_identity', negocio: 'prompt_business', flujo: 'prompt_flow' };
 const normBloque = (b) => {
   const s = String(b || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  if (s.includes('ident') || s === '1') return 'identidad';
-  if (s.includes('negoc') || s === '2') return 'negocio';
-  if (s.includes('flujo') || s === '3') return 'flujo';
+  if (/ident/.test(s) || /\b1\b/.test(s)) return 'identidad';
+  if (/negoc|busin/.test(s) || /\b2\b/.test(s)) return 'negocio';
+  if (/flujo|flow/.test(s) || /\b3\b/.test(s)) return 'flujo';
   return null;
 };
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -240,9 +241,14 @@ export function localizar(texto, buscar) {
   return ms.length > 1 ? 'multiple' : null;
 }
 
-// Aplica las ediciones (en orden) sobre los 3 bloques del setter. No toca el original: devuelve una propuesta
-// con los 3 textos y la lista de fallos. Lo que NO se edita queda byte a byte igual (los prompts mezclan \r\n y \n);
-// el texto nuevo usa el salto de línea propio de su bloque.
+// Un valor de texto del modelo: string tal cual; array de strings → líneas; cualquier otra cosa → null (no válido).
+const comoTexto = (v) => (typeof v === 'string' ? v : (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v.join('\n') : null));
+
+// Aplica las ediciones (en orden) sobre los 3 bloques del setter. No toca el original: devuelve una propuesta con los
+// 3 textos, la lista de fallos (con el índice de la edición) y los índices aplicados. Lo que NO se edita queda byte a
+// byte igual (los prompts mezclan \r\n y \n); el texto nuevo usa el salto de línea propio de su bloque.
+// Tipos de edición: {buscar, reemplazar} (reemplazar "" = BORRAR, solo si viene explícito) · {buscar, anadir_al_final}
+// = insertar DETRÁS del fragmento · {anadir_al_final} sin buscar = sección nueva al final del bloque.
 export function aplicarEdiciones(target, ediciones) {
   const textos = {}, eol = {};
   for (const [k, f] of Object.entries(CAMPOS)) {
@@ -250,36 +256,68 @@ export function aplicarEdiciones(target, ediciones) {
     eol[k] = textos[k].includes('\r\n') ? '\r\n' : '\n';
   }
   const conEol = (s, k) => String(s ?? '').replace(/\r\n/g, '\n').replace(/\n/g, eol[k]);
-  const fallos = [];
-  let aplicadas = 0;
-  for (const e of (Array.isArray(ediciones) ? ediciones : [])) {
-    if (!e || typeof e !== 'object') continue;
-    const k = normBloque(e.bloque);
-    if (!k) { fallos.push({ bloque: e.bloque, buscar: e.buscar, motivo: 'bloque desconocido (usa identidad, negocio o flujo)' }); continue; }
-    const anadir = e.anadir_al_final ?? e['añadir_al_final'];
-    const buscar = String(e.buscar ?? '');
-    if (typeof anadir === 'string' && !buscar.trim()) {
-      const nuevo = conEol(anadir.trim(), k);
-      if (nuevo) { textos[k] = textos[k].trim() ? textos[k].replace(/\s+$/, '') + eol[k] + eol[k] + nuevo : nuevo; aplicadas++; }
-      continue;
+  const fallos = [], okIdx = [];
+  const vistos = new Set();
+  const lista = Array.isArray(ediciones) ? ediciones : (ediciones && typeof ediciones === 'object' ? [ediciones] : []);
+  lista.forEach((e, idx) => {
+    if (!e || typeof e !== 'object') return;
+    const fallo = (bloque, buscar, motivo) => fallos.push({ idx, bloque, buscar, motivo });
+    let k = normBloque(e.bloque);
+    const anadir = comoTexto(e.anadir_al_final ?? e['añadir_al_final'] ?? e.anadir_despues ?? e['añadir_después']);
+    // el modelo a veces copia la cabecera que ve en el prompt («[3 · FLUJO]») o el marcador «(vacío)»
+    let buscar = (comoTexto(e.buscar) || '').replace(/^\s*\[\s*\d\s*·[^\]]*\]\s*/, '');
+    const reemplazar = comoTexto(e.reemplazar ?? e.reemplazo);
+    let anadirFinal = anadir;
+    if (/^\s*\(vac[ií]o\)\s*$/i.test(buscar)) { buscar = ''; if ((anadirFinal === null || !anadirFinal.trim()) && reemplazar) anadirFinal = reemplazar; }
+    const clave = JSON.stringify([k, buscar, reemplazar, anadirFinal]);
+    if (vistos.has(clave)) { okIdx.push(idx); return; } // edición repetida idéntica: se aplica UNA vez
+    vistos.add(clave);
+    if (!k) return fallo(e.bloque, buscar, 'bloque desconocido (usa identidad, negocio o flujo)');
+    if (!buscar.trim()) {
+      if (anadirFinal === null || !anadirFinal.trim()) return fallo(k, buscar, 'sin "buscar" ni "anadir_al_final": no hay nada que aplicar');
+      const nuevo = conEol(anadirFinal.trim(), k);
+      textos[k] = textos[k].trim() ? textos[k].replace(/\s+$/, '') + eol[k] + eol[k] + nuevo : nuevo;
+      okIdx.push(idx);
+      return;
     }
-    if (buscar.trim().length < 8) { fallos.push({ bloque: k, buscar, motivo: '"buscar" vacío o demasiado corto' }); continue; }
-    // literal tal cual, literal con los saltos del bloque, y por último tolerante (espacios/saltos/comillas)
-    let pos = textos[k].includes(buscar) ? localizar(textos[k], buscar) : null;
-    if (!pos && textos[k].includes(conEol(buscar, k))) pos = localizar(textos[k], conEol(buscar, k));
-    if (!pos) pos = localizar(textos[k], buscar);
-    if (!pos) { fallos.push({ bloque: k, buscar, motivo: 'no aparece literal en el bloque' }); continue; }
-    if (pos === 'multiple') { fallos.push({ bloque: k, buscar, motivo: 'aparece varias veces: hace falta un fragmento más largo y único' }); continue; }
-    textos[k] = textos[k].slice(0, pos.start) + conEol(e.reemplazar, k) + textos[k].slice(pos.end);
-    aplicadas++;
-  }
+    if (buscar.trim().length < 8) return fallo(k, buscar, '"buscar" demasiado corto');
+    if (reemplazar === null && (anadir === null || !anadir.trim())) {
+      return fallo(k, buscar, 'falta "reemplazar" (para BORRAR un tramo hay que poner "reemplazar": "" de forma explícita)');
+    }
+    // literal tal cual, literal con los saltos del bloque y, por último, tolerante; si no está en el bloque
+    // declarado pero sí UNA vez en otro, se usa ese (el modelo a veces se equivoca de bloque)
+    const buscarEn = (kk) => {
+      let p = textos[kk].includes(buscar) ? localizar(textos[kk], buscar) : null;
+      if (!p && textos[kk].includes(conEol(buscar, kk))) p = localizar(textos[kk], conEol(buscar, kk));
+      return p || localizar(textos[kk], buscar);
+    };
+    let pos = buscarEn(k);
+    if (!pos) {
+      const otros = Object.keys(CAMPOS).filter((kk) => kk !== k).map((kk) => [kk, buscarEn(kk)]).filter(([, p]) => p && p !== 'multiple');
+      if (otros.length === 1) [k, pos] = otros[0];
+    }
+    if (!pos) return fallo(k, buscar, 'no aparece literal en el bloque');
+    if (pos === 'multiple') return fallo(k, buscar, 'aparece varias veces: hace falta un fragmento más largo y único');
+    const orig = textos[k].slice(pos.start, pos.end);
+    let nuevo;
+    if (reemplazar !== null) {
+      nuevo = conEol(reemplazar, k);
+      // conserva los espacios/saltos de los BORDES del tramo original (si «buscar» acababa en salto de línea y
+      // «reemplazar» no, la línea siguiente quedaba pegada)
+      if (nuevo.trim()) nuevo = orig.match(/^\s*/)[0] + nuevo.trim() + orig.match(/\s*$/)[0];
+    } else {
+      nuevo = orig.replace(/\s*$/, '') + eol[k] + conEol(anadir.trim(), k) + orig.match(/\s*$/)[0];
+    }
+    textos[k] = textos[k].slice(0, pos.start) + nuevo + textos[k].slice(pos.end);
+    okIdx.push(idx);
+  });
   const out = {};
   for (const [k, f] of Object.entries(CAMPOS)) out[f] = textos[k];
-  return { proposal: out, fallos, aplicadas };
+  return { proposal: out, fallos, okIdx, aplicadas: okIdx.length };
 }
 
-// Saca el bloque JSON que contiene `clave` (fences de cualquier tipo o llaves balanceadas), lo repara si hace
-// falta y devuelve el texto visible SIN el JSON. found = hubo algo JSON-ish con esa clave; broken = no se pudo leer.
+// Saca el bloque JSON que contiene `clave` (fences de cualquier tipo o llaves balanceadas), lo repara si hace falta y
+// devuelve el texto visible SIN el JSON. found = hubo algo JSON-ish con esa clave; broken = no se pudo leer.
 export function extraerJson(content, clave, descartar = PLACEHOLDER_RE) {
   const text = String(content || '');
   const keyRe = new RegExp(`"?${clave}"?\\s*:`);
@@ -287,10 +325,20 @@ export function extraerJson(content, clave, descartar = PLACEHOLDER_RE) {
   const fenceRe = /```[a-zA-Z]*\s*([\s\S]*?)```/g;
   let fm;
   while ((fm = fenceRe.exec(text))) if (keyRe.test(fm[1])) candidates.push({ raw: fm[1], span: fm[0], at: fm.index });
+  // por llaves: desde la clave se prueban hacia atrás TODAS las '{' (una puede estar dentro de un string, p. ej.
+  // «{{contact.first_name}}» en "cambios") y se queda la primera cuyo bloque balanceado contenga la clave
   const keyIdx = text.lastIndexOf(`"${clave}"`);
+  let porLlaves = null;
   if (keyIdx >= 0) {
-    const open = text.lastIndexOf('{', keyIdx);
-    if (open >= 0) { const blk = balancedBlock(text, open); if (blk) candidates.push({ raw: blk, span: blk, at: open }); }
+    for (let open = text.lastIndexOf('{', keyIdx); open >= 0 && !porLlaves; open = open > 0 ? text.lastIndexOf('{', open - 1) : -1) {
+      const blk = balancedBlock(text, open);
+      if (blk && open + blk.length > keyIdx) {
+        for (const intento of [blk, repairJson(blk)]) {
+          try { const p = JSON.parse(intento); if (p && typeof p === 'object' && p[clave] !== undefined) { porLlaves = { raw: blk, span: blk, at: open }; break; } } catch { /* siguiente */ }
+        }
+      }
+    }
+    if (porLlaves) candidates.push(porLlaves);
   }
   const reales = candidates.filter((c) => !descartar.test(c.raw));
   let truncAt = -1;
@@ -299,7 +347,7 @@ export function extraerJson(content, clave, descartar = PLACEHOLDER_RE) {
       const lastOpen = text.lastIndexOf('```');
       if (keyRe.test(text.slice(lastOpen))) truncAt = lastOpen;
     }
-    if (truncAt < 0 && keyIdx >= 0) {
+    if (truncAt < 0 && keyIdx >= 0 && !porLlaves) {
       const open = text.lastIndexOf('{', keyIdx);
       if (open >= 0 && !balancedBlock(text, open)) truncAt = open;
     }
@@ -317,7 +365,8 @@ export function extraerJson(content, clave, descartar = PLACEHOLDER_RE) {
   const found = reales.length > 0 || truncAt >= 0;
   return { obj, reply, found, broken: found && !obj };
 }
-const PLANTILLA_EDICIONES_RE = /<\s*(fragmento|texto que|secci[oó]n nueva)/i;
+// solo los marcadores LITERALES del ejemplo de FORMATO_EDICIONES (un «<texto del lead>» real del prompt no cuenta)
+const PLANTILLA_EDICIONES_RE = /<fragmento literal del bloque actual>|<texto que lo sustituye>|<secci[oó]n nueva completa>/i;
 
 function toUserContent(text, images) {
   const imgs = Array.isArray(images) ? images.filter((u) => typeof u === 'string' && u.startsWith('data:')).slice(0, 4) : [];
@@ -338,9 +387,12 @@ async function runPromptEditor(target, accountId, setterId, b = {}, { enSegundoP
   if (!provider) return { status: 400, body: { error: 'No hay modelo de IA para el arquitecto/corrector. Configúralo en Configuración o en la pestaña IA del setter.' } };
   const modelUsed = cfg.model || target.model || provider.default_model;
 
-  const base = edicion
+  let base = edicion
     ? ((await getSetting('corrector_prompt', null))?.text || DEFAULT_CORRECTOR)
     : ((await getSetting('architect_prompt', null))?.text || DEFAULT_ARCHITECT);
+  // El corrector (por defecto o personalizado en Ajustes) termina con «TU RESPUESTA: … los 3 textos COMPLETOS»:
+  // esa sección contradice al formato de EDICIONES y, si el modelo la obedecía, volvía el camino lento. Se quita.
+  if (edicion) base = base.replace(/\n\s*TU RESPUESTA:[\s\S]*$/i, '');
 
   const current = `=== PROMPT ACTUAL DEL SETTER "${target.name}" ===
 [1 · IDENTIDAD]\n${target.prompt_identity || '(vacío)'}\n
@@ -361,21 +413,26 @@ async function runPromptEditor(target, accountId, setterId, b = {}, { enSegundoP
   }
 
   // maxTokens ALTO: el arquitecto devuelve los 3 bloques completos y no caben en 2000 (el JSON llegaba CORTADO).
-  // Timeout por intento: en la ruta SÍNCRONA (navegadores con la versión vieja) 90 s, para quedar por debajo
-  // del corte del navegador; en segundo plano no hay petición abierta que proteger → 180 s.
+  // Plazo GLOBAL por petición: en la ruta SÍNCRONA (pestañas con la versión vieja del panel) ~270 s para quedar por
+  // debajo del corte del navegador/proxy; en segundo plano 9 min (el panel espera más). Cada llamada usa como mucho
+  // lo que quede de plazo, y las llamadas EXTRA (reparaciones) solo se lanzan si queda tiempo de sobra.
   const MAX_TOKENS = 8000;
-  const TIMEOUT_MS = enSegundoPlano ? 180_000 : 90_000;
+  // el arquitecto escribe los 3 bloques completos (hasta ~8 000 tokens): en segundo plano necesita más margen
+  const TIMEOUT_MS = !enSegundoPlano ? 90_000 : (edicion ? 150_000 : 240_000);
+  const FIN = Date.now() + (enSegundoPlano ? 9 * 60_000 : 270_000);
+  const quedaTiempo = (ms = 60_000) => FIN - Date.now() > ms;
   const hayImagenes = Array.isArray(b.images) && b.images.length > 0;
   const gastar = (usage) => recordUsage(accountId, null, provider, modelUsed, usage, edicion ? 'corrector' : 'arquitecto', null, setterId);
   const llamar = async (msgs, opts = {}) => {
-    const r = await chatCompletion({ provider, model: modelUsed, temperature: opts.temperature ?? 0.5, maxTokens: MAX_TOKENS, json: Boolean(opts.json), timeoutMs: TIMEOUT_MS, attempts: opts.attempts ?? 1, messages: msgs });
+    const timeoutMs = Math.max(20_000, Math.min(TIMEOUT_MS, FIN - Date.now()));
+    const r = await chatCompletion({ provider, model: modelUsed, temperature: opts.temperature ?? 0.5, maxTokens: MAX_TOKENS, json: Boolean(opts.json), timeoutMs, attempts: opts.attempts ?? 1, messages: msgs });
     await gastar(r.usage);
     return r;
   };
 
   // Si la propuesta COMPLETA llegó ROTA (cortada/mal formada), UN reintento pidiendo solo el JSON.
   const conReintentoRoto = async (out, baseMessages, rawContent) => {
-    if (!out.broken) { delete out.broken; return out; }
+    if (!out.broken || !quedaTiempo()) { delete out.broken; return out; }
     try {
       const retry = await llamar([
         ...baseMessages,
@@ -391,49 +448,65 @@ async function runPromptEditor(target, accountId, setterId, b = {}, { enSegundoP
     return out;
   };
 
-  // Corrector: lee las EDICIONES, las aplica y, si alguna no encaja, pide corregirlas; último recurso: bloques completos.
-  // Devuelve null si la respuesta no trae ediciones (entonces se trata como propuesta completa, el formato antiguo).
+  // Corrector: lee las EDICIONES y las aplica. Si alguna no encaja, UNA reparación SOLO de esas, aplicada sobre el
+  // texto ya editado (las buenas se conservan). Todo o nada: si al final algo no encaja, no hay propuesta (nunca se
+  // propone un cambio a medias) y se dice qué parte no se pudo colocar. Devuelve null si la respuesta no trae
+  // ediciones (entonces se trata como propuesta completa, el formato antiguo).
   const leerEdiciones = (content) => extraerJson(content, 'ediciones', new RegExp(`${PLACEHOLDER_RE.source}|${PLANTILLA_EDICIONES_RE.source}`, 'i'));
+  const comoLista = (v) => (Array.isArray(v) ? v : (v && typeof v === 'object' ? [v] : []));
   const conEdiciones = async (rawContent, baseMessages) => {
     let ex = leerEdiciones(rawContent);
     if (!ex.found) return null;
-    const replyVisible = ex.reply;
+    // si el modelo mandó además los bloques completos, ese JSON tampoco se enseña (ni se guarda en el chat)
+    const replyVisible = ex.reply.trim() ? extractProposal(ex.reply).reply.replace(/\n*⚠️ Preparé una propuesta[\s\S]*$/, '').trim() : '';
+    const conAviso = (msg) => (replyVisible ? replyVisible + '\n\n' : '') + msg;
     const historial = [...baseMessages, { role: 'assistant', content: String(rawContent || '').slice(0, 12000) }];
     if (ex.broken) {
-      try {
-        const r = await llamar([...historial, { role: 'user', content: 'Tu bloque JSON llegó cortado o mal formado. Responde AHORA únicamente con el objeto JSON completo y válido {"ediciones":[...],"cambios":[...]} — sin texto fuera del JSON.' }], { temperature: 0.2, json: true });
-        ex = leerEdiciones('```json\n' + r.content + '\n```');
-      } catch { /* abajo se informa */ }
-      if (!ex.obj) return { reply: (replyVisible ? replyVisible + '\n\n' : '') + '⚠️ Preparé el cambio pero llegó incompleto. Escribe «repite la propuesta» y lo genero de nuevo.', proposal: null };
+      if (quedaTiempo()) {
+        try {
+          const r = await llamar([...historial, { role: 'user', content: 'Tu bloque JSON llegó cortado o mal formado. Responde AHORA únicamente con el objeto JSON completo y válido {"ediciones":[...],"cambios":[...]} — sin texto fuera del JSON.' }], { temperature: 0.2, json: true });
+          ex = leerEdiciones('```json\n' + r.content + '\n```');
+        } catch { /* abajo se informa */ }
+      }
+      if (!ex.obj) return { reply: conAviso('⚠️ Preparé el cambio pero llegó incompleto. Escribe «repite la propuesta» y lo genero de nuevo.'), proposal: null };
     }
-    let ediciones = Array.isArray(ex.obj.ediciones) ? ex.obj.ediciones : [];
+    const ediciones = comoLista(ex.obj.ediciones);
     let cambios = Array.isArray(ex.obj.cambios) ? ex.obj.cambios.map(String) : [];
-    if (!ediciones.length) return { reply: replyVisible || 'No veo nada que cambiar con esa instrucción.', proposal: null };
+    if (!ediciones.length) return { reply: conAviso('ℹ️ No hay ninguna edición que aplicar con esa instrucción. Reformúlala si esperabas un cambio.'), proposal: null };
     let ap = aplicarEdiciones(target, ediciones);
-    if (ap.fallos.length) {
-      // 1 reparación: se le dicen qué fragmentos no encajaron y por qué; se re-aplican TODAS desde el original
+    let pendientes = ap.fallos;
+    if (pendientes.length && quedaTiempo()) {
       try {
-        const lista = ap.fallos.map((f, i) => `${i + 1}. bloque ${f.bloque}: «${String(f.buscar || '').slice(0, 300)}» → ${f.motivo}`).join('\n');
-        const r = await llamar([...historial, { role: 'user', content: `Algunas ediciones no se pudieron aplicar:\n${lista}\n\nDevuelve AHORA únicamente el JSON {"ediciones":[...],"cambios":[...]} con TODAS las ediciones (también las que sí encajaban), copiando cada "buscar" LITERAL y ÚNICO del prompt actual.` }], { temperature: 0.2, json: true });
+        const lista = pendientes.map((f, i) => `${i + 1}. bloque ${f.bloque}: «${String(f.buscar || '').slice(0, 300)}» → ${f.motivo}`).join('\n');
+        const r = await llamar([...historial, { role: 'user', content: `Estas ediciones no se pudieron aplicar:\n${lista}\n\nDevuelve AHORA únicamente el JSON {"ediciones":[...],"cambios":[...]} SOLO con estas ediciones corregidas (las demás ya están aplicadas), copiando cada "buscar" LITERAL y ÚNICO del prompt actual.` }], { temperature: 0.2, json: true });
         const ex2 = leerEdiciones('```json\n' + r.content + '\n```');
-        if (ex2.obj && Array.isArray(ex2.obj.ediciones) && ex2.obj.ediciones.length) {
-          const ap2 = aplicarEdiciones(target, ex2.obj.ediciones);
-          if (!ap2.fallos.length) { ap = ap2; ediciones = ex2.obj.ediciones; if (Array.isArray(ex2.obj.cambios) && ex2.obj.cambios.length) cambios = ex2.obj.cambios.map(String); }
+        // por si devuelve también las que ya encajaron: fuera las que repiten (bloque, buscar) de una aplicada
+        const clave = (e) => JSON.stringify([normBloque(e?.bloque), String(e?.buscar ?? '').trim()]);
+        const yaAplicadas = new Set(ap.okIdx.map((i) => ediciones[i]).filter((e) => String(e?.buscar ?? '').trim()).map(clave));
+        const reparadas = comoLista(ex2.obj?.ediciones).filter((e) => !(String(e?.buscar ?? '').trim() && yaAplicadas.has(clave(e))));
+        if (reparadas.length) {
+          const ap2 = aplicarEdiciones(ap.proposal, reparadas);
+          if (!ap2.fallos.length) {
+            ap = ap2;
+            pendientes = [];
+            if (Array.isArray(ex2.obj.cambios)) cambios = [...new Set([...cambios, ...ex2.obj.cambios.map(String)])];
+          }
         }
-      } catch { /* sigue al último recurso */ }
+      } catch { /* abajo se informa */ }
     }
-    if (ap.fallos.length) {
-      // último recurso: los 3 bloques completos (lento, pero ya no hay petición HTTP abierta esperando)
-      try {
-        const r = await llamar([...historial, { role: 'user', content: 'No consigo aplicar esas ediciones. Responde AHORA únicamente con el objeto JSON con los 3 bloques COMPLETOS ya actualizados: {"identidad":"...","negocio":"...","flujo":"...","cambios":["..."]} — sin texto fuera del JSON.' }], { temperature: 0.2, json: true });
-        const full = extractProposal('```json\n' + r.content + '\n```');
-        if (full.proposal) return { reply: replyVisible || 'Listo, te dejo la propuesta abajo.', proposal: full.proposal };
-      } catch { /* abajo */ }
-      return { reply: (replyVisible ? replyVisible + '\n\n' : '') + '⚠️ No pude aplicar el cambio sobre el texto actual del prompt. Vuelve a enviarlo, si puedes con más detalle de dónde va.', proposal: null };
+    if (pendientes.length) {
+      const lista = pendientes.map((f) => `• bloque ${f.bloque}: «${String(f.buscar || '').slice(0, 120)}» (${f.motivo})`).join('\n');
+      return { reply: conAviso(`⚠️ No pude colocar ${pendientes.length === 1 ? 'una parte' : 'algunas partes'} del cambio en el texto actual del prompt:\n${lista}\nNo se ha cambiado nada. Vuelve a enviarlo diciendo en qué sección va.`), proposal: null };
     }
-    const igual = Object.values(CAMPOS).every((f) => String(ap.proposal[f]) === String(target[f] || ''));
-    if (igual) return { reply: replyVisible || 'El prompt ya decía eso: no hay nada que cambiar.', proposal: null };
-    return { reply: replyVisible || 'Listo, te dejo la propuesta abajo.', proposal: { ...ap.proposal, cambios } };
+    // los bloques que NO cambian van vacíos: «Aplicar» no los toca (si alguien editó ese bloque mientras tanto,
+    // no se pisa con la copia de cuando empezó el trabajo) y la comparación los marca «sin cambios»
+    const propuesta = {};
+    let alguno = false;
+    for (const f of Object.values(CAMPOS)) {
+      if (String(ap.proposal[f]) !== String(target[f] || '')) { propuesta[f] = ap.proposal[f]; alguno = true; } else propuesta[f] = '';
+    }
+    if (!alguno) return { reply: conAviso('ℹ️ Aplicado sobre el texto actual, el prompt queda igual (ya lo decía, o la edición no traía texto nuevo). No hay nada que aplicar.'), proposal: null };
+    return { reply: replyVisible || 'Listo, te dejo la propuesta abajo.', proposal: { ...propuesta, cambios } };
   };
 
   // 2 intentos en la llamada principal: un 429/red/5xx/timeout puntual del proveedor reintenta solo. El mensaje

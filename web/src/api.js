@@ -1,6 +1,7 @@
-async function request(method, url, body) {
+async function request(method, url, body, opts = {}) {
   const res = await fetch(url, {
     method,
+    signal: opts.signal,
     headers: body ? { 'content-type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
     credentials: 'same-origin',
@@ -15,7 +16,7 @@ async function request(method, url, body) {
 }
 
 export const api = {
-  get: (url) => request('GET', url),
+  get: (url, opts) => request('GET', url, undefined, opts),
   post: (url, body) => request('POST', url, body),
   put: (url, body) => request('PUT', url, body),
   del: (url) => request('DELETE', url),
