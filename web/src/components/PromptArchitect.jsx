@@ -124,6 +124,31 @@ export function PromptArchitect({ targetPath, mode = 'architect', onApplied, com
     });
   };
 
+  // Pide la respuesta como TRABAJO en segundo plano y pregunta cada pocos segundos: la petición ya no se queda
+  // minutos abierta (el proxy la cortaba con un «Error 502» en blanco). Si el servidor es antiguo y responde
+  // directamente (sin job_id), se usa esa respuesta tal cual.
+  const pedirRespuesta = async (payload, gen) => {
+    const start = await api.post(`${base}/prompt-editor`, { ...payload, async: true });
+    if (!start?.job_id) return start;
+    const t0 = Date.now();
+    let fallosRed = 0;
+    while (Date.now() - t0 < 12 * 60_000) {
+      await new Promise((res) => setTimeout(res, 2500));
+      if (genRef.current !== gen) return null;
+      let j;
+      try {
+        j = await api.get(`/api/prompt-editor-jobs/${start.job_id}`);
+        fallosRed = 0;
+      } catch (err) {
+        if (err.data?.gone || ++fallosRed >= 10) throw err; // trabajo perdido (reinicio) o red caída de verdad
+        continue; // un fallo de red suelto no cancela: el trabajo sigue en el servidor
+      }
+      if (j.status === 'done') return j;
+      if (j.status === 'error') throw new Error(j.error || 'No se pudo preparar el cambio.');
+    }
+    throw new Error('El cambio está tardando demasiado. No se perdió nada: vuelve a enviar el último mensaje.');
+  };
+
   const send = async (e) => {
     e?.preventDefault?.();
     if (busy || proposal) return; // no enviar mientras procesa o hay una propuesta pendiente
@@ -141,8 +166,8 @@ export function PromptArchitect({ targetPath, mode = 'architect', onApplied, com
     scroll();
     const gen = genRef.current; // si el usuario cambia de conversación mientras responde, se descarta
     try {
-      const r = await api.post(`${base}/prompt-editor`, { history, message: msg, images: shownImgs, mode });
-      if (genRef.current !== gen) return;
+      const r = await pedirRespuesta({ history, message: msg, images: shownImgs, mode }, gen);
+      if (!r || genRef.current !== gen) return;
       const afterAssistant = [...afterUser, { role: 'assistant', text: r.reply }];
       setChat(afterAssistant);
       if (r.proposal) setProposal(r.proposal);

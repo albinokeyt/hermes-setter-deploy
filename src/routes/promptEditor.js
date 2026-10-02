@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { requireManageAgents, canAccessAccount } from '../lib/session.js';
 import { chatCompletion } from '../services/llm.js';
@@ -193,6 +194,131 @@ function extractProposal(content) {
   return { reply: reply || 'Listo, te dejo la propuesta abajo.', proposal, broken: !proposal && sawJsonish };
 }
 
+// ── Corrector en modo EDICIONES ──────────────────────────────────────────────
+// Antes el corrector devolvía los 3 bloques COMPLETOS: con prompts de ~20 000 caracteres eso son ~7 000
+// tokens de salida → 3-4 min por petición, JSON cortado por max_tokens y, con la petición HTTP abierta
+// todo ese rato, el proxy acababa devolviendo un 502 «en blanco». Ahora el modelo devuelve solo las
+// EDICIONES (buscar → reemplazar) y el servidor las aplica sobre el texto actual. Si alguna no encaja,
+// se le pide que la corrija; y como último recurso, los bloques completos (el formato de siempre).
+const FORMATO_EDICIONES = `
+
+FORMATO DE SALIDA OBLIGATORIO (manda sobre cualquier otro formato indicado arriba):
+NO devuelvas los bloques completos. Devuelve SOLO las ediciones, que se aplicarán sobre el texto actual:
+1) Explica en 1-3 líneas qué vas a cambiar y en qué bloque(s).
+2) Termina con UN bloque JSON EXACTO:
+\`\`\`json
+{"ediciones":[{"bloque":"flujo","buscar":"<fragmento literal del bloque actual>","reemplazar":"<texto que lo sustituye>"},{"bloque":"negocio","anadir_al_final":"<sección nueva completa>"}],"cambios":["qué cambiaste en cada bloque"]}
+\`\`\`
+REGLAS DE LAS EDICIONES:
+- "bloque" es "identidad", "negocio" o "flujo".
+- "buscar" se copia LITERAL del prompt actual (mismas palabras, tildes, mayúsculas y signos), es ÚNICO dentro de su bloque y lo bastante largo para no repetirse (una frase o línea completa, unos 40-200 caracteres). Nunca lo abrevies con "...".
+- "reemplazar" lleva el texto final de ese tramo. Para AÑADIR algo detrás de una línea, repite la línea en "reemplazar" y escribe lo nuevo a continuación. Para BORRAR, deja "reemplazar" vacío.
+- Para una sección NUEVA al final de un bloque usa "anadir_al_final" (sin "buscar").
+- Mejor varias ediciones pequeñas que una enorme. NUNCA copies un bloque entero.`;
+
+const CAMPOS = { identidad: 'prompt_identity', negocio: 'prompt_business', flujo: 'prompt_flow' };
+const normBloque = (b) => {
+  const s = String(b || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  if (s.includes('ident') || s === '1') return 'identidad';
+  if (s.includes('negoc') || s === '2') return 'negocio';
+  if (s.includes('flujo') || s === '3') return 'flujo';
+  return null;
+};
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Localiza `buscar` en `texto`: primero literal; si no, tolerante a espacios/saltos y a comillas rectas/curvas.
+// Devuelve {start,end}, 'multiple' (ambiguo) o null (no está).
+export function localizar(texto, buscar) {
+  const i = texto.indexOf(buscar);
+  if (i >= 0) return texto.indexOf(buscar, i + 1) >= 0 ? 'multiple' : { start: i, end: i + buscar.length };
+  const tokens = buscar.trim().split(/\s+/).filter(Boolean).map((t) => escRe(t)
+    .replace(/["“”]/g, '["“”]').replace(/['‘’]/g, "['‘’]")
+    .replace(/(…|\\\.\\\.\\\.)/g, '(?:…|\\.\\.\\.)'));
+  if (!tokens.length) return null;
+  const ms = [...texto.matchAll(new RegExp(tokens.join('\\s+'), 'g'))];
+  if (ms.length === 1) return { start: ms[0].index, end: ms[0].index + ms[0][0].length };
+  return ms.length > 1 ? 'multiple' : null;
+}
+
+// Aplica las ediciones (en orden) sobre los 3 bloques del setter. No toca el original: devuelve una propuesta
+// con los 3 textos y la lista de fallos. Lo que NO se edita queda byte a byte igual (los prompts mezclan \r\n y \n);
+// el texto nuevo usa el salto de línea propio de su bloque.
+export function aplicarEdiciones(target, ediciones) {
+  const textos = {}, eol = {};
+  for (const [k, f] of Object.entries(CAMPOS)) {
+    textos[k] = String(target[f] || '');
+    eol[k] = textos[k].includes('\r\n') ? '\r\n' : '\n';
+  }
+  const conEol = (s, k) => String(s ?? '').replace(/\r\n/g, '\n').replace(/\n/g, eol[k]);
+  const fallos = [];
+  let aplicadas = 0;
+  for (const e of (Array.isArray(ediciones) ? ediciones : [])) {
+    if (!e || typeof e !== 'object') continue;
+    const k = normBloque(e.bloque);
+    if (!k) { fallos.push({ bloque: e.bloque, buscar: e.buscar, motivo: 'bloque desconocido (usa identidad, negocio o flujo)' }); continue; }
+    const anadir = e.anadir_al_final ?? e['añadir_al_final'];
+    const buscar = String(e.buscar ?? '');
+    if (typeof anadir === 'string' && !buscar.trim()) {
+      const nuevo = conEol(anadir.trim(), k);
+      if (nuevo) { textos[k] = textos[k].trim() ? textos[k].replace(/\s+$/, '') + eol[k] + eol[k] + nuevo : nuevo; aplicadas++; }
+      continue;
+    }
+    if (buscar.trim().length < 8) { fallos.push({ bloque: k, buscar, motivo: '"buscar" vacío o demasiado corto' }); continue; }
+    // literal tal cual, literal con los saltos del bloque, y por último tolerante (espacios/saltos/comillas)
+    let pos = textos[k].includes(buscar) ? localizar(textos[k], buscar) : null;
+    if (!pos && textos[k].includes(conEol(buscar, k))) pos = localizar(textos[k], conEol(buscar, k));
+    if (!pos) pos = localizar(textos[k], buscar);
+    if (!pos) { fallos.push({ bloque: k, buscar, motivo: 'no aparece literal en el bloque' }); continue; }
+    if (pos === 'multiple') { fallos.push({ bloque: k, buscar, motivo: 'aparece varias veces: hace falta un fragmento más largo y único' }); continue; }
+    textos[k] = textos[k].slice(0, pos.start) + conEol(e.reemplazar, k) + textos[k].slice(pos.end);
+    aplicadas++;
+  }
+  const out = {};
+  for (const [k, f] of Object.entries(CAMPOS)) out[f] = textos[k];
+  return { proposal: out, fallos, aplicadas };
+}
+
+// Saca el bloque JSON que contiene `clave` (fences de cualquier tipo o llaves balanceadas), lo repara si hace
+// falta y devuelve el texto visible SIN el JSON. found = hubo algo JSON-ish con esa clave; broken = no se pudo leer.
+export function extraerJson(content, clave, descartar = PLACEHOLDER_RE) {
+  const text = String(content || '');
+  const keyRe = new RegExp(`"?${clave}"?\\s*:`);
+  const candidates = [];
+  const fenceRe = /```[a-zA-Z]*\s*([\s\S]*?)```/g;
+  let fm;
+  while ((fm = fenceRe.exec(text))) if (keyRe.test(fm[1])) candidates.push({ raw: fm[1], span: fm[0], at: fm.index });
+  const keyIdx = text.lastIndexOf(`"${clave}"`);
+  if (keyIdx >= 0) {
+    const open = text.lastIndexOf('{', keyIdx);
+    if (open >= 0) { const blk = balancedBlock(text, open); if (blk) candidates.push({ raw: blk, span: blk, at: open }); }
+  }
+  const reales = candidates.filter((c) => !descartar.test(c.raw));
+  let truncAt = -1;
+  if (!reales.length) {
+    if ((text.match(/```/g) || []).length % 2 === 1) {
+      const lastOpen = text.lastIndexOf('```');
+      if (keyRe.test(text.slice(lastOpen))) truncAt = lastOpen;
+    }
+    if (truncAt < 0 && keyIdx >= 0) {
+      const open = text.lastIndexOf('{', keyIdx);
+      if (open >= 0 && !balancedBlock(text, open)) truncAt = open;
+    }
+  }
+  let obj = null;
+  for (const c of [...reales].sort((a, b) => b.at - a.at)) {
+    for (const attempt of [c.raw.trim(), repairJson(c.raw)]) {
+      try { const p = JSON.parse(attempt); if (p && typeof p === 'object' && p[clave] !== undefined) { obj = p; break; } } catch { /* siguiente */ }
+    }
+    if (obj) break;
+  }
+  let reply = truncAt >= 0 ? text.slice(0, truncAt) : text;
+  for (const c of candidates) reply = reply.replace(c.span, '');
+  reply = reply.replace(/```[a-zA-Z]*\s*```/g, '').trim();
+  const found = reales.length > 0 || truncAt >= 0;
+  return { obj, reply, found, broken: found && !obj };
+}
+const PLANTILLA_EDICIONES_RE = /<\s*(fragmento|texto que|secci[oó]n nueva)/i;
+
 function toUserContent(text, images) {
   const imgs = Array.isArray(images) ? images.filter((u) => typeof u === 'string' && u.startsWith('data:')).slice(0, 4) : [];
   if (!imgs.length) return text;
@@ -200,18 +326,19 @@ function toUserContent(text, images) {
 }
 
 // Ejecuta el chat del arquitecto/corrector sobre un "target" con prompt_identity/business/flow.
-// accountId = la conexión (para atribuir gasto); setterId = el setter si aplica.
-async function runPromptEditor(target, accountId, setterId, req, reply) {
-  const b = req.body || {};
+// accountId = la conexión (para atribuir gasto); setterId = el setter si aplica. Devuelve { status, body }
+// (no responde él mismo: lo usan la ruta síncrona antigua y los TRABAJOS en segundo plano).
+async function runPromptEditor(target, accountId, setterId, b = {}, { enSegundoPlano = false } = {}) {
   const mode = b.mode === 'edit' ? 'edit' : 'architect';
+  const edicion = mode === 'edit';
 
-  const cfg = (await getSetting(mode === 'edit' ? 'corrector_model' : 'architect_model', {})) || {};
+  const cfg = (await getSetting(edicion ? 'corrector_model' : 'architect_model', {})) || {};
   const provId = cfg.provider_id || target.provider_id;
   const provider = provId ? await one(`SELECT * FROM providers WHERE id = $1`, [provId]) : null;
-  if (!provider) return reply.code(400).send({ error: 'No hay modelo de IA para el arquitecto/corrector. Configúralo en Configuración o en la pestaña IA del setter.' });
+  if (!provider) return { status: 400, body: { error: 'No hay modelo de IA para el arquitecto/corrector. Configúralo en Configuración o en la pestaña IA del setter.' } };
   const modelUsed = cfg.model || target.model || provider.default_model;
 
-  const base = mode === 'edit'
+  const base = edicion
     ? ((await getSetting('corrector_prompt', null))?.text || DEFAULT_CORRECTOR)
     : ((await getSetting('architect_prompt', null))?.text || DEFAULT_ARCHITECT);
 
@@ -220,42 +347,41 @@ async function runPromptEditor(target, accountId, setterId, req, reply) {
 [2 · NEGOCIO]\n${target.prompt_business || '(vacío)'}\n
 [3 · FLUJO]\n${target.prompt_flow || '(vacío)'}`;
 
-  const system = `${base}\n\n${current}`;
+  // el corrector pide EDICIONES (rápido, sin cortes); el arquitecto crea desde cero → bloques completos
+  const system = `${base}${edicion ? FORMATO_EDICIONES : ''}\n\n${current}`;
   const history = (Array.isArray(b.history) ? b.history : [])
     .slice(-20)
     .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.text || '') }))
     .filter((m) => m.content);
 
   const messages = [{ role: 'system', content: system }, ...history];
-  const lastText = String(b.message || (history.length ? '' : (mode === 'edit' ? 'Aplica los cambios indicados.' : 'Ayúdame a crear el prompt de mi setter.')));
+  const lastText = String(b.message || (history.length ? '' : (edicion ? 'Aplica los cambios indicados.' : 'Ayúdame a crear el prompt de mi setter.')));
   if (lastText || (b.images && b.images.length)) {
     messages.push({ role: 'user', content: toUserContent(lastText || 'Aplica estos cambios según las imágenes.', b.images) });
   }
 
-  // maxTokens ALTO: los 3 bloques completos + explicación no caben en 2000 y el JSON llegaba CORTADO
-  // (parse imposible → mensaje corto sin botones). El timeout por intento es 90 s: el peor caso
-  // encadena 2 intentos + el reintento de propuesta rota (~270 s) y tiene que quedar por DEBAJO del
-  // corte del navegador (~300 s en Chrome) — con 120 s por intento la respuesta llegaba con la
-  // petición ya muerta: el usuario veía un error de red y los tokens se habían cobrado igual.
+  // maxTokens ALTO: el arquitecto devuelve los 3 bloques completos y no caben en 2000 (el JSON llegaba CORTADO).
+  // Timeout por intento: en la ruta SÍNCRONA (navegadores con la versión vieja) 90 s, para quedar por debajo
+  // del corte del navegador; en segundo plano no hay petición abierta que proteger → 180 s.
   const MAX_TOKENS = 8000;
-  const TIMEOUT_MS = 90_000;
+  const TIMEOUT_MS = enSegundoPlano ? 180_000 : 90_000;
   const hayImagenes = Array.isArray(b.images) && b.images.length > 0;
-  const gastar = (usage) => recordUsage(accountId, null, provider, modelUsed, usage, mode === 'edit' ? 'corrector' : 'arquitecto', null, setterId);
+  const gastar = (usage) => recordUsage(accountId, null, provider, modelUsed, usage, edicion ? 'corrector' : 'arquitecto', null, setterId);
+  const llamar = async (msgs, opts = {}) => {
+    const r = await chatCompletion({ provider, model: modelUsed, temperature: opts.temperature ?? 0.5, maxTokens: MAX_TOKENS, json: Boolean(opts.json), timeoutMs: TIMEOUT_MS, attempts: opts.attempts ?? 1, messages: msgs });
+    await gastar(r.usage);
+    return r;
+  };
 
-  // Si la propuesta llegó ROTA (cortada/mal formada), UN reintento pidiendo solo el JSON — se aplica
-  // en TODOS los caminos (también el de imágenes) y nunca filtra el flag interno `broken`.
+  // Si la propuesta COMPLETA llegó ROTA (cortada/mal formada), UN reintento pidiendo solo el JSON.
   const conReintentoRoto = async (out, baseMessages, rawContent) => {
     if (!out.broken) { delete out.broken; return out; }
     try {
-      const retry = await chatCompletion({
-        provider, model: modelUsed, temperature: 0.2, maxTokens: MAX_TOKENS, json: true, timeoutMs: TIMEOUT_MS, attempts: 1,
-        messages: [
-          ...baseMessages,
-          { role: 'assistant', content: String(rawContent || '').slice(0, 6000) },
-          { role: 'user', content: 'Tu bloque JSON llegó cortado o mal formado. Responde AHORA únicamente con el objeto JSON completo y válido: {"identidad":"...","negocio":"...","flujo":"...","cambios":["..."]} — sin texto fuera del JSON.' },
-        ],
-      });
-      await gastar(retry.usage);
+      const retry = await llamar([
+        ...baseMessages,
+        { role: 'assistant', content: String(rawContent || '').slice(0, 6000) },
+        { role: 'user', content: 'Tu bloque JSON llegó cortado o mal formado. Responde AHORA únicamente con el objeto JSON completo y válido: {"identidad":"...","negocio":"...","flujo":"...","cambios":["..."]} — sin texto fuera del JSON.' },
+      ], { temperature: 0.2, json: true });
       const second = extractProposal('```json\n' + retry.content + '\n```');
       if (second.proposal) {
         return { reply: out.reply.replace(/⚠️ Preparé una propuesta[\s\S]*$/, '').trim() || 'Listo, te dejo la propuesta abajo.', proposal: second.proposal };
@@ -265,22 +391,69 @@ async function runPromptEditor(target, accountId, setterId, req, reply) {
     return out;
   };
 
-  // 2 intentos: un 429/red/5xx/timeout puntual del proveedor reintenta solo. El mensaje distingue
-  // el fallo PERMANENTE (clave/modelo mal → reenviar no arregla nada, hay que ir a Configuración)
-  // del transitorio, y deja claro que la conversación NO se pierde — el 502 crudo asustaba sin más.
+  // Corrector: lee las EDICIONES, las aplica y, si alguna no encaja, pide corregirlas; último recurso: bloques completos.
+  // Devuelve null si la respuesta no trae ediciones (entonces se trata como propuesta completa, el formato antiguo).
+  const leerEdiciones = (content) => extraerJson(content, 'ediciones', new RegExp(`${PLACEHOLDER_RE.source}|${PLANTILLA_EDICIONES_RE.source}`, 'i'));
+  const conEdiciones = async (rawContent, baseMessages) => {
+    let ex = leerEdiciones(rawContent);
+    if (!ex.found) return null;
+    const replyVisible = ex.reply;
+    const historial = [...baseMessages, { role: 'assistant', content: String(rawContent || '').slice(0, 12000) }];
+    if (ex.broken) {
+      try {
+        const r = await llamar([...historial, { role: 'user', content: 'Tu bloque JSON llegó cortado o mal formado. Responde AHORA únicamente con el objeto JSON completo y válido {"ediciones":[...],"cambios":[...]} — sin texto fuera del JSON.' }], { temperature: 0.2, json: true });
+        ex = leerEdiciones('```json\n' + r.content + '\n```');
+      } catch { /* abajo se informa */ }
+      if (!ex.obj) return { reply: (replyVisible ? replyVisible + '\n\n' : '') + '⚠️ Preparé el cambio pero llegó incompleto. Escribe «repite la propuesta» y lo genero de nuevo.', proposal: null };
+    }
+    let ediciones = Array.isArray(ex.obj.ediciones) ? ex.obj.ediciones : [];
+    let cambios = Array.isArray(ex.obj.cambios) ? ex.obj.cambios.map(String) : [];
+    if (!ediciones.length) return { reply: replyVisible || 'No veo nada que cambiar con esa instrucción.', proposal: null };
+    let ap = aplicarEdiciones(target, ediciones);
+    if (ap.fallos.length) {
+      // 1 reparación: se le dicen qué fragmentos no encajaron y por qué; se re-aplican TODAS desde el original
+      try {
+        const lista = ap.fallos.map((f, i) => `${i + 1}. bloque ${f.bloque}: «${String(f.buscar || '').slice(0, 300)}» → ${f.motivo}`).join('\n');
+        const r = await llamar([...historial, { role: 'user', content: `Algunas ediciones no se pudieron aplicar:\n${lista}\n\nDevuelve AHORA únicamente el JSON {"ediciones":[...],"cambios":[...]} con TODAS las ediciones (también las que sí encajaban), copiando cada "buscar" LITERAL y ÚNICO del prompt actual.` }], { temperature: 0.2, json: true });
+        const ex2 = leerEdiciones('```json\n' + r.content + '\n```');
+        if (ex2.obj && Array.isArray(ex2.obj.ediciones) && ex2.obj.ediciones.length) {
+          const ap2 = aplicarEdiciones(target, ex2.obj.ediciones);
+          if (!ap2.fallos.length) { ap = ap2; ediciones = ex2.obj.ediciones; if (Array.isArray(ex2.obj.cambios) && ex2.obj.cambios.length) cambios = ex2.obj.cambios.map(String); }
+        }
+      } catch { /* sigue al último recurso */ }
+    }
+    if (ap.fallos.length) {
+      // último recurso: los 3 bloques completos (lento, pero ya no hay petición HTTP abierta esperando)
+      try {
+        const r = await llamar([...historial, { role: 'user', content: 'No consigo aplicar esas ediciones. Responde AHORA únicamente con el objeto JSON con los 3 bloques COMPLETOS ya actualizados: {"identidad":"...","negocio":"...","flujo":"...","cambios":["..."]} — sin texto fuera del JSON.' }], { temperature: 0.2, json: true });
+        const full = extractProposal('```json\n' + r.content + '\n```');
+        if (full.proposal) return { reply: replyVisible || 'Listo, te dejo la propuesta abajo.', proposal: full.proposal };
+      } catch { /* abajo */ }
+      return { reply: (replyVisible ? replyVisible + '\n\n' : '') + '⚠️ No pude aplicar el cambio sobre el texto actual del prompt. Vuelve a enviarlo, si puedes con más detalle de dónde va.', proposal: null };
+    }
+    const igual = Object.values(CAMPOS).every((f) => String(ap.proposal[f]) === String(target[f] || ''));
+    if (igual) return { reply: replyVisible || 'El prompt ya decía eso: no hay nada que cambiar.', proposal: null };
+    return { reply: replyVisible || 'Listo, te dejo la propuesta abajo.', proposal: { ...ap.proposal, cambios } };
+  };
+
+  // 2 intentos en la llamada principal: un 429/red/5xx/timeout puntual del proveedor reintenta solo. El mensaje
+  // distingue el fallo PERMANENTE (clave/modelo mal) del transitorio, y deja claro que no se pierde nada.
   const ATTEMPTS = 2;
   const PERMANENTES = new Set([400, 401, 403, 404, 422]);
-  const falloLlm = (err) => reply.code(502).send({
-    error: PERMANENTES.has(err.status)
-      ? `El proveedor de IA rechazó la petición (${err.message}). Reenviar no lo arreglará: revisa el modelo y la clave de API en Configuración → IA (o en la pestaña IA del setter).`
-      : `El modelo de IA no respondió (${err.message}). No se perdió nada: espera unos segundos y vuelve a enviar el último mensaje.`,
+  const falloLlm = (err) => ({
+    status: 502,
+    body: {
+      error: PERMANENTES.has(err.status)
+        ? `El proveedor de IA rechazó la petición (${err.message}). Reenviar no lo arreglará: revisa el modelo y la clave de API en Configuración → IA (o en la pestaña IA del setter).`
+        : `El modelo de IA no respondió (${err.message}). No se perdió nada: espera unos segundos y vuelve a enviar el último mensaje.`,
+    },
   });
 
   let result;
   let usedMessages = messages;
   let notaImagenes = '';
   try {
-    result = await chatCompletion({ provider, model: modelUsed, temperature: 0.5, maxTokens: MAX_TOKENS, json: false, timeoutMs: TIMEOUT_MS, attempts: ATTEMPTS, messages });
+    result = await llamar(messages, { attempts: ATTEMPTS });
   } catch (err) {
     // Con imágenes adjuntas, un 400/422 suele ser "este modelo no soporta visión" (o imagen demasiado
     // grande): en vez de morir, reintentamos SIN las imágenes y avisamos — el texto siempre se procesa.
@@ -289,7 +462,7 @@ async function runPromptEditor(target, accountId, setterId, req, reply) {
         ? { ...m, content: m.content.filter((p) => p.type === 'text').map((p) => p.text).join('\n') || '(imagen adjunta que no se pudo procesar)' }
         : m));
       try {
-        result = await chatCompletion({ provider, model: modelUsed, temperature: 0.5, maxTokens: MAX_TOKENS, json: false, timeoutMs: TIMEOUT_MS, attempts: ATTEMPTS, messages: sinImgs });
+        result = await llamar(sinImgs, { attempts: ATTEMPTS });
         usedMessages = sinImgs;
         notaImagenes = '⚠️ El modelo configurado no pudo leer las imágenes (procesé solo el texto). Si quieres que lea imágenes, usa un modelo con visión para el corrector.\n\n';
       } catch (err2) {
@@ -299,12 +472,24 @@ async function runPromptEditor(target, accountId, setterId, req, reply) {
       return falloLlm(err);
     }
   }
-  await gastar(result.usage);
-  let out = extractProposal(result.content);
-  out = await conReintentoRoto(out, usedMessages, result.content);
+  let out = edicion ? await conEdiciones(result.content, usedMessages) : null;
+  if (!out) {
+    out = extractProposal(result.content);
+    out = await conReintentoRoto(out, usedMessages, result.content);
+  }
+  delete out.broken;
   if (notaImagenes) out.reply = notaImagenes + out.reply;
-  return out;
+  return { status: 200, body: out };
 }
+
+// ── TRABAJOS en segundo plano ────────────────────────────────────────────────
+// El navegador ya no espera minutos con la petición abierta (el proxy la cortaba con un 502 «en blanco»):
+// POST {async:true} → 202 {job_id} al momento; el navegador pregunta GET /api/prompt-editor-jobs/:id cada
+// pocos segundos. En memoria (Hermes corre en UNA réplica); si el proceso se reinicia, el trabajo se pierde
+// y el GET responde 404 {gone:true} con un mensaje claro para reenviar.
+const JOBS = new Map();
+const JOB_TTL_MS = 30 * 60_000;
+const limpiarJobs = () => { const lim = Date.now() - JOB_TTL_MS; for (const [id, j] of JOBS) if (j.creado < lim) JOBS.delete(id); };
 
 export default async function promptEditorRoutes(app) {
   // Disponible para admin Y para el dueño con IA activa (requireManageAgents), cada uno
@@ -314,11 +499,36 @@ export default async function promptEditorRoutes(app) {
   });
 
   // Arquitecto/corrector de un SETTER concreto (los prompts viven en el setter, no en la conexión).
-  // body: { history, images?, mode:'architect'|'edit', message? }
+  // body: { history, images?, mode:'architect'|'edit', message?, async? }
   app.post('/api/setters/:id/prompt-editor', async (req, reply) => {
     const setter = await one(`SELECT * FROM setters WHERE id = $1`, [req.params.id]);
     if (!setter) return reply.code(404).send({ error: 'Setter no encontrado' });
     if (!(await canAccessAccount(req, setter.account_id))) return reply.code(403).send({ error: 'Sin acceso a este setter' });
-    return runPromptEditor(setter, setter.account_id, setter.id, req, reply);
+    const body = req.body || {};
+    if (body.async) {
+      limpiarJobs();
+      const id = randomUUID();
+      const job = { account_id: setter.account_id, status: 'running', creado: Date.now() };
+      JOBS.set(id, job);
+      runPromptEditor(setter, setter.account_id, setter.id, body, { enSegundoPlano: true })
+        .then((r) => { job.status = r.status >= 400 ? 'error' : 'done'; job.http = r.status; job.body = r.body; job.fin = Date.now(); })
+        .catch((err) => {
+          req.log.error({ err }, 'prompt-editor: el trabajo en segundo plano falló');
+          job.status = 'error'; job.http = 500; job.fin = Date.now();
+          job.body = { error: `Error inesperado al preparar el cambio (${err.message}). No se perdió nada: vuelve a enviar el último mensaje.` };
+        });
+      return reply.code(202).send({ job_id: id });
+    }
+    const r = await runPromptEditor(setter, setter.account_id, setter.id, body);
+    return reply.code(r.status).send(r.body);
+  });
+
+  app.get('/api/prompt-editor-jobs/:id', async (req, reply) => {
+    const job = JOBS.get(req.params.id);
+    if (!job) return reply.code(404).send({ gone: true, error: 'Ese cambio ya no está en el servidor (se reinició o caducó). No se perdió nada: vuelve a enviar el último mensaje.' });
+    if (!(await canAccessAccount(req, job.account_id))) return reply.code(403).send({ error: 'Sin acceso a este setter' });
+    if (job.status === 'running') return { status: 'running', segundos: Math.round((Date.now() - job.creado) / 1000) };
+    if (job.status === 'done') return { status: 'done', ...job.body };
+    return { status: 'error', http_status: job.http, error: job.body?.error || 'No se pudo preparar el cambio.' };
   });
 }

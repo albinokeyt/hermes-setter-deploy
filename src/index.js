@@ -32,6 +32,12 @@ import marketplaceRoutes from './routes/marketplace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Una promesa rechazada sin capturar NO debe tumbar el proceso (Node la convierte en fallo fatal): se reiniciaba
+// el contenedor y todas las peticiones en curso salían como «Error 502» del proxy. Se registra y se sigue.
+process.on('unhandledRejection', (err) => {
+  console.error('[hermes] promesa rechazada sin capturar (el proceso sigue):', err);
+});
+
 async function main() {
   await migrate();
   await cargarHumanoFiableDesde(); // corte de «mensaje humano fiable» (se fija en el primer arranque)
