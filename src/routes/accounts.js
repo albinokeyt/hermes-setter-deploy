@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { q, one } from '../db.js';
+import { q, one, getSetting } from '../db.js';
 import { config } from '../config.js';
 import { requireAdmin, scopedAccountId, requireManageAgents, accessibleAccountIds, canAccessAccount } from '../lib/session.js';
 import * as ghl from '../services/ghl.js';
@@ -169,6 +169,15 @@ export default async function accountRoutes(app) {
   // Registro reciente del webhook de comentarios de ESTA conexión (para probar que llega).
   // Los recibidos salen de la tabla comments (durable, no se purga); los intentos sin texto o
   // duplicados salen de webhook_log (traza efímera, con tope global de ~2000 filas) solo como ayuda.
+  // 📸 Estado de las fotos de etiquetas de la conexión: cuántos contactos tienen foto y si la carga inicial desde
+  // GHL terminó (services/fotosEtiquetas.js). Solo lectura; sirve para diagnosticar «entró por una etiqueta vieja».
+  app.get('/api/accounts/:id/fotos-etiquetas', async (req, reply) => {
+    if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });
+    const id = Number(req.params.id);
+    const n = await one(`SELECT count(*)::int AS n, max(updated_at) AS ultima FROM contact_tag_fotos WHERE account_id = $1`, [id]);
+    return { fotos: n?.n || 0, ultima: n?.ultima || null, carga_inicial: await getSetting(`fotos_cuenta_${id}`, null), copia_redis: await getSetting('fotos_sembradas_redis_054', null) };
+  });
+
   app.get('/api/accounts/:id/comment-log', async (req, reply) => {
     if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso' });
     const received = await q(
