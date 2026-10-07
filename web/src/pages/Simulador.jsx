@@ -21,6 +21,8 @@ function textoEvento(e) {
       const ev = p.evaluados || []; const casan = ev.filter((x) => x.estado !== 'sin_coincidir'); const resto = ev.length - casan.length;
       return `Webhook de etiquetas evaluado: ${casan.map((x) => `${x.etiqueta} → ${x.estado}`).join(' · ') || 'ninguna activadora coincide'}${resto ? ` · ${resto} activadoras sin coincidir` : ''}`;
     },
+    contexto_por_palabra: () => `📌 Contexto guardado por la PALABRA que escribió («${p.palabra}»): pidió «${p.nombre}»`,
+    sim_etiquetas_de_antes: () => `🧪 Etiquetas que el lead YA tenía de antes (no cuentan como recién puestas): ${(p.tags || []).map((t) => `«${t}»`).join(', ')}`,
     contexto_lead_magnet: () => `📌 Contexto guardado: pidió «${p.nombre}» (etiqueta «${p.etiqueta}»${p.recien_puesta ? ', recién puesta' : ''})`,
     activador_etiqueta: () => `⚡ La etiqueta «${p.etiqueta}» activa al setter${p.con_contexto ? ' con instrucciones de entrada' : ''}${p.recien_puesta ? ' (recién puesta)' : ''}`,
     activador_externo: () => `Activación programada: el setter entrará tras ${seg(Number(p.espera_s) || 0)} (canal ${p.canal})`,

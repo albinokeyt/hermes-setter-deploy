@@ -9,6 +9,7 @@ import { migrate } from './db.js';
 import { seedAdmin, authHook } from './lib/session.js';
 import { startWorkers } from './workers.js';
 import { cargarHumanoFiableDesde } from './services/pipeline.js';
+import { arrancarSembradoDeFotos } from './services/fotosEtiquetas.js';
 import authRoutes from './routes/auth.js';
 import providerRoutes from './routes/providers.js';
 import accountRoutes from './routes/accounts.js';
@@ -93,6 +94,7 @@ async function main() {
   }
 
   startWorkers();
+  arrancarSembradoDeFotos(); // 📸 carga inicial de fotos de etiquetas (una vez, en segundo plano)
 
   await app.listen({ port: config.port, host: '0.0.0.0' });
   console.log(`[hermes] escuchando en :${config.port}`);

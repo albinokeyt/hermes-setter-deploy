@@ -3,7 +3,8 @@ import { one, q, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
 import { handleInbound, handleOutboundEvent, handleAppointmentEvent, handleOrderEvent, accountByLocation, logEvent, activateSetterForContact, guardarContextoCta, limpiarContextoCta } from '../services/pipeline.js';
-import { tagsDeLeadMagnet } from '../lib/tags.js';
+import { tagsDeLeadMagnet, fichaLeadMagnet } from '../lib/tags.js';
+import { leerFoto, guardarFoto } from '../services/fotosEtiquetas.js';
 
 const APPOINTMENT_TYPES = ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'];
 const ORDER_TYPES = ['OrderStatusUpdate']; // 🛒 pedidos (activar el evento en la app del marketplace)
@@ -134,7 +135,21 @@ async function handleGlobalComment(req) {
 // una tilde de más en el panel dejaba muda una campaña entera y el rastro decía «sin coincidir».
 const normTag = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-export async function handleTagActivation(account, p) { // exportada: el 🧪 simulador la llama con contactos «sim:…»
+// Los ContactTagUpdate de un mismo contacto se procesan EN FILA (Hermes corre en una réplica): leer la foto, decidir y
+// guardarla tiene que ser atómico por contacto. Dos eventos casi simultáneos (el workflow pone dos etiquetas seguidas,
+// o el propio Hermes añade y quita la de etapa a la vez) leían la misma foto vieja y el segundo decidía a ciegas.
+const colaEtiquetas = new Map();
+export function handleTagActivation(account, p) { // exportada: el 🧪 simulador la llama con contactos «sim:…»
+  const id = String(p.id || p.contact_id || p.contactId || p.contact?.id || '');
+  if (!id) return procesarEtiquetas(account, p);
+  const k = `${account.id}:${id}`;
+  const turno = (colaEtiquetas.get(k) || Promise.resolve()).catch(() => {}).then(() => procesarEtiquetas(account, p));
+  colaEtiquetas.set(k, turno);
+  turno.finally(() => { if (colaEtiquetas.get(k) === turno) colaEtiquetas.delete(k); }).catch(() => {});
+  return turno;
+}
+
+async function procesarEtiquetas(account, p) {
   const contactId = String(p.id || p.contact_id || p.contactId || p.contact?.id || '');
   // ¿el payload trae DE VERDAD la lista de etiquetas? (para no confundir "sin lista" con "sin la etiqueta")
   const tagsArray = Array.isArray(p.tags) ? p.tags : (Array.isArray(p.contact?.tags) ? p.contact.tags : null);
@@ -157,27 +172,26 @@ export async function handleTagActivation(account, p) { // exportada: el 🧪 si
   // un lead magnet puede llegar por varias etiquetas (la del CTA del comentario, la de la portada…)
   const lms = (Array.isArray(account.lead_magnets) ? account.lead_magnets : []).filter((l) => l && tagsDeLeadMagnet(l).length);
   const lmPorTag = new Map(lms.flatMap((l) => tagsDeLeadMagnet(l).map((t) => [t, l])));
-  // Sin etiquetas activadoras NI lead magnets configurados → no hay nada que hacer (ni foto que guardar).
+  // Qué etiquetas se acaban de AÑADIR: se compara con la última foto del contacto (permanente, ver
+  // services/fotosEtiquetas.js). ContactTagUpdate salta con cualquier cambio y no dice cuál fue; sin esto, con dos
+  // activadoras puestas ganaba «la última de la lista del panel», no la recién puesta, y el setter podía entrar
+  // hablando del lead magnet equivocado. anadidas === null → no hay foto (primer evento que vemos de este contacto).
+  // Se guarda SIEMPRE, también en conexiones que aún no tienen activadoras ni catálogo: cuando las configuren, sus
+  // contactos ya tendrán foto. Los contactos que ya existían reciben la suya en la carga inicial (lista de contactos
+  // de GHL), así que «sin foto» es un contacto nuevo y todo lo que trae es de ahora. Si Postgres falla al leer o
+  // guardar (tras un reintento), el evento se aborta (lanza) antes de decidir nada.
+  let anadidas = null;
+  if (contactId && tagsArray) {
+    const prev = await leerFoto(account.id, contactId);
+    if (prev) { const antes = new Set(prev); anadidas = new Set(tags.filter((t) => !antes.has(t))); }
+    await guardarFoto(account.id, contactId, tags);
+  }
+  // Sin etiquetas activadoras NI lead magnets configurados → no hay nada más que hacer.
   // No registramos nada para no inundar la traza (ContactTagUpdate salta con CADA cambio de etiqueta).
   if (!entradas.length && !lms.length) return;
 
-  // Qué etiquetas se acaban de AÑADIR: se compara con la última foto del contacto (Redis, 30 días).
-  // ContactTagUpdate salta con cualquier cambio y no dice cuál fue; sin esto, con dos etiquetas
-  // activadoras puestas ganaba «la última de la lista del panel», no la recién puesta, y el setter
-  // podía entrar hablando del lead magnet equivocado. anadidas === null → no había foto (1er evento).
-  const fotoKey = `tagset:${account.id}:${contactId}`;
-  let anadidas = null;
-  if (contactId && tagsArray) {
-    const prevRaw = await redis.get(fotoKey).catch(() => null);
-    if (prevRaw) { try { const prev = new Set(JSON.parse(prevRaw)); anadidas = new Set(tags.filter((t) => !prev.has(t))); } catch { anadidas = null; } }
-    await redis.set(fotoKey, JSON.stringify(tags), 'EX', 30 * 86400).catch(() => {});
-  }
-
   // Ficha de un lead magnet como contexto de conversación: QUÉ pidió, no una orden de entrada.
-  const fichaLm = (l) => [
-    l.name ? `El lead pidió «${l.name}»${l.keyword ? ` (comentó «${l.keyword}»)` : ''}.` : '',
-    l.promise, l.details,
-  ].filter(Boolean).join(' ').slice(0, 1500);
+  const fichaLm = fichaLeadMagnet;
 
   // 📚 Etiquetas de LEAD MAGNET (pestaña «Lead magnets» de la conexión): si al contacto le acaban de
   // poner la etiqueta de un lead magnet, se guarda como contexto del CTA de su conversación SIN

@@ -318,7 +318,8 @@ function bloqueLeadMagnets(account, conversation, history) {
   const reciente = normTag((Array.isArray(history) ? history.slice(-8) : []).map((m) => m?.body || '').join(' \n '));
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // mención por PALABRA COMPLETA (como ctaRegex del pipeline): «mapa» no casa dentro de «mapamundi»
-  const mencionado = (l) => [l.keyword, l.name].map(normTag).filter((k) => k.length >= 4)
+  // (la palabra clave admite alias separados por coma/«;»/«/»/«|»: cuenta la mención de cualquiera de ellos)
+  const mencionado = (l) => [...String(l.keyword || '').split(/[,;/|]/), l.name].map(normTag).filter((k) => k.length >= 4)
     .some((k) => new RegExp(`(?<![\\p{L}\\p{N}])${esc(k)}(?![\\p{L}\\p{N}])`, 'u').test(reciente));
   const porCta = lista.filter((l) => ctaTag && tagsDeLeadMagnet(l).includes(ctaTag));
   const porMencion = lista.filter((l) => !porCta.includes(l) && mencionado(l));

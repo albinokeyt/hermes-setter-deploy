@@ -12,7 +12,8 @@ import crypto from 'node:crypto';
 import { q, one } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { esSim, nuevoIdSim, getSimTags, setSimTags, borrarSimTags } from '../lib/sim.js';
-import { normTag, tagsDeLeadMagnet } from '../lib/tags.js';
+import { normTag, tagsDeLeadMagnet, fichaLeadMagnet } from '../lib/tags.js';
+import { borrarFoto, guardarFoto } from '../services/fotosEtiquetas.js';
 import { handleTagActivation } from './webhooks.js';
 import { handleInbound, mergeSetter, forzarSeguimientoAhora, acelerarRespuesta, logEvent, recordUsage, filtrarRepetidos } from '../services/pipeline.js';
 import { generateReply } from '../services/agent.js';
@@ -22,9 +23,8 @@ import { requireManageAgents, canAccessAccount } from '../lib/session.js';
 
 const VENTANAS = { nunca: null, abierta: "now() - interval '5 minutes'", cerrada: "now() - interval '25 hours'" };
 
-function fichaLm(l) {
-  return [l.name ? `El lead pidió «${l.name}»${l.keyword ? ` (comentó «${l.keyword}»)` : ''}.` : '', l.promise, l.details].filter(Boolean).join(' ').slice(0, 1500);
-}
+const fichaLm = fichaLeadMagnet; // el mismo texto que ve el setter real (la palabra principal, sin los alias)
+const palabraPrincipal = (l) => String(l?.keyword || '').split(/[,;/|]/)[0].trim();
 function resumenSetter(s) {
   return {
     id: s.id, name: s.name, is_default: s.is_default, bot_enabled: s.bot_enabled, activation_enabled: s.activation_enabled,
@@ -117,7 +117,7 @@ export default async function simuladorRoutes(app) {
     if (!m.provider_id) avisos.push('Sin proveedor de IA configurado: no puede generar respuestas.');
     await setSimTags(account.id, contactId, tagsIniciales);
     // Foto inicial de etiquetas: así la PRIMERA que se ponga cuenta como «recién puesta», igual que en un contacto real.
-    await redis.set(`tagset:${account.id}:${contactId}`, JSON.stringify(tagsIniciales.map(normTag)), 'EX', 30 * 86400).catch(() => {});
+    await guardarFoto(account.id, contactId, tagsIniciales.map(normTag)).catch(() => {});
     await redis.set(`simentrada:${conv.id}`, '1', 'EX', 30 * 86400).catch(() => {}); // su primer mensaje será ENTRADA (espera de inserción/CTA)
     // Las trazas del laboratorio no las poda el cap global del registro: se podan aquí por edad (7 días).
     await q(`DELETE FROM webhook_log WHERE created_at < now() - interval '7 days'
@@ -172,6 +172,14 @@ export default async function simuladorRoutes(app) {
     }
     const tags = await setSimTags(account.id, conv.ghl_contact_id, lista);
     const acelerar = req.body?.acelerar !== false;
+    // 🧪 «Ya las tenía»: etiquetas que el contacto arrastra DE ANTES (p. ej. una activadora de hace meses). Se le
+    // ponen y se guardan en su foto SIN procesarlas como evento, igual que un contacto real que ya las llevaba:
+    // sirve para comprobar que el setter no entra por una etiqueta vieja cuando después cambia otra.
+    if (b.ya_las_tenia) {
+      await guardarFoto(account.id, conv.ghl_contact_id, tags.map(normTag).filter(Boolean));
+      await logEvent('sim_etiquetas_de_antes', { conv: conv.id, contactId: conv.ghl_contact_id, tags });
+      return { tags, pendientes: await pendientes(conv.id), acelerada: false };
+    }
     await logEvent('sim_etiquetas', { conv: conv.id, contactId: conv.ghl_contact_id, tags });
     await handleTagActivation(account, { contactId: conv.ghl_contact_id, tags });
     let acelerada = false;
@@ -237,6 +245,7 @@ export default async function simuladorRoutes(app) {
       .concat([`ctags:${account.id}:${conv.ghl_contact_id}`, `tagset:${account.id}:${conv.ghl_contact_id}`, `ctapend:${account.id}:${conv.ghl_contact_id}`]);
     await redis.del(...claves).catch(() => {});
     await borrarSimTags(account.id, conv.ghl_contact_id);
+    await borrarFoto(account.id, conv.ghl_contact_id);
     // candados de activación por etiqueta (tagact:<setter>:<tag>:<contacto>)
     try {
       let cursor = '0';
@@ -267,7 +276,7 @@ export default async function simuladorRoutes(app) {
       const tag = l.tag || tagsDeLeadMagnet(l)[0] || '';
       out.push({ texto: 'Hola! Lo acabo de abrir, ¿de qué va exactamente?', cta_tag: tag, ficha: l.name, tipo: 'con_cta', espera: `Sabe que pidió «${l.name}» sin preguntar cuál` });
       out.push({ texto: 'No me ha llegado nada', cta_tag: tag, ficha: l.name, tipo: 'con_cta', espera: 'Reenvía o explica cómo conseguirlo, sin preguntar qué pidió' });
-      out.push({ texto: `¿De qué va lo de ${String(l.keyword).toLowerCase()}?`, cta_tag: '', ficha: l.name, tipo: 'sin_cta', espera: `Explica «${l.name}» con la ficha del catálogo` });
+      out.push({ texto: `¿De qué va lo de ${palabraPrincipal(l).toLowerCase()}?`, cta_tag: '', ficha: l.name, tipo: 'sin_cta', espera: `Explica «${l.name}» con la ficha del catálogo` });
     }
     for (const l of sinPalabra) out.push({ texto: `¿Qué es ${l.name}?`, cta_tag: '', ficha: l.name, tipo: 'sin_cta', espera: 'Lo describe con el catálogo (sin inventar)' });
     out.push({ texto: '¿Tenéis alguna guía gratis?', cta_tag: '', ficha: '', tipo: 'general', espera: 'Menciona materiales reales del catálogo' });
@@ -322,7 +331,7 @@ export default async function simuladorRoutes(app) {
       usoIa = true;
       const mensajes = filtrarRepetidos(r.mensajes, []).unicos;
       const resp = normTag(mensajes.join(' \n '));
-      const menciona = (l) => [l.keyword, l.name].map(normTag).filter((k) => k && k.length >= 4).some((k) => palabra(k).test(resp));
+      const menciona = (l) => [...String(l.keyword || '').split(/[,;/|]/), l.name].map(normTag).filter((k) => k && k.length >= 4).some((k) => palabra(k).test(resp));
       // «otros»: solo por NOMBRE de ficha (las palabras clave suelen ser palabras corrientes: email, cliente, precio…)
       const mencionaNombre = (l) => { const n = normTag(l.name); return n.length >= 8 && palabra(n).test(resp); };
       const objetivo = lm || (p?.ficha ? lms.find((l) => l.name === p.ficha) : null);

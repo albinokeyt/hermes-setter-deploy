@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
-import { normTag } from '../lib/tags.js';
+import { normTag, normPalabra, tagsDeLeadMagnet, palabrasDeLeadMagnet, leadMagnetPorPalabra, fichaLeadMagnet } from '../lib/tags.js';
 // 🧪 Simulador: contactos «sim:…» recorren este motor sin tocar GHL ni cobrar (ver lib/sim.js)
 import { esSim, getSimTags } from '../lib/sim.js';
 import { quitarPresentacionRepetida } from './agent.js';
@@ -33,6 +33,7 @@ const fuAdjKey = (id) => `fuadj:${id}`;
 const olvidarAjuste = (id) => redis.del(fuAdjKey(id)).catch(() => {});
 const fuKey = (id) => `futoken:${id}`;
 const ctaKey = (id) => `ctawait:${id}`; // instante (ms) hasta el que el setter espera por un CTA
+const ctaBotonKey = (id) => `ctaboton:${id}`; // la espera en curso la puso un botón/palabra a mitad de conversación (no la entrada)
 const activarKey = (id) => `activar:${id}`; // activación externa pendiente (el setter escribe él solo)
 const rescConvKey = (id) => `rescconv:${id}`; // la activación pendiente es un RESCATE (re-chequear al disparar)
 const activarAtKey = (id) => `activarat:${id}`; // cuándo se puso la activación pendiente (para juntar solo las «casi a la vez»)
@@ -454,6 +455,38 @@ function matchCtaWait(account, body) {
   return catchAll;
 }
 
+// 🎯 ¿El mensaje ENTERO es un CTA configurado (la palabra clave o el texto de un botón del workflow: «Quiero la
+// Guía», «❤️ Quiero la Guía», «Comunicación»)? Devuelve su espera en segundos o null. A diferencia de matchCtaWait
+// (que busca la palabra DENTRO del texto y solo se usa al entrar), este vale para cualquier mensaje posterior: si
+// el lead pulsa un botón del DM del workflow, el workflow sigue con su secuencia y el setter no debe meterse en
+// medio. No aplica el «cualquiera» (keyword vacía) ni a frases que solo contienen la palabra.
+function matchCtaExacto(account, body) {
+  const m = normPalabra(body);
+  if (!m || m.length > 60) return null;
+  let espera = null;
+  for (const c of (Array.isArray(account.ctas) ? account.ctas : [])) {
+    const kw = normPalabra(c?.keyword);
+    const w = Number(c?.wait_seconds);
+    if (!kw || !Number.isFinite(w) || w <= 0) continue;
+    if (kw === m) espera = Math.max(espera || 0, w);
+  }
+  return espera;
+}
+
+// Espera de la palabra clave de una FICHA del catálogo: la de su CTA configurado (cualquiera de sus alias) o, si la
+// conexión no lo tiene en la lista de esperas, 180 s. Así una palabra del catálogo siempre retiene al setter mientras
+// el workflow manda su DM, aunque nadie haya repetido esa palabra (o sus variantes) en «CTAs».
+function esperaDeFicha(account, lm) {
+  if (!lm) return 0;
+  const alias = new Set(palabrasDeLeadMagnet(lm));
+  let w = 0;
+  for (const c of (Array.isArray(account.ctas) ? account.ctas : [])) {
+    const s = Number(c?.wait_seconds);
+    if (s > 0 && alias.has(normPalabra(c?.keyword))) w = Math.max(w, s);
+  }
+  return w || 180;
+}
+
 export async function cancelBotJobs(conversationId) {
   await redis.del(debKey(conversationId));
   await redis.del(fuKey(conversationId)); await olvidarAjuste(conversationId);
@@ -696,6 +729,26 @@ export async function handleInbound(account, evt) {
 
   await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id); // el lead respondió → se cancela la cadena de seguimientos
 
+  // 📌 El lead acaba de pedir un material por su PALABRA CLAVE (su mensaje entero es «Comunicación», «Vídeo»…): ese
+  // pasa a ser el CTA de la conversación AHORA, sin esperar a la etiqueta. Si ya lo había pedido otra vez (lleva la
+  // etiqueta «cta: …» desde hace meses), GHL no avisa de ningún cambio de etiquetas y el setter se quedaba con el
+  // CTA anterior: hablaba del test a quien acababa de pedir la guía de comunicación, o preguntaba «¿cuál quieres?».
+  // Solo en Instagram y Facebook, que es donde GHL tiene los workflows de palabra clave: por WhatsApp, «Comunicación»
+  // es una respuesta a la pregunta del setter (o de la plantilla de Georgi), no pedir la guía.
+  const canalDePalabras = channel === 'IG' || channel === 'FB';
+  const lmPedido = canalDePalabras ? leadMagnetPorPalabra(account, textBody) : null;
+  if (lmPedido) {
+    const tagLm = tagsDeLeadMagnet(lmPedido)[0];
+    const ctxLm = fichaLeadMagnet(lmPedido);
+    try {
+      await guardarContextoCta(account, evt.contactId, tagLm, ctxLm);
+      conv.cta_tag = tagLm; conv.cta_context = ctxLm; conv.cta_at = new Date().toISOString();
+      await logEvent('contexto_por_palabra', { conv: conv.id, contactId: evt.contactId, palabra: textBody.slice(0, 40), etiqueta: tagLm, nombre: lmPedido.name || '' });
+    } catch (err) {
+      await logEvent('error_contexto_cta', { contactId: evt.contactId, error: String(err.message).slice(0, 120) });
+    }
+  }
+
   if ((!conv.lead_name || !conv.lead_email) && (account.location_id || account.pit_token) && !esSim(evt.contactId)) {
     ghl.getContact(account, evt.contactId)
       .then((c) => {
@@ -754,7 +807,7 @@ export async function handleInbound(account, evt) {
 
     let delayMs = null;
     if (esEntrada) {
-      const ctaWait = matchCtaWait(account, body);
+      const ctaWait = Math.max(matchCtaWait(account, body) || 0, esperaDeFicha(account, lmPedido)) || null;
       const wait = Math.max(insWait, ctaWait || 0);
       if (wait > 0) {
         delayMs = wait * 1000;
@@ -768,7 +821,35 @@ export async function handleInbound(account, evt) {
     } else {
       // mensajes posteriores durante una espera en curso: respetar el mínimo que falta
       const target = Number(await redis.get(ctaKey(conv.id)));
-      const remaining = target ? target - Date.now() : 0;
+      let remaining = target ? target - Date.now() : 0;
+      // …y si este mensaje ES un CTA entero (palabra clave o botón del DM del workflow), su espera también cuenta
+      // aunque no sea el primero: el workflow sigue con su secuencia (entrega, etiqueta de abrió/no abrió) y el
+      // setter entra después, por la activación o al vencer la espera.
+      // No se aplica si hay una ACTIVACIÓN en cola (el workflow ya terminó y el setter va a entrar: un botón pulsado a
+      // destiempo no debe retrasarla 15 min). Y con el setter hablando hace poco (su último mensaje es de las últimas
+      // 3 h), el botón o la palabra llegan con la conversación en marcha —botón viejo de un DM, respuesta de una
+      // palabra a su pregunta—: tope de 120 s. Un lead que VUELVE semanas después conserva la espera completa.
+      const hayActivacion = Boolean(await redis.exists(activarKey(conv.id)));
+      let ctaExacto = (canalDePalabras && !hayActivacion)
+        ? Math.max(matchCtaExacto(account, textBody) || 0, esperaDeFicha(account, lmPedido))
+        : 0;
+      const setterReciente = async () => Boolean(await one(
+        `SELECT 1 AS x FROM messages WHERE conversation_id = $1 AND direction = 'outbound' AND source IN ('bot', 'seguimiento')
+            AND created_at > now() - interval '3 hours' LIMIT 1`, [conv.id]));
+      if (ctaExacto > 120 && (await setterReciente())) ctaExacto = 120;
+      if (ctaExacto && ctaExacto * 1000 > remaining) {
+        remaining = ctaExacto * 1000;
+        await redis.set(ctaKey(conv.id), String(Date.now() + remaining), 'EX', ctaExacto + 300);
+        await redis.set(ctaBotonKey(conv.id), '1', 'EX', ctaExacto + 300); // esta espera la puso un botón/palabra a mitad de conversación
+        await logEvent('cta_espera', { conv: conv.id, segundos: ctaExacto, por: 'mensaje_cta' });
+      } else if (!ctaExacto && remaining > 120_000 && canalDePalabras && (await redis.exists(ctaBotonKey(conv.id)))) {
+        // El lead ESCRIBE algo (no es un botón ni una palabra clave) mientras se esperaba al workflow por un botón:
+        // es una pregunta de verdad («no me abre», «¿cuánto cuesta?») y no puede quedarse 15 min sin respuesta.
+        remaining = 120_000;
+        await redis.set(ctaKey(conv.id), String(Date.now() + remaining), 'EX', 420);
+        await redis.del(ctaBotonKey(conv.id));
+        await logEvent('cta_espera', { conv: conv.id, segundos: 120, por: 'pregunta_durante_boton' });
+      }
       if (remaining > 0) delayMs = Math.max(remaining, Math.max(5, account.debounce_seconds || 35) * 1000);
     }
     await scheduleDebounce(account, conv.id, delayMs);
@@ -917,6 +998,7 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   // debounce (≥3 s) debe re-leerlas frescas por si se añadió una justo al activar (no heredamos la
   // re-lectura del insFreshKey que acabamos de borrar).
   await redis.del(ctaKey(conv.id));
+  await redis.del(ctaBotonKey(conv.id));
   await redis.del(insFreshKey(conv.id));
   await redis.del(ctagsKey(conv));
 
@@ -1061,7 +1143,12 @@ async function saveGhlMessages(conv, messages) {
 export async function scheduleDebounce(account, conversationId, delayMs = null) {
   const token = crypto.randomUUID();
   await redis.set(debKey(conversationId), token, 'EX', 60 * 60 * 24 * 3);
-  const delay = delayMs ?? Math.max(5, account.debounce_seconds || 35) * 1000;
+  let delay = delayMs ?? Math.max(5, account.debounce_seconds || 35) * 1000;
+  // Si hay una espera de CTA en curso (el lead pulsó un botón del DM del workflow), ninguna reprogramación la acorta:
+  // antes, un job que estaba generando respuesta veía el mensaje nuevo y volvía a programar a 35 s, pisando los 900 s.
+  // Quien de verdad quiere entrar ya (activación por etiqueta, acelerar del simulador) borra ctaKey antes de llamar.
+  const faltaCta = (Number(await redis.get(ctaKey(conversationId)).catch(() => 0)) || 0) - Date.now();
+  if (faltaCta > delay) delay = faltaCta;
   await redis.set(`debat:${conversationId}`, String(Date.now() + delay), 'EX', 60 * 60 * 24 * 3).catch(() => {}); // instante objetivo (informativo)
   await debounceQueue.add('debounce', { conversationId, token }, { delay });
 }

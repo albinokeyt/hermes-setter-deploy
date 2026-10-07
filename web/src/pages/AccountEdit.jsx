@@ -430,7 +430,7 @@ export default function AccountEdit() {
               {lms.map((l, i) => (
                 <div key={i} className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-                    <Input label="Palabra que lo pide" maxLength={80} value={l.keyword || ''} onChange={(e) => setLm(i, { keyword: e.target.value })} placeholder="ej. CIENCIA" />
+                    <Input label="Palabra que lo pide (y variantes, separadas por coma)" maxLength={200} value={l.keyword || ''} onChange={(e) => setLm(i, { keyword: e.target.value })} placeholder="ej. CIENCIA, LA CIENCIA" />
                     <Input label="Nombre" maxLength={160} value={l.name || ''} onChange={(e) => setLm(i, { name: e.target.value })} placeholder="ej. Los 7 Protocolos de Precios" />
                     <Input label="Etiqueta que lo marca" maxLength={160} value={l.tag || ''} onChange={(e) => setLm(i, { tag: e.target.value })} placeholder="ej. cta ciencia" hint="La MISMA que pone el workflow (con sus tildes)." />
                   </div>
