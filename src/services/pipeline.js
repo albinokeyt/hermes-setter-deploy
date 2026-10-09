@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { normTag, normPalabra, tagsDeLeadMagnet, palabrasDeLeadMagnet, leadMagnetPorPalabra, fichaLeadMagnet } from '../lib/tags.js';
+import { estadoDelWorkflow, olvidarFinDeFlujo } from './fotosEtiquetas.js';
 // 🧪 Simulador: contactos «sim:…» recorren este motor sin tocar GHL ni cobrar (ver lib/sim.js)
 import { esSim, getSimTags } from '../lib/sim.js';
 import { quitarPresentacionRepetida } from './agent.js';
@@ -32,7 +33,13 @@ const debKey = (id) => `debtoken:${id}`;
 const fuAdjKey = (id) => `fuadj:${id}`;
 const olvidarAjuste = (id) => redis.del(fuAdjKey(id)).catch(() => {});
 const fuKey = (id) => `futoken:${id}`;
+// 🧪 Simulador: «el lead solo comentó» → Meta rechaza el envío aunque nuestro reloj dé la ventana por abierta.
+export const simRechazoKey = (id) => `simrechazo:${id}`;
 const ctaKey = (id) => `ctawait:${id}`; // instante (ms) hasta el que el setter espera por un CTA
+// Alguien que NO es el setter acaba de escribirle a este contacto (DM de un workflow —los de botón llegan sin texto—,
+// campaña o una persona). Dura 25 min: lo que tarda en caducar el workflow más largo (20 min) y un margen.
+const salienteAjenoKey = (accountId, contactId) => `salajeno:${accountId}:${contactId}`;
+const ctaSaltadaKey = (id) => `ctasaltada:${id}`; // espera (s) que se saltó al dar el workflow por terminado (ver reponerEsperaSaltada)
 const ctaBotonKey = (id) => `ctaboton:${id}`; // la espera en curso la puso un botón/palabra a mitad de conversación (no la entrada)
 const activarKey = (id) => `activar:${id}`; // activación externa pendiente (el setter escribe él solo)
 const rescConvKey = (id) => `rescconv:${id}`; // la activación pendiente es un RESCATE (re-chequear al disparar)
@@ -125,6 +132,42 @@ async function activationLogDone(conversationId, status, extra = '') {
     }
   } catch (err) {
     console.error('[activation_log done]', err.message);
+  }
+}
+// La activación ya figuraba «respondido» (se marca al ENCOLAR el mensaje, con su texto) pero el mensaje NO llegó a
+// salir: GHL/Meta lo rechazó, la ventana se cerró o la conversación se pausó entre medias. Corrige SU fila para que el
+// panel no diga «respondió» de un mensaje que el lead nunca recibió; conserva el texto (lo que iba a decir). La fila
+// se localiza por el texto de la primera burbuja (el `message` guardado empieza por ella), no por «la más reciente de
+// la conversación»: entre el encolado y el envío puede haber entrado otra activación. Idempotente.
+// (activationLogDone no sirve aquí: solo toca filas «esperando».) El motivo empieza por «no_entregado» (lo rechazó
+// GHL/Meta) o «no_enviado» (lo paró Hermes antes de enviarlo): el panel los explica distinto.
+async function activationLogNoEntregada(conversationId, burbuja, motivo) {
+  try {
+    await q(
+      `UPDATE activation_log SET status = 'descartado', motivo = $2, updated_at = now()
+        WHERE id = (SELECT id FROM activation_log
+                     WHERE conversation_id = $1 AND status = 'respondido' AND updated_at > now() - interval '30 minutes'
+                       AND left(message, length($3::text)) = $3::text
+                     ORDER BY id DESC LIMIT 1)`,
+      [conversationId, String(motivo || 'no_entregado').slice(0, 200), String(burbuja || '').slice(0, 4000)]
+    );
+  } catch (err) {
+    console.error('[activation_log no entregada]', err.message);
+  }
+}
+// …y al revés: el reintento del envío SÍ salió después de un rechazo: su fila vuelve a «respondido».
+async function activationLogEntregada(conversationId, burbuja) {
+  try {
+    await q(
+      `UPDATE activation_log SET status = 'respondido', motivo = '', updated_at = now()
+        WHERE id = (SELECT id FROM activation_log
+                     WHERE conversation_id = $1 AND status = 'descartado' AND motivo LIKE 'no_entregado%'
+                       AND updated_at > now() - interval '30 minutes' AND left(message, length($2::text)) = $2::text
+                     ORDER BY id DESC LIMIT 1)`,
+      [conversationId, String(burbuja || '').slice(0, 4000)]
+    );
+  } catch (err) {
+    console.error('[activation_log entregada]', err.message);
   }
 }
 // Reprograma la hora objetivo (p. ej. aplazada por horario) para que el temporizador sea correcto.
@@ -476,6 +519,45 @@ function matchCtaExacto(account, body) {
 // Espera de la palabra clave de una FICHA del catálogo: la de su CTA configurado (cualquiera de sus alias) o, si la
 // conexión no lo tiene en la lista de esperas, 180 s. Así una palabra del catálogo siempre retiene al setter mientras
 // el workflow manda su DM, aunque nadie haya repetido esa palabra (o sus variantes) en «CTAs».
+// ¿El BOTÓN del DM del workflow se ha pulsado con el workflow YA terminado? Entonces GHL no va a contestar a ese botón
+// y esperar «al workflow» es dejar al lead colgado: caso real, botón pulsado 3 h después del DM → 18 min sin respuesta
+// de nadie. Solo actúa con certeza; ante cualquier duda devuelve false y se espera como siempre. Hace falta TODO esto:
+//  · a ESTE contacto se le vio quitar la etiqueta de flujo y no la lleva ahora (services/fotosEtiquetas.js);
+//  · desde entonces no ha pedido nada más: cta_at no es posterior al final (el margen de 60 s es para la activadora
+//    que el propio workflow pone al acabar, que también fecha el CTA). Si pidió otro recurso, su workflow puede ser
+//    uno que no usa la etiqueta de flujo y seguir en marcha;
+//  · nadie ajeno al setter le ha escrito en los últimos 25 min: un DM reciente de un workflow (también de los que no
+//    usan la etiqueta, o de otro que se solapa con el que terminó) significa que hay uno vivo esperando ese botón.
+async function workflowYaTerminado(account, conv, contactId) {
+  const w = await estadoDelWorkflow(account.id, contactId);
+  if (w.enCurso !== false) return false;
+  const cta = conv?.cta_at ? new Date(conv.cta_at).getTime() : 0;
+  if (cta > w.finAt + 60_000) return false;
+  if (await redis.exists(salienteAjenoKey(account.id, contactId)).catch(() => 1)) return false;
+  return true;
+}
+// Repone una espera de CTA sobre la respuesta que hay en cola (y deja constancia).
+async function reponerEspera(account, conversationId, seg, por) {
+  await redis.set(ctaKey(conversationId), String(Date.now() + seg * 1000), 'EX', seg + 300);
+  await redis.set(ctaBotonKey(conversationId), '1', 'EX', seg + 300);
+  await scheduleDebounce(account, conversationId, seg * 1000);
+  await logEvent('cta_espera', { conv: conversationId, segundos: seg, por });
+}
+// Red de seguridad del atajo anterior. Se dio un workflow por terminado, se saltó la espera del CTA… y resulta que el
+// workflow ACABA de empezar: su etiqueta de flujo llega ahora (el aviso de etiquetas de GHL se retrasó, o el mensaje
+// era una palabra que arranca un workflow y no está en el catálogo). Si el setter aún no ha respondido, se repone la
+// espera saltada para que no hable encima de los DMs del workflow. La llama el webhook de etiquetas.
+export async function reponerEsperaSaltada(account, contactId) {
+  const convs = await q(`SELECT id FROM conversations WHERE account_id = $1 AND ghl_contact_id = $2 ORDER BY updated_at DESC LIMIT 3`, [account.id, String(contactId)]);
+  for (const c of convs) {
+    const seg = Number(await redis.get(ctaSaltadaKey(c.id)).catch(() => 0)) || 0;
+    if (seg <= 0) continue;
+    if (!(await redis.exists(debKey(c.id)))) continue; // aún no hay respuesta en cola (handleInbound lo re-comprueba al programarla) o ya salió
+    await redis.del(ctaSaltadaKey(c.id)).catch(() => {});
+    if (await redis.exists(activarKey(c.id))) continue; // una activación tiene el control de la conversación
+    await reponerEspera(account, c.id, seg, 'workflow_recien_empezado');
+  }
+}
 function esperaDeFicha(account, lm) {
   if (!lm) return 0;
   const alias = new Set(palabrasDeLeadMagnet(lm));
@@ -743,6 +825,7 @@ export async function handleInbound(account, evt) {
     try {
       await guardarContextoCta(account, evt.contactId, tagLm, ctxLm);
       conv.cta_tag = tagLm; conv.cta_context = ctxLm; conv.cta_at = new Date().toISOString();
+      await olvidarFinDeFlujo(account.id, evt.contactId); // empieza un workflow nuevo: el final del anterior ya no cuenta
       await logEvent('contexto_por_palabra', { conv: conv.id, contactId: evt.contactId, palabra: textBody.slice(0, 40), etiqueta: tagLm, nombre: lmPedido.name || '' });
     } catch (err) {
       await logEvent('error_contexto_cta', { contactId: evt.contactId, error: String(err.message).slice(0, 120) });
@@ -806,8 +889,20 @@ export async function handleInbound(account, evt) {
     const esEntrada = conv.is_new || volvioTrasInactividad || recienAsignado;
 
     let delayMs = null;
+    // Espera de CTA que se salta por dar el workflow por terminado (ver workflowYaTerminado). Se apunta en Redis para
+    // que el webhook de etiquetas pueda reponerla si el workflow resulta que empieza ahora (reponerEsperaSaltada).
+    let esperaSaltada = 0;
+    await redis.del(ctaSaltadaKey(conv.id)).catch(() => {}); // la de un mensaje anterior ya no aplica a este
     if (esEntrada) {
-      const ctaWait = Math.max(matchCtaWait(account, body) || 0, esperaDeFicha(account, lmPedido)) || null;
+      let ctaWait = Math.max(matchCtaWait(account, body) || 0, esperaDeFicha(account, lmPedido)) || null;
+      // Un BOTÓN del DM del workflow (mensaje = CTA entero que no es la palabra de una ficha: esa arranca el workflow
+      // ahora) pulsado cuando el workflow YA terminó: no se le espera (queda la espera de inserción de siempre).
+      if (ctaWait && canalDePalabras && !lmPedido && matchCtaExacto(account, textBody) && (await workflowYaTerminado(account, conv, evt.contactId))) {
+        esperaSaltada = ctaWait;
+        await redis.set(ctaSaltadaKey(conv.id), String(ctaWait), 'EX', 600).catch(() => {});
+        await logEvent('cta_sin_espera', { conv: conv.id, motivo: 'workflow_terminado', boton: textBody.slice(0, 40) });
+        ctaWait = null;
+      }
       const wait = Math.max(insWait, ctaWait || 0);
       if (wait > 0) {
         delayMs = wait * 1000;
@@ -833,15 +928,33 @@ export async function handleInbound(account, evt) {
       let ctaExacto = (canalDePalabras && !hayActivacion)
         ? Math.max(matchCtaExacto(account, textBody) || 0, esperaDeFicha(account, lmPedido))
         : 0;
+      // Un BOTÓN (no una palabra clave: esa arranca el workflow ahora) pulsado con el workflow YA terminado o caducado:
+      // GHL no va a contestar a ese botón, así que el setter responde con su ritmo normal en vez de esperar 15 min.
       const setterReciente = async () => Boolean(await one(
         `SELECT 1 AS x FROM messages WHERE conversation_id = $1 AND direction = 'outbound' AND source IN ('bot', 'seguimiento')
             AND created_at > now() - interval '3 hours' LIMIT 1`, [conv.id]));
       if (ctaExacto > 120 && (await setterReciente())) ctaExacto = 120;
+      let atajo = false;
+      if (ctaExacto && !lmPedido && (await workflowYaTerminado(account, conv, evt.contactId))) {
+        esperaSaltada = ctaExacto;
+        await redis.set(ctaSaltadaKey(conv.id), String(ctaExacto), 'EX', 600).catch(() => {});
+        await logEvent('cta_sin_espera', { conv: conv.id, motivo: 'workflow_terminado', boton: textBody.slice(0, 40) });
+        ctaExacto = 0;
+        atajo = true;
+      }
       if (ctaExacto && ctaExacto * 1000 > remaining) {
         remaining = ctaExacto * 1000;
         await redis.set(ctaKey(conv.id), String(Date.now() + remaining), 'EX', ctaExacto + 300);
         await redis.set(ctaBotonKey(conv.id), '1', 'EX', ctaExacto + 300); // esta espera la puso un botón/palabra a mitad de conversación
         await logEvent('cta_espera', { conv: conv.id, segundos: ctaExacto, por: 'mensaje_cta' });
+      } else if (atajo) {
+        // Workflow terminado y aún quedaba una espera de CTA anterior que ninguna activación recogió: ya no hay
+        // workflow al que esperar. Se deja, como mucho, el margen corto de 120 s.
+        if (remaining > 120_000) {
+          remaining = 120_000;
+          await redis.set(ctaKey(conv.id), String(Date.now() + remaining), 'EX', 420);
+          await redis.del(ctaBotonKey(conv.id));
+        }
       } else if (!ctaExacto && remaining > 120_000 && canalDePalabras && (await redis.exists(ctaBotonKey(conv.id)))) {
         // El lead ESCRIBE algo (no es un botón ni una palabra clave) mientras se esperaba al workflow por un botón:
         // es una pregunta de verdad («no me abre», «¿cuánto cuesta?») y no puede quedarse 15 min sin respuesta.
@@ -853,6 +966,12 @@ export async function handleInbound(account, evt) {
       if (remaining > 0) delayMs = Math.max(remaining, Math.max(5, account.debounce_seconds || 35) * 1000);
     }
     await scheduleDebounce(account, conv.id, delayMs);
+    // Se saltó la espera y, mientras se decidía, llegó el aviso de que el workflow EMPIEZA (su etiqueta de flujo ya
+    // está en la foto): el webhook de etiquetas pudo pasar antes de que hubiera respuesta en cola. Se repone aquí.
+    if (esperaSaltada && (await estadoDelWorkflow(account.id, evt.contactId)).enCurso === true && (await redis.exists(ctaSaltadaKey(conv.id)).catch(() => 0))) {
+      await redis.del(ctaSaltadaKey(conv.id)).catch(() => {});
+      if (!(await redis.exists(activarKey(conv.id)))) await reponerEspera(account, conv.id, esperaSaltada, 'workflow_recien_empezado');
+    }
   }
   return conv;
 }
@@ -1174,6 +1293,9 @@ export async function handleOutboundEvent(account, evt) {
   if (!body) {
     const fresh = await redis.set(`outnobody:${account.id}`, '1', 'EX', 60, 'NX').catch(() => null);
     if (fresh) await logEvent('saliente_sin_texto_ignorado', { contacto: evt.contactId || null, canal: channel, messageId: evt.messageId || null, keys: Object.keys(evt || {}).slice(0, 20) }).catch(() => {});
+    // Sin texto no es nuestro (el setter siempre manda texto): suele ser el DM con botón de un workflow. Se apunta
+    // que hay alguien más escribiéndole ahora (lo usa workflowYaTerminado).
+    if (evt.contactId) await redis.set(salienteAjenoKey(account.id, evt.contactId), String(Date.now()), 'EX', 1500).catch(() => {});
     return;
   }
 
@@ -1278,6 +1400,7 @@ export async function handleOutboundEvent(account, evt) {
         [conv.id, body, evt.messageId || null, origen]
       );
       await q(`UPDATE conversations SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
+      await redis.set(salienteAjenoKey(account.id, evt.contactId), String(Date.now()), 'EX', 1500).catch(() => {}); // ver workflowYaTerminado
     }
 
     // PAUSA POR INTERVENCIÓN EXTERNA. Lo que llega aquí ya está filtrado (guard `sent:` + respaldo anti-eco por
@@ -2082,6 +2205,7 @@ async function processDebounceInner(job) {
     return;
   }
   if (token && !(await consumeDebounceToken(conversationId, token))) return; // otra ejecución ganó
+  await redis.del(ctaSaltadaKey(conversationId)).catch(() => {}); // ya responde: no queda espera saltada que reponer
 
   if (Object.keys(result.memoria).length) {
     await q(`UPDATE conversations SET memory = memory || $1::jsonb, updated_at = now() WHERE id = $2`, [
@@ -2179,7 +2303,13 @@ export async function processSend(job) {
       await q(`UPDATE conversations SET followup_state = 'no_entregado', updated_at = now() WHERE id = $1`, [conv.id]).catch(() => {});
     }
   };
-  if ((conv.bot_paused && !bypassPause) || !account.bot_enabled || !account.ai_enabled) { await descartado(conv.bot_paused ? 'conversacion_pausada' : 'ia_o_bot_apagado'); return; }
+  if ((conv.bot_paused && !bypassPause) || !account.bot_enabled || !account.ai_enabled) {
+    const motivoDescarte = conv.bot_paused ? 'conversacion_pausada' : 'ia_o_bot_apagado';
+    await descartado(motivoDescarte);
+    // la primera burbuja de una activación se queda sin salir: el registro no puede seguir diciendo «respondió»
+    if (deActivacion) await activationLogNoEntregada(conv.id, body, `no_enviado (${motivoDescarte})`);
+    return;
+  }
   if (snapshotId && (await lastInboundId(conversationId)) !== snapshotId) return; // el lead volvió a escribir: el ciclo normal responde
   // Burbuja IDÉNTICA a una que el setter mandó hace menos de 10 min y sin que el lead escribiera entre medias
   // (dos ciclos respondiendo a lo mismo): no se manda dos veces.
@@ -2198,7 +2328,7 @@ export async function processSend(job) {
     await logEvent('envio_descartado', { conv: conv.id, motivo: 'ventana_cerrada_al_enviar', source: source || 'bot', canal: conv.channel }).catch(() => {});
     // una activación al borde de la ventana: el panel ya decía 'respondido' pero el mensaje murió aquí
     if (deActivacion) {
-      await activationLogDone(conv.id, 'descartado', 'ventana_cerrada_al_enviar').catch(() => {});
+      await activationLogNoEntregada(conv.id, body, 'no_entregado (ventana de Meta cerrada al enviar)');
       await logEvent('activacion_ventana_cerrada_al_enviar', { conv: conv.id }).catch(() => {});
     }
     return;
@@ -2216,13 +2346,21 @@ export async function processSend(job) {
   await redis.setex(sentKey, 3600, '1').catch(() => {});
   let res;
   const simulado = esSim(conv.ghl_contact_id);
-  if (simulado) {
-    // 🧪 SIMULACIÓN: el mensaje «sale» solo hacia la base de datos (nunca a GHL ni al lead) y queda trazado.
-    // Todo lo anterior (pausa, ventana de Meta, snapshot) se ha comprobado igual que en producción.
-    res = { messageId: null, simulado: true };
-    await logEvent('sim_mensaje_enviado', { conv: conv.id, source: source || 'bot', body: String(body || '').slice(0, 160) }).catch(() => {});
-  } else try {
-    res = await ghl.sendMessage(account, { channel: conv.channel, contactId: conv.ghl_contact_id, message: body });
+  try {
+    if (simulado) {
+      // 🧪 «Solo comentó» (estado «rechazo» de la ventana del simulador): nuestro reloj da la ventana por abierta —el
+      // comentario cuenta como entrante— pero Meta rechaza el envío, igual que en producción con quien nunca escribió
+      // por privado. Recorre el mismo camino de rechazo en firme que un 400 real de GHL.
+      if (await redis.get(simRechazoKey(conv.id)).catch(() => null)) {
+        throw Object.assign(new Error('GHL POST /conversations/messages → 400: (simulación) el lead solo comentó: Meta no permite escribirle'), { status: 400 });
+      }
+      // 🧪 SIMULACIÓN: el mensaje «sale» solo hacia la base de datos (nunca a GHL ni al lead) y queda trazado.
+      // Todo lo anterior (pausa, ventana de Meta, snapshot) se ha comprobado igual que en producción.
+      res = { messageId: null, simulado: true };
+      await logEvent('sim_mensaje_enviado', { conv: conv.id, source: source || 'bot', body: String(body || '').slice(0, 160) }).catch(() => {});
+    } else {
+      res = await ghl.sendMessage(account, { channel: conv.channel, contactId: conv.ghl_contact_id, message: body });
+    }
   } catch (err) {
     const st = Number(err?.status) || 0;
     const rechazoFirme = st >= 400 && st < 500 && st !== 408 && st !== 429;
@@ -2231,6 +2369,34 @@ export async function processSend(job) {
       // Rechazo en firme (típico: Meta cierra la ventana aunque nuestro reloj la diera por abierta):
       // queda trazado y, si era un seguimiento, deja de figurar como entregado.
       if (rechazoFirme) await descartado(`rechazado_por_ghl_${st}`);
+      // Era la primera burbuja de una ACTIVACIÓN: el panel ya decía «respondió» y el lead no ha recibido nada. Caso
+      // típico y medido (Despierta en Pareja: 135 de 410 activaciones en 27 días): el lead solo COMENTÓ, y la única
+      // respuesta privada que Meta permite por comentario ya la gastó el DM del workflow.
+      // · El registro se corrige en CUALQUIER intento (es idempotente, y si el reintento sale se repone «respondido»).
+      // · Lo que no tiene vuelta atrás —anular el seguimiento, dejar el aviso— solo en el ÚLTIMO intento: perseguir a
+      //   quien no recibió el primer mensaje no tiene sentido (y también sería rechazado). No se anula si el fallo es
+      //   de la CONEXIÓN con GHL (401/403: token caducado, permiso): eso no es «el lead no puede recibir» y el
+      //   seguimiento puede salir cuando se arregle. Si el lead escribe o pulsa el botón, el ciclo normal responde y
+      //   reprograma sus seguimientos.
+      if (deActivacion) {
+        const ultimoIntento = simulado || (Number(job.attemptsMade) || 0) + 1 >= (Number(job.opts?.attempts) || 1);
+        if (rechazoFirme || ultimoIntento) {
+          const detalle = String(err?.message || '').replace(/^GHL \S+ \S+ → /, '').replace(/\s+/g, ' ').slice(0, 150);
+          await activationLogNoEntregada(conv.id, body, `no_entregado (${detalle})`);
+        }
+        if (rechazoFirme && ultimoIntento) {
+          const deConexion = st === 401 || st === 403;
+          if (!deConexion) {
+            await redis.del(fuKey(conv.id)).catch(() => {});
+            await olvidarAjuste(conv.id);
+            await q(`UPDATE conversations SET followup_state = 'no_entregado', updated_at = now() WHERE id = $1`, [conv.id]).catch(() => {});
+          }
+          await logEvent('activacion_no_entregada', { conv: conv.id, account: account.id, contactId: conv.ghl_contact_id, canal: conv.channel, status: st, seguimiento_anulado: !deConexion, error: String(err?.message || '').slice(0, 300) }).catch(() => {});
+        }
+      }
+      // 🧪 En simulación no se relanza: el rechazo ya quedó trazado en la conversación simulada, y un job fallido
+      // dejaría además un «error_worker» en el registro general como si fuera un fallo real.
+      if (simulado) return;
     } else {
       await logEvent('envio_ambiguo_no_reintentado', { conv: conv.id, error: String(err?.message || err).slice(0, 200) }).catch(() => {});
       // Se asume entregado (por eso no se reintenta): el consumo se registra igual. Si de verdad no
@@ -2252,6 +2418,8 @@ export async function processSend(job) {
       [conv.id, source || 'bot', body, ghlMessageId, gasto?.pt ?? null, gasto?.ct ?? null, gasto?.usd ?? null, gasto?.modelo || null, gasto?.debugId ?? null]
     );
     await q(`UPDATE conversations SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [conv.id]);
+    // Solo en un REINTENTO: un intento anterior de ESTE envío fue rechazado y dejó la fila en «no entregado».
+    if (deActivacion && (Number(job.attemptsMade) || 0) > 0) await activationLogEntregada(conv.id, body);
   } catch (err) {
     // el mensaje YA salió: no relanzamos el job por un fallo de contabilidad
     await logEvent('error_contabilidad_envio', { conv: conv.id, error: err.message }).catch(() => {});

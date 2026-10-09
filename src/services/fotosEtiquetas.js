@@ -58,6 +58,56 @@ export async function borrarFoto(accountId, contactId) {
   await redis.del(fotoKey(accountId, contactId)).catch(() => {});
 }
 
+// ── ¿El workflow de GHL de ESTE contacto sigue en marcha o ya terminó? ───────────────────────────
+// Los workflows de palabra clave de la casa ponen «entra-por-lm» al empezar (cuando mandan el DM con botón) y la
+// quitan al terminar (justo antes de poner la activadora de abrió / no abrió). Mientras el contacto la lleva, el
+// workflow está a mitad de su secuencia; cuando VEMOS que se la quitan, ese workflow acabó (o caducó) y se apunta
+// el instante. La certeza es por contacto y por transición vista: que un contacto «no lleve la etiqueta» no prueba
+// nada (hay workflows con botón que nunca la ponen, y avisos de etiquetas que se pierden), así que sin haber visto
+// la retirada la respuesta es «no se sabe» y todo sigue como siempre.
+export const ETIQUETAS_DE_FLUJO = ['entra-por-lm'];
+const flujoFinKey = (accountId, contactId) => `flujofin:${accountId}:${contactId}`;
+const flujoIniKey = (accountId, contactId) => `flujoini:${accountId}:${contactId}`;
+const llevaFlujo = (tags) => Array.isArray(tags) && tags.some((t) => ETIQUETAS_DE_FLUJO.includes(t));
+
+// La llama el webhook de etiquetas con la foto anterior y la lista nueva (ya normalizadas). Devuelve 'empezo' si la
+// etiqueta de flujo aparece ahora, 'termino' si se la acaban de quitar, o null si no cambia.
+export async function anotarFlujo(accountId, contactId, antes, ahora) {
+  const tenia = llevaFlujo(antes), tiene = llevaFlujo(ahora);
+  if (tiene) {
+    await redis.del(flujoFinKey(accountId, contactId)).catch(() => {});
+    if (tenia) return null;
+    await redis.set(flujoIniKey(accountId, contactId), String(Date.now()), 'EX', 2 * 86400).catch(() => {});
+    return 'empezo';
+  }
+  if (tenia) {
+    // Un workflow nunca quita la etiqueta en su primer minuto (su camino más corto dura 3): una «retirada» tan
+    // temprana es un aviso atrasado de GHL que trae la lista vieja, no el final del workflow. No se apunta.
+    const ini = Number(await redis.get(flujoIniKey(accountId, contactId)).catch(() => 0)) || 0;
+    if (ini && Date.now() - ini < 60_000) return null;
+    await redis.set(flujoFinKey(accountId, contactId), String(Date.now()), 'EX', 14 * 86400).catch(() => {});
+    return 'termino';
+  }
+  return null;
+}
+
+// El lead acaba de pedir otro recurso (escribió su palabra clave): empieza un workflow nuevo y el «terminó» del
+// anterior ya no dice nada sobre este. Se vuelve a «no se sabe» hasta ver sus etiquetas.
+export async function olvidarFinDeFlujo(accountId, contactId) {
+  await redis.del(flujoFinKey(accountId, contactId)).catch(() => {});
+}
+
+// { enCurso: true } → lleva la etiqueta · { enCurso: false, finAt } → se la vimos quitar en finAt (ms) ·
+// { enCurso: null } → no se sabe. Nunca lanza: ante un fallo de lectura, «no se sabe».
+export async function estadoDelWorkflow(accountId, contactId) {
+  try {
+    if (llevaFlujo(await leerFoto(accountId, contactId))) return { enCurso: true };
+    const fin = Number(await redis.get(flujoFinKey(accountId, contactId))) || 0;
+    if (fin > 0) return { enCurso: false, finAt: fin };
+  } catch { /* «no se sabe» */ }
+  return { enCurso: null };
+}
+
 // ── Carga inicial ────────────────────────────────────────────────────────────────────────────────
 // (1) Copia a la tabla las fotos que hoy viven en Redis (exactas y sin llamar a GHL). Una sola vez.
 export async function sembrarDesdeRedis() {

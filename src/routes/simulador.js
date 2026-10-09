@@ -15,13 +15,16 @@ import { esSim, nuevoIdSim, getSimTags, setSimTags, borrarSimTags } from '../lib
 import { normTag, tagsDeLeadMagnet, fichaLeadMagnet } from '../lib/tags.js';
 import { borrarFoto, guardarFoto } from '../services/fotosEtiquetas.js';
 import { handleTagActivation } from './webhooks.js';
-import { handleInbound, mergeSetter, forzarSeguimientoAhora, acelerarRespuesta, logEvent, recordUsage, filtrarRepetidos } from '../services/pipeline.js';
+import { handleInbound, mergeSetter, forzarSeguimientoAhora, acelerarRespuesta, logEvent, recordUsage, filtrarRepetidos, simRechazoKey } from '../services/pipeline.js';
 import { generateReply } from '../services/agent.js';
 // 💳 Las pruebas que usan IA se cobran del crédito del marketplace como una conversación real.
 import { puedeAtender, registrarConsumo } from '../services/marketplace.js';
 import { requireManageAgents, canAccessAccount } from '../lib/session.js';
 
-const VENTANAS = { nunca: null, abierta: "now() - interval '5 minutes'", cerrada: "now() - interval '25 hours'" };
+// «rechazo» = el lead SOLO COMENTÓ, tal como pasa en producción: el comentario cuenta como último entrante (nuestro
+// reloj da la ventana por abierta y el setter genera su mensaje) pero Meta rechaza el envío, porque solo permite una
+// respuesta privada por comentario y esa ya la gastó el DM del workflow. Dura hasta que el lead escribe o pulsa un botón.
+const VENTANAS = { nunca: null, abierta: "now() - interval '5 minutes'", cerrada: "now() - interval '25 hours'", rechazo: "now() - interval '5 minutes'" };
 
 const fichaLm = fichaLeadMagnet; // el mismo texto que ve el setter real (la palabra principal, sin los alias)
 const palabraPrincipal = (l) => String(l?.keyword || '').split(/[,;/|]/)[0].trim();
@@ -88,8 +91,8 @@ export default async function simuladorRoutes(app) {
     );
   });
 
-  // Crear un lead simulado. ventana: 'nunca' (no ha escrito por DM: el caso real de quien solo comentó),
-  // 'abierta' (escribió hace 5 min) o 'cerrada' (escribió hace 25 h).
+  // Crear un lead simulado. ventana: 'rechazo' (solo comentó: el caso real — el setter lo intenta y Meta lo rechaza),
+  // 'nunca' (ni escribió ni comentó: ventana cerrada), 'abierta' (escribió hace 5 min) o 'cerrada' (hace 25 h).
   app.post('/api/simulador', async (req, reply) => {
     if (!(await requireManageAgents(req, reply))) return;
     const { account_id, setter_id, nombre, canal, ventana } = req.body || {};
@@ -107,6 +110,7 @@ export default async function simuladorRoutes(app) {
        VALUES ($1, $2, $3, $4, $5, true, ${VENTANAS[v] || 'NULL'}, now()) RETURNING *`,
       [account.id, contactId, channel, String(nombre || 'Lead de prueba').slice(0, 60), setter.id]
     );
+    if (v === 'rechazo') await redis.set(simRechazoKey(conv.id), '1', 'EX', 7 * 86400);
     const avisos = [];
     const m = mergeSetter(account, setter); // lo que de verdad aplica el motor (modo test de la conexión o del setter)
     // Modo test: sin su etiqueta de test el setter no respondería. Se la ponemos para que la prueba sea útil.
@@ -152,6 +156,7 @@ export default async function simuladorRoutes(app) {
       tags: await getSimTags(account.id, conv.ghl_contact_id),
       pendientes: await pendientes(conv.id),
       cta_pendiente: Boolean(await redis.get(`ctapend:${account.id}:${conv.ghl_contact_id}`)),
+      solo_comento: Boolean(await redis.get(simRechazoKey(conv.id))), // Meta rechazará los envíos hasta que el lead escriba
       messages, activaciones, eventos, etapas,
     };
   });
@@ -196,6 +201,7 @@ export default async function simuladorRoutes(app) {
     const text = String(req.body?.text || '').trim();
     if (!text) return reply.code(400).send({ error: 'Escribe el mensaje del lead' });
     const acelerar = req.body?.acelerar !== false;
+    await redis.del(simRechazoKey(conv.id)); // escribir por privado (o pulsar un botón) abre la ventana de verdad
     await handleInbound(account, { channel: conv.channel, contactId: conv.ghl_contact_id, conversationId: null, body: text, messageId: 'sim-' + crypto.randomUUID(), contactName: conv.lead_name, attachments: [] });
     let acelerada = false;
     if (acelerar && (await redis.get(`debtoken:${conv.id}`))) acelerada = await acelerarRespuesta(conv.id, 2500);
@@ -215,11 +221,13 @@ export default async function simuladorRoutes(app) {
     if (!(await requireManageAgents(req, reply))) return;
     const ctx = await cargarSim(req, reply); if (!ctx) return;
     const v = String(req.body?.estado || '');
-    if (!Object.prototype.hasOwnProperty.call(VENTANAS, v)) return reply.code(400).send({ error: 'estado: nunca | abierta | cerrada' });
+    if (!Object.prototype.hasOwnProperty.call(VENTANAS, v)) return reply.code(400).send({ error: 'estado: nunca | abierta | cerrada | rechazo' });
+    if (v === 'rechazo') await redis.set(simRechazoKey(ctx.conv.id), '1', 'EX', 7 * 86400);
+    else await redis.del(simRechazoKey(ctx.conv.id));
     // «abierta» no debe adelantar al lead por delante del último mensaje del setter (eso bloquearía los
     // seguimientos con «el lead respondió después»): si el setter escribió hace poco, el lead «escribió» un
     // segundo antes de ese mensaje; si no, hace 5 minutos.
-    const valor = v === 'abierta'
+    const valor = (v === 'abierta' || v === 'rechazo')
       ? `CASE WHEN last_outbound_at IS NOT NULL AND last_outbound_at > now() - interval '23 hours' THEN last_outbound_at - interval '1 second' ELSE now() - interval '5 minutes' END`
       : (VENTANAS[v] || 'NULL');
     await q(`UPDATE conversations SET last_inbound_at = ${valor} WHERE id = $1`, [ctx.conv.id]);
@@ -241,8 +249,8 @@ export default async function simuladorRoutes(app) {
     const { conv, account } = ctx;
     await q(`DELETE FROM activation_log WHERE conversation_id = $1`, [conv.id]).catch(() => {});
     await q(`DELETE FROM conversations WHERE id = $1`, [conv.id]); // cascada: mensajes + historial de etapas
-    const claves = ['activar', 'debtoken', 'futoken', 'ctawait', 'insfresh', 'rescconv', 'fuadj', 'llmretry', 'furetry'].map((k) => `${k}:${conv.id}`)
-      .concat([`ctags:${account.id}:${conv.ghl_contact_id}`, `tagset:${account.id}:${conv.ghl_contact_id}`, `ctapend:${account.id}:${conv.ghl_contact_id}`]);
+    const claves = ['activar', 'debtoken', 'futoken', 'ctawait', 'ctaboton', 'ctasaltada', 'simrechazo', 'insfresh', 'rescconv', 'fuadj', 'llmretry', 'furetry'].map((k) => `${k}:${conv.id}`)
+      .concat([`ctags:${account.id}:${conv.ghl_contact_id}`, `tagset:${account.id}:${conv.ghl_contact_id}`, `ctapend:${account.id}:${conv.ghl_contact_id}`, `flujofin:${account.id}:${conv.ghl_contact_id}`, `flujoini:${account.id}:${conv.ghl_contact_id}`, `salajeno:${account.id}:${conv.ghl_contact_id}`]);
     await redis.del(...claves).catch(() => {});
     await borrarSimTags(account.id, conv.ghl_contact_id);
     await borrarFoto(account.id, conv.ghl_contact_id);

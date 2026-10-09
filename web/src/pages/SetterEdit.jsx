@@ -474,13 +474,24 @@ export default function SetterEdit() {
                                     : <span className="font-bold text-slate-400">⏳ sin confirmar</span>)
                                 : a.status === 'respondido'
                                   ? <span className="font-bold text-emerald-600">✅ respondió</span>
-                                  : <span className="font-bold text-slate-400">✖ {a.motivo || 'descartado'}</span>}
+                                  : /^no_(entregado|enviado)/.test(String(a.motivo || ''))
+                                    ? <span className="font-bold text-rose-500">✖ no entregado</span>
+                                    : <span className="font-bold text-slate-400">✖ {a.motivo || 'descartado'}</span>}
                               <span className="ml-2 font-medium text-slate-600">{a.contact_name || a.contact_id}</span>
                               {a.tag && <span className="ml-1 text-slate-400">· {a.tag}</span>}
                               <span className="ml-2 text-slate-400">{new Date(a.created_at).toLocaleTimeString('es-ES')}</span>
                             </summary>
                             {a.status === 'respondido' && a.message && (
                               <div className="mt-1 whitespace-pre-wrap rounded bg-white p-2 text-[11px] leading-relaxed text-slate-700">{a.message}</div>
+                            )}
+                            {/^no_(entregado|enviado)/.test(String(a.motivo || '')) && (
+                              <div className="mt-1 rounded bg-rose-50 p-2 text-[11px] leading-relaxed text-rose-700">
+                                {String(a.motivo).startsWith('no_enviado')
+                                  ? 'El setter preparó este mensaje pero no llegó a enviarlo (la conversación se pausó o la IA estaba apagada en ese momento).'
+                                  : 'El mensaje se preparó pero no se pudo entregar: el envío fue rechazado. Lo habitual en Instagram y Facebook: la persona solo comentó (se permite una única respuesta privada por comentario y ya la usó el mensaje del workflow) o lleva más de 24 h sin escribir. En cuanto escriba o pulse el botón, el setter le responde.'}
+                                <div className="mt-1 text-[10px] text-rose-400">{String(a.motivo).replace(/^no_(entregado|enviado)\s*/, '')}</div>
+                                {a.message && <div className="mt-1 whitespace-pre-wrap rounded bg-white p-2 text-slate-500">Lo que iba a decir: {a.message}</div>}
+                              </div>
                             )}
                             {a.contexto && <div className="mt-1 text-[10px] text-slate-400">🧠 Contexto: {a.contexto}</div>}
                           </details>

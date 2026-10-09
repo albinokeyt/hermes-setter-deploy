@@ -2,9 +2,9 @@ import crypto from 'node:crypto';
 import { one, q, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
-import { handleInbound, handleOutboundEvent, handleAppointmentEvent, handleOrderEvent, accountByLocation, logEvent, activateSetterForContact, guardarContextoCta, limpiarContextoCta } from '../services/pipeline.js';
+import { handleInbound, handleOutboundEvent, handleAppointmentEvent, handleOrderEvent, accountByLocation, logEvent, activateSetterForContact, guardarContextoCta, limpiarContextoCta, reponerEsperaSaltada } from '../services/pipeline.js';
 import { tagsDeLeadMagnet, fichaLeadMagnet } from '../lib/tags.js';
-import { leerFoto, guardarFoto } from '../services/fotosEtiquetas.js';
+import { leerFoto, guardarFoto, anotarFlujo } from '../services/fotosEtiquetas.js';
 
 const APPOINTMENT_TYPES = ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'];
 const ORDER_TYPES = ['OrderStatusUpdate']; // 🛒 pedidos (activar el evento en la app del marketplace)
@@ -185,6 +185,13 @@ async function procesarEtiquetas(account, p) {
     const prev = await leerFoto(account.id, contactId);
     if (prev) { const antes = new Set(prev); anadidas = new Set(tags.filter((t) => !antes.has(t))); }
     await guardarFoto(account.id, contactId, tags);
+    // ¿El workflow de este contacto empieza o termina ahora? (etiqueta de flujo; ver services/fotosEtiquetas.js).
+    // Si EMPIEZA y un momento antes se había saltado una espera dándolo por terminado, se repone.
+    const flujo = await anotarFlujo(account.id, contactId, prev, tags);
+    if (flujo === 'empezo') {
+      await reponerEsperaSaltada(account, contactId)
+        .catch((err) => logEvent('error_reponer_espera', { contactId, error: String(err?.message || err).slice(0, 160) }).catch(() => {}));
+    }
   }
   // Sin etiquetas activadoras NI lead magnets configurados → no hay nada más que hacer.
   // No registramos nada para no inundar la traza (ContactTagUpdate salta con CADA cambio de etiqueta).

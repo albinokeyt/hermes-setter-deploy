@@ -15,7 +15,7 @@ const seg = (s) => (s >= 3600 ? `${Math.round(s / 360) / 10} h` : s >= 60 ? `${M
 function textoEvento(e) {
   const p = e.payload || {};
   const m = {
-    sim_creada: () => `Lead simulado creado (${p.canal}, ventana de Meta: ${p.ventana === 'nunca' ? 'nunca escribió por DM' : p.ventana})`,
+    sim_creada: () => `Lead simulado creado (${p.canal}, ventana de Meta: ${p.ventana === 'nunca' ? 'nunca escribió por DM' : p.ventana === 'rechazo' ? 'solo comentó (Meta rechazará el envío)' : p.ventana})`,
     sim_etiquetas: () => `Etiquetas del lead ahora: ${(p.tags || []).map((t) => `«${t}»`).join(', ') || '(ninguna)'}`,
     etiqueta_recibida: () => { // solo lo relevante: las que casaron; el resto («sin coincidir») se cuenta
       const ev = p.evaluados || []; const casan = ev.filter((x) => x.estado !== 'sin_coincidir'); const resto = ev.length - casan.length;
@@ -42,6 +42,8 @@ function textoEvento(e) {
     activador_reanuda: () => `La etiqueta reanuda al setter (estaba en pausa: ${p.pausa_anterior})`,
     activacion_aplazada_por_horario: () => `Activación aplazada por horario (${p.minutos} min)`,
     activacion_ventana_cerrada_al_enviar: () => '✖ La activación murió al enviar: ventana de Meta cerrada',
+    activacion_no_entregada: () => `✖ La activación NO se entregó: el envío fue rechazado (${p.status}). En Instagram/Facebook pasa con quien solo comentó: se permite una única respuesta privada por comentario y ya la usó el DM del workflow.${p.seguimiento_anulado ? ' Se anula su seguimiento.' : ''}`,
+    cta_sin_espera: () => `Botón de un workflow que ya terminó («${p.boton || ''}»): no se espera al workflow, el setter responde ya`,
     respuesta_omitida_por_etiqueta: () => `✖ No responde: filtro de etiquetas (modo test: ${p.test_mode ? 'sí' : 'no'}, requeridas: ${(p.required_tags || []).join(', ') || '—'})`,
     insercion_espera: () => `Espera de inserción de ${seg(p.segundos)} antes de responder${p.reaplicada ? ' (vuelve tras inactividad)' : ''}`,
     cta_espera: () => `El mensaje casa con un CTA de la conexión: espera de ${seg(p.segundos)}`,
@@ -57,7 +59,7 @@ function textoEvento(e) {
     followup_omitido_ia: () => `Seguimiento omitido por el chequeo IA: ${p.motivo || 'sin motivo'}`,
     followup_check_error: () => `Error en el chequeo IA del seguimiento: ${p.error}`,
     sim_seguimiento_forzado: () => (p.ok ? `⏩ Seguimiento #${p.paso} forzado (configurado a ${p.horas_configuradas} h)` : `✖ No se puede forzar el seguimiento: ${p.motivo}`),
-    sim_ventana: () => `Ventana de Meta cambiada a: ${p.estado}`,
+    sim_ventana: () => `Ventana de Meta cambiada a: ${p.estado === 'rechazo' ? 'solo comentó (Meta rechazará el envío hasta que escriba)' : p.estado}`,
     handoff_ia: () => `🙋 La IA pidió atención humana: ${p.motivo}`,
     lead_asignado_setter: () => `Lead asignado al setter «${p.nombre}»`,
     lead_sin_respuesta_conexion_apagada: () => '✖ Nadie responde: la conexión tiene IA/bot apagados',
@@ -84,7 +86,8 @@ function enColaPronto(p) {
   if (!p) return false;
   return Boolean(p.activacion || (p.respuesta && (p.respuesta_en == null || p.respuesta_en <= 90)) || (p.seguimiento && (p.seguimiento_en == null || p.seguimiento_en <= 90)));
 }
-function ventanaMeta(conv) {
+function ventanaMeta(conv, soloComento) {
+  if (soloComento) return { txt: 'solo comentó → Meta rechazará el envío', ok: false };
   if (!conv?.last_inbound_at) return { txt: 'nunca escribió por DM → cerrada', ok: false };
   const h = (Date.now() - new Date(conv.last_inbound_at).getTime()) / 3_600_000;
   return h < 23.5 ? { txt: `abierta (escribió hace ${h < 1 ? Math.round(h * 60) + ' min' : h.toFixed(1) + ' h'})`, ok: true } : { txt: `cerrada (escribió hace ${h.toFixed(1)} h)`, ok: false };
@@ -233,7 +236,7 @@ function LabEtiquetas({ accountId, opciones, setter }) {
     return items.sort((x, y) => new Date(x.t) - new Date(y.t) || String(x.id).localeCompare(String(y.id)));
   }, [estado]);
 
-  const vm = ventanaMeta(estado?.conv);
+  const vm = ventanaMeta(estado?.conv, estado?.solo_comento);
   const p = estado?.pendientes || {};
 
   return (
@@ -244,7 +247,8 @@ function LabEtiquetas({ accountId, opciones, setter }) {
           <input value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Nombre del lead ficticio" className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-violet-400 dark:border-slate-700 dark:bg-slate-900" />
           <Select value={ventana} onChange={(e) => setVentana(e.target.value)} className="!w-full text-xs" title="Ventana de Meta al empezar">
             <option value="abierta">Ya escribió por DM (ventana abierta)</option>
-            <option value="nunca">Solo comentó, nunca escribió por DM (ventana cerrada)</option>
+            <option value="rechazo">Solo comentó (el setter lo intenta y Meta lo rechaza)</option>
+            <option value="nunca">Nunca escribió ni comentó (ventana cerrada)</option>
             <option value="cerrada">Escribió hace más de 24 h (ventana cerrada)</option>
           </Select>
           <Button className="w-full !py-1.5 text-xs" loading={busy === 'crear'} onClick={crear}><Plus size={14} /> Nuevo lead simulado</Button>
@@ -283,7 +287,7 @@ function LabEtiquetas({ accountId, opciones, setter }) {
             }
             if (it.tipo === 'act') {
               const a = it.a;
-              const txt = a.status === 'esperando' ? `⚡ Activación por «${a.tag}»: esperando (espera ${seg(a.wait_seconds)}${a.respond_at ? `, hasta las ${hora(a.respond_at)}` : ''})` : a.status === 'respondido' ? `⚡ Activación por «${a.tag}» → respondió` : `✖ Activación por «${a.tag}» descartada: ${a.motivo}`;
+              const txt = a.status === 'esperando' ? `⚡ Activación por «${a.tag}»: esperando (espera ${seg(a.wait_seconds)}${a.respond_at ? `, hasta las ${hora(a.respond_at)}` : ''})` : a.status === 'respondido' ? `⚡ Activación por «${a.tag}» → respondió` : /^no_(entregado|enviado)/.test(String(a.motivo || '')) ? `✖ Activación por «${a.tag}»: el mensaje NO se entregó ${String(a.motivo).replace(/^no_(entregado|enviado)\s*/, '')}` : `✖ Activación por «${a.tag}» descartada: ${a.motivo}`;
               return <div key={it.id} className={`mx-auto max-w-[92%] rounded-lg px-3 py-1 text-center text-[11px] ${a.status === 'descartado' ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300' : 'bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200'}`}>{hora(it.t)} · {txt}</div>;
             }
             return <div key={it.id} className={`mx-auto max-w-[92%] rounded-lg px-3 py-1 text-center text-[11px] ${it.mal ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300' : it.bien ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200' : 'text-slate-500'}`}>{hora(it.t)} · {it.txt}</div>;
@@ -325,6 +329,7 @@ function LabEtiquetas({ accountId, opciones, setter }) {
                 <option value="">Ventana de Meta…</option>
                 <option value="abierta">Abierta (escribió hace 5 min)</option>
                 <option value="cerrada">Cerrada (escribió hace 25 h)</option>
+                <option value="rechazo">Solo comentó (Meta rechaza el envío)</option>
                 <option value="nunca">Nunca escribió por DM</option>
               </Select>
               <label className="flex items-center gap-1.5 text-[11px] text-slate-500"><input type="checkbox" checked={acelerar} onChange={(e) => setAcelerar(e.target.checked)} /> Acelerar esperas (recomendado)</label>
@@ -386,7 +391,7 @@ function LabEtiquetas({ accountId, opciones, setter }) {
           <Card className="p-4 text-xs text-slate-500 dark:text-slate-400">
             <h3 className="mb-1 text-sm font-semibold text-slate-700 dark:text-slate-200">Cómo probar un CTA entero</h3>
             <ol className="list-decimal space-y-1 pl-4">
-              <li>Crea el lead con «solo comentó» (así verás la ventana de Meta cerrada, que es lo que pasa de verdad) o con «ya escribió».</li>
+              <li>Crea el lead con «solo comentó» (el setter intenta entrar y Meta rechaza el mensaje, que es lo que pasa de verdad hasta que el lead escribe o pulsa un botón) o con «ya escribió».</li>
               <li>Ponle la etiqueta del CTA (p. ej. <code>cta filtro</code>): debe guardarse «lo que pidió».</li>
               <li>Ponle <code>#702-hermes"lm abierto"</code> o <code>#701-hermes"no lm"</code>: se activa con su espera (acelerada) y escribe con ese contexto.</li>
               <li>Escribe como el lead y mira si sigue sabiendo qué pidió.</li>
