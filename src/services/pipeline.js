@@ -9,7 +9,8 @@ import { quitarPresentacionRepetida } from './agent.js';
 import { debounceQueue, sendQueue, followupQueue, reactivateQueue } from '../queues.js';
 import { generateReply, shouldFollowup } from './agent.js';
 // 💳 Marketplace Disruptivo: puerta de acceso antes de atender y registro de consumo al entregar.
-import { puedeAtender, registrarConsumo } from './marketplace.js';
+import { puedeAtender, registrarConsumo, cobrosIaActivos } from './marketplace.js';
+import { getFacturacion, precioCliente } from './facturacion.js';
 import { describeImage, transcribeAudio } from './llm.js';
 import * as ghl from './ghl.js';
 import { typingDelayMs, delayToActiveWindow, metaWindowOpen } from './humanize.js';
@@ -233,7 +234,10 @@ function classifyMedia(url) {
   return 'other';
 }
 
-async function processAttachments(account, attachments, context) {
+// cobrable = false → la lectura con IA se registra como 'vision_sin_setter'/'audio_sin_setter' (no se cobra al cliente):
+// pasa cuando el setter está apagado o la conversación en pausa y el mensaje no lo va a atender la IA.
+async function processAttachments(account, attachments, context, cobrable = true) {
+  const sufijo = cobrable ? '' : '_sin_setter';
   const parts = [];
   for (const a of attachments.slice(0, 4)) {
     const url = typeof a === 'string' ? a : a?.url || a?.href || a?.link || '';
@@ -245,7 +249,7 @@ async function processAttachments(account, attachments, context) {
         if (provider) {
           const r = await describeImage({ provider, model: account.vision_model || provider.default_model, imageUrl: url, context });
           parts.push(`[imagen recibida — ${r.text}]`);
-          await recordUsage(account.id, null, provider, account.vision_model || provider.default_model, r.usage, 'vision', null, account.setter_id || null);
+          await recordUsage(account.id, null, provider, account.vision_model || provider.default_model, r.usage, `vision${sufijo}`, null, account.setter_id || null);
           continue;
         }
       }
@@ -255,7 +259,7 @@ async function processAttachments(account, attachments, context) {
           const audioModel = account.audio_model || provider.default_model;
           const r = await transcribeAudio({ provider, model: audioModel, audioUrl: url });
           parts.push(`[nota de voz del lead, transcrita: "${r.text}"]`);
-          await recordUsage(account.id, null, provider, audioModel, r.usage, 'audio', null, account.setter_id || null);
+          await recordUsage(account.id, null, provider, audioModel, r.usage, `audio${sufijo}`, null, account.setter_id || null);
           continue;
         }
       }
@@ -595,7 +599,10 @@ export async function invalidateContactTags(accountId, contactId) {
 // Devuelve { pt, ct, cost, billed } para que el llamador pueda estampar el gasto en el propio
 // mensaje (el admin lo ve por burbuja en el chat y decide si el modelo le da la talla).
 export async function recordUsage(accountId, conversationId, provider, model, usage, source, variantId = null, setterId = null) {
-  if (!usage) return null;
+  // una transcripción sin `usage` (proveedores tipo Whisper que no lo devuelven) también se registra: su coste sale
+  // del precio por minuto de la API y se cobra igual
+  if (!usage && !/^(audio|vision)/.test(source)) return null;
+  usage = usage || {};
   try {
     // el audio reporta input_tokens/output_tokens; el chat prompt_tokens/completion_tokens
     const pt = Number(usage.prompt_tokens ?? usage.input_tokens) || 0;
@@ -605,34 +612,41 @@ export async function recordUsage(accountId, conversationId, provider, model, us
     let cost = typeof usage.cost === 'number' ? usage.cost : null;
     // el AUDIO no se cobra por tokens de texto: su estimación por tokens queda excluida
     // (los precios price_in/out son del CHAT; el audio usa su coste por minuto/transcripción)
-    if (cost === null && source !== 'audio' && provider && (numOr(provider.price_in) || numOr(provider.price_out))) {
+    if (cost === null && !/^audio/.test(source) && (pt || ct) && provider && (numOr(provider.price_in) || numOr(provider.price_out))) {
       cost = (pt * (numOr(provider.price_in) || 0) + ct * (numOr(provider.price_out) || 0)) / 1_000_000;
     }
     // audio/imagen se cobran distinto (por minuto/por imagen): si no hubo coste,
     // usa el coste plano editable del proveedor para esa unidad.
     if (cost === null && provider) {
-      if (source === 'audio' && numOr(provider.price_audio_min)) cost = numOr(provider.price_audio_min);
-      else if (source === 'vision' && numOr(provider.price_image)) cost = numOr(provider.price_image);
+      // audio: precio por minuto × la duración si el proveedor la da (si no, se cuenta 1 minuto)
+      if (/^audio/.test(source) && numOr(provider.price_audio_min)) cost = numOr(provider.price_audio_min) * Math.max(Number(usage.seconds) || 60, 1) / 60;
+      else if (/^vision/.test(source) && numOr(provider.price_image)) cost = numOr(provider.price_image);
     }
-    // FACTURADO al cliente: precio explícito del proveedor (por unidad o por 1M tokens de CHAT) o,
-    // si no hay, margen % sobre el coste. Sin nada configurado → facturado = coste.
-    let billed = null;
-    if (provider) {
-      const billIn = numOr(provider.bill_in);
-      const billOut = numOr(provider.bill_out);
-      if (source === 'vision' && numOr(provider.bill_image)) billed = numOr(provider.bill_image);
-      else if (source === 'audio' && numOr(provider.bill_audio_min)) billed = numOr(provider.bill_audio_min);
-      else if (source !== 'audio' && (billIn || billOut) && (pt || ct)) {
-        billed = (pt * (billIn || 0) + ct * (billOut || 0)) / 1_000_000;
-      } else if (Number(provider.markup_percent) > 0 && cost !== null) {
-        billed = cost * (1 + Number(provider.markup_percent) / 100);
-      }
+    // PRECIO AL CLIENTE (lo que se le cobra): nuestro coste × el multiplicador global (Marketplace → Facturación,
+    // por defecto ×2), y solo en el trabajo con leads; las pruebas y el editor de prompts van a 0. Se congela aquí.
+    // (Los antiguos «precio al cliente» por API —bill_*, markup_percent— ya no se usan: un solo criterio para todos.)
+    const fac = await getFacturacion();
+    const billed = precioCliente(cost, source, fac);
+    // Una llamada que se COBRA pero de la que no sabemos el coste no se le puede cobrar al cliente (y la pagamos
+    // nosotros): se avisa para ponerle precio a esa API (como mucho un aviso cada 6 h por modelo).
+    if (cost === null && fac.fuentes.includes(source)) {
+      const fresh = await redis.set(`usonocost:${String(model || '').slice(0, 80)}:${source}`, '1', 'EX', 21600, 'NX').catch(() => null);
+      if (fresh) await logEvent('uso_ia_sin_coste', { account: accountId, conv: conversationId, modelo: model || '', source, nota: 'Esta llamada no trae coste ni la API tiene precios: no se le puede cobrar al cliente. Ponle precio a la API (APIs de IA).' }).catch(() => {});
     }
-    if (billed === null) billed = cost;
+    // ¿Se podrá cobrar? Con la integración de cobros apagada o sin location_id no hay a quién: md_charge_id = 0 (no
+    // entra en lotes; si no, al encenderla se cobraría de golpe todo lo atrasado). Y si el cliente tiene ahora el uso
+    // incluido (prueba o plan), la llamada queda marcada como incluida: no se le cobrará aunque luego pague por uso.
+    let incluido = false;
+    let noCobrable = !cobrosIaActivos();
+    if (accountId && billed) {
+      const acc = await one(`SELECT md_acceso, location_id FROM accounts WHERE id = $1`, [accountId]).catch(() => null);
+      incluido = acc?.md_acceso === 'incluido';
+      if (!String(acc?.location_id || '').trim()) noCobrable = true;
+    }
     await q(
-      `INSERT INTO llm_usage (account_id, conversation_id, variant_id, setter_id, model, prompt_tokens, completion_tokens, cost_usd, billed_usd, source)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [accountId, conversationId, variantId, setterId, model || '', pt, ct, cost, billed, source]
+      `INSERT INTO llm_usage (account_id, conversation_id, variant_id, setter_id, model, prompt_tokens, completion_tokens, cost_usd, billed_usd, source, incluido, md_charge_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [accountId, conversationId, variantId, setterId, model || '', pt, ct, cost, billed, source, incluido, noCobrable ? 0 : null]
     );
     return { pt, ct, cost, billed };
   } catch (err) {
@@ -792,7 +806,9 @@ export async function handleInbound(account, evt) {
       const def = await one(`SELECT * FROM setters WHERE account_id = $1 ORDER BY is_default DESC, id LIMIT 1`, [conv.account_id]);
       if (def) ma = mergeSetter(account, def);
     }
-    const mediaText = await processAttachments(ma, attachments, textBody);
+    // solo se cobra la lectura si la IA va a atender este mensaje (setter asignado y activo, sin pausa y con saldo)
+    const atiende = respond && !conv.bot_paused && Boolean(ma.bot_enabled) && Boolean(ma.ai_enabled) && !account.md_sin_fondos_at;
+    const mediaText = await processAttachments(ma, attachments, textBody, atiende);
     body = [textBody, mediaText].filter(Boolean).join('\n');
   }
   if (!body) body = '[adjunto]';

@@ -144,7 +144,8 @@ export default async function conversationRoutes(app) {
     const conv = await loadScopedConv(req, reply);
     if (!conv) return;
     await cancelBotJobs(conv.id); // cancela debounce/seguimientos/reactivación pendientes
-    await q(`DELETE FROM llm_usage WHERE conversation_id = $1`, [conv.id]);
+    // el consumo de IA NO se borra (es lo que se le cobra al cliente y nuestro coste): solo se desvincula
+    await q(`UPDATE llm_usage SET conversation_id = NULL WHERE conversation_id = $1`, [conv.id]);
     await q(`DELETE FROM appointments WHERE conversation_id = $1`, [conv.id]);
     await q(`DELETE FROM conversations WHERE id = $1`, [conv.id]); // cascada: mensajes + historial
     return { ok: true };

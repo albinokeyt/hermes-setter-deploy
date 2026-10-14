@@ -4,13 +4,16 @@
 // y, si no lo tiene, cobra su consumo del saldo del cliente en el marketplace (crédito interno
 // primero, wallet de GHL después).
 //
-// Dos enganches en el pipeline, en este orden:
-//   1) ANTES de atender   → puedeAtender()   (access + has-funds)
-//   2) DESPUÉS de entregar → registrarConsumo() (outbox + cola de cobro)
-//
-// La unidad facturable es UNA CONVERSACIÓN POR DÍA NATURAL: da igual que ese día se crucen 30
-// mensajes con el lead, cuenta 1. Quien lo garantiza no es el código sino el propio event_id
-// determinista + el UNIQUE de marketplace_charges (migración 047).
+// Dos piezas:
+//   1) ANTES de atender → puedeAtender() (access + has-funds)
+//   2) COBRO POR CONSUMO DE IA (desde la migración 056): cada llamada de IA queda en llm_usage con su precio al
+//      cliente (coste × multiplicador, services/facturacion.js) y cerrarLotesConsumo() las agrupa por cliente en
+//      LOTES que se cobran como un solo cargo (outbox marketplace_charges, tipo 'consumo_ia'). Un lote se cierra al
+//      llegar al umbral (1 USD por defecto) o cuando su consumo más antiguo cumple 24 h. Antes se cobraba una
+//      cantidad fija por conversación y día (registrarConsumo, ya retirado; sus filas antiguas siguen su curso).
+//   El consumo se paga SOLO con el SALDO que el cliente recarga en el marketplace (pay_with: 'credit'): nunca se
+//   tira del monedero de GHL. Sin saldo, el lote queda 'sin_saldo' (se reenvía al recargar) y la puerta pausa al
+//   setter cuando el saldo ya no cubre lo consumido.
 //
 // PRINCIPIOS INNEGOCIABLES (de la auditoría de esta integración):
 //  · Ningún camino puede dejar de responder a un lead por un problema del marketplace (fail-open),
@@ -18,9 +21,10 @@
 //  · Ningún cobro se pierde en silencio: todo estado no resuelto vuelve al barrido.
 //  · Ningún cobro se duplica: mismo event_id siempre, lock por cobro y UPDATE con guarda.
 
-import { q, one } from '../db.js';
+import { q, one, pool, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { chargeQueue } from '../queues.js';
+import { getFacturacion } from './facturacion.js';
 
 const texto = (v) => String(v ?? '').trim();
 
@@ -28,8 +32,6 @@ const texto = (v) => String(v ?? '').trim();
 const BASE = (process.env.MD_BASE_URL || 'https://marketplace.escaladoacelerado.es').replace(/\/+$/, '');
 const KEY = texto(process.env.MD_API_KEY);
 const METER = texto(process.env.MD_METER) || 'consumo-apps';
-const PRECIO_UNIDAD = Number(process.env.MD_PRECIO_UNIDAD || 0.25);
-const UNIDADES_POR_COBRO = Number(process.env.MD_UNIDADES_POR_COBRO || 1);
 const ZONA = texto(process.env.MD_ZONA_HORARIA) || 'UTC';
 // permite desplegar con el gate puesto pero SIN cobrar todavía (observación previa)
 const COBROS_ACTIVOS = texto(process.env.MD_COBROS).toLowerCase() !== 'false';
@@ -49,11 +51,6 @@ const CACHE_FALLO_TTL_S = 60;                // tras un fallo, no se machaca al 
 const CORTADO_TTL_S = 600;
 const LOCK_COBRO_S = 300;
 
-// Límites de la tarifa dinámica «consumo-apps» (documentación de la API): fuera de rango el
-// marketplace responde 400, así que se detecta al arrancar en vez de fallar cobro tras cobro.
-const PRECIO_MIN = 0.01;
-const PRECIO_MAX = 100;
-
 // Los ÚNICOS códigos definitivos según el contrato. Todo lo demás (500, 504, 408, una página HTML
 // de un proxy…) es transitorio y se reintenta con el MISMO event_id: tratarlo como definitivo
 // perdía el cobro para siempre.
@@ -61,8 +58,9 @@ const DEFINITIVOS = new Set([400, 401, 403, 404]);
 const ESTADOS_RESUELTOS = ['cobrado', 'incluido'];
 
 export const mdActivo = () => Boolean(KEY);
-const precioValido = () => Number.isFinite(PRECIO_UNIDAD) && PRECIO_UNIDAD >= PRECIO_MIN && PRECIO_UNIDAD <= PRECIO_MAX;
-const unidadesValidas = () => Number.isFinite(UNIDADES_POR_COBRO) && UNIDADES_POR_COBRO > 0;
+// ¿Se va a cobrar el consumo de IA? (integración encendida y cobros activos). Lo usa recordUsage para no acumular
+// consumo que luego se cobraría de golpe al encender los cobros.
+export const cobrosIaActivos = () => mdActivo() && COBROS_ACTIVOS;
 
 export function mdConfig() {
   return {
@@ -70,14 +68,11 @@ export function mdConfig() {
     cobros_activos: COBROS_ACTIVOS,
     base_url: BASE,
     meter: METER,
-    precio_unidad: PRECIO_UNIDAD,
-    unidades_por_cobro: UNIDADES_POR_COBRO,
+    modo: 'consumo_ia',
     zona_horaria: ZONA,
     // nunca se devuelve la clave: solo si está puesta y sus últimos 4 para identificarla
     api_key_puesta: Boolean(KEY),
     api_key_pista: KEY ? `…${KEY.slice(-4)}` : '',
-    precio_valido: precioValido(),
-    unidades_validas: unidadesValidas(),
   };
 }
 
@@ -214,6 +209,7 @@ export async function hayFondos(locationId, { timeoutMs = TIMEOUT_COBRO_MS } = {
   const loc = texto(locationId);
   if (!mdActivo() || !loc) return { hasFunds: true, desconocido: true };
   const clave = `md:fondos:${loc}`;
+  // ?pay_with=credit: Hermes solo cobra del saldo del marketplace, así que el monedero de GHL no cuenta
   try {
     const cache = await redis.get(clave);
     if (cache === '1') return { hasFunds: true, cache: true };
@@ -222,7 +218,7 @@ export async function hayFondos(locationId, { timeoutMs = TIMEOUT_COBRO_MS } = {
   } catch { /* sin caché, se pregunta */ }
 
   try {
-    const { status, data } = await llamar('GET', `/api/v1/locations/${encodeURIComponent(loc)}/has-funds`, null, timeoutMs);
+    const { status, data } = await llamar('GET', `/api/v1/locations/${encodeURIComponent(loc)}/has-funds?pay_with=credit`, null, timeoutMs);
     if (status === 200 && typeof data?.hasFunds === 'boolean') {
       await redis.set(clave, data.hasFunds ? '1' : '0', 'EX', CACHE_FONDOS_TTL_S).catch(() => {});
       return { hasFunds: data.hasFunds, credit: data.credit ?? null };
@@ -265,6 +261,18 @@ export async function puedeAtender(account) {
     return { atender: true, acceso, motivo: 'acceso_desconocido' };
   }
 
+  // POR USO: se paga con el SALDO del marketplace. Se atiende mientras ese saldo cubra lo ya consumido y aún sin
+  // cobrar (consumo fuera de lotes + lotes sin cobrar todavía). El saldo viene con el acceso (caché de 5 min); si no
+  // viniera, se pregunta a has-funds en modo solo saldo. Ante cualquier fallo, se atiende (fail-open).
+  if (acceso.credit !== null && acceso.credit !== undefined && Number.isFinite(Number(acceso.credit))) {
+    const deuda = await deudaPendiente(account.id).catch(() => null);
+    if (deuda === null || Number(acceso.credit) - deuda > 0) {
+      await marcarConFondos(account);
+      return { atender: true, acceso, motivo: 'con_saldo', saldo: Number(acceso.credit), deuda };
+    }
+    await marcarSinFondos(account);
+    return { atender: false, acceso, motivo: 'sin_saldo', saldo: Number(acceso.credit), deuda };
+  }
   const fondos = await hayFondos(loc, { timeoutMs: TIMEOUT_GATE_MS });
   if (fondos.hasFunds) {
     await marcarConFondos(account);
@@ -273,6 +281,23 @@ export async function puedeAtender(account) {
 
   await marcarSinFondos(account);
   return { atender: false, acceso, motivo: 'sin_fondos' };
+}
+
+// Lo que el cliente ya ha consumido y aún no se le ha cobrado (precio al cliente): llamadas sin lote + lotes de
+// consumo todavía sin cobrar. null si no se puede calcular (entonces no se corta el servicio).
+export async function deudaPendiente(accountId) {
+  const desde = await corteCobroIa();
+  if (desde === null) return 0;
+  const r = await one(
+    `SELECT COALESCE((SELECT SUM(billed_usd) FROM llm_usage
+                       WHERE account_id = $1 AND md_charge_id IS NULL AND id > $2 AND billed_usd > 0 AND NOT incluido), 0)::float
+          + COALESCE((SELECT SUM(units * price) FROM marketplace_charges
+                       WHERE account_id = $1 AND tipo = 'consumo_ia'
+                         AND (estado IN ('pendiente','sin_saldo','sin_confirmar','cortado')
+                              OR (estado = 'error' AND updated_at > now() - interval '24 hours'))), 0)::float AS deuda`,
+    [accountId, desde]
+  );
+  return Number(r?.deuda) || 0;
 }
 
 async function marcarSinFondos(account) {
@@ -299,7 +324,7 @@ async function marcarConFondos(account) {
 //   400/401/403/404 → error de la petición o de configuración: registrar, avisar y PARAR
 //   TODO lo demás (409/429/502/503, 5xx, timeout, red) → MISMA petición, MISMO event_id, backoff
 //   sin confirmar tras los reintentos → NO cobrar con otro event_id; el marketplace reconcilia solo
-export async function cobrar({ locationId, units, eventId, price, description }) {
+export async function cobrar({ locationId, units, eventId, price, description, soloSaldo = false }) {
   if (!mdActivo()) return { ok: false, estado: 'error', error: 'MD_API_KEY no configurada' };
   const cuerpo = {
     location_id: locationId,
@@ -308,6 +333,8 @@ export async function cobrar({ locationId, units, eventId, price, description })
     event_id: eventId,
     ...(price === undefined || price === null ? {} : { price }),
     ...(description ? { description: String(description).slice(0, 500) } : {}),
+    // solo del saldo recargado en el marketplace: si no alcanza, 402 y NO se toca el monedero de GHL
+    ...(soloSaldo ? { pay_with: 'credit' } : {}),
   };
 
   let ultimo = '';
@@ -324,6 +351,16 @@ export async function cobrar({ locationId, units, eventId, price, description })
 
     // 200 (ya estaba cobrado o reconciliado) y 201 (cobrado ahora) son AMBOS éxito
     if (status === 200 || status === 201) {
+      const st = texto(data?.charge?.status);
+      // un 200 «idempotente» de un cargo que NO está cobrado (carrera en el marketplace) no es un éxito: se reintenta
+      if (st && !['created', 'test', 'refunded'].includes(st)) {
+        ultimo = `el cargo está en «${st}»`;
+        await sleep(2000 * (intento + 1));
+        continue;
+      }
+      if (soloSaldo && st !== 'test' && !data?.test_mode && data?.charge && texto(data.charge.paid_with) !== 'credit') {
+        await evento('marketplace_cobro_por_wallet', { event_id: eventId, location: locationId, charge_id: data.charge.id ?? null, idempotente: Boolean(data?.idempotent), nota: 'Se pidió cobrar solo del saldo del marketplace y el cargo salió del monedero de GHL: revisa que el marketplace esté actualizado.' });
+      }
       return {
         ok: true,
         estado: 'cobrado',
@@ -332,6 +369,11 @@ export async function cobrar({ locationId, units, eventId, price, description })
         reconciliado: Boolean(data?.reconciled),
         test_mode: Boolean(data?.test_mode) || data?.charge?.status === 'test',
       };
+    }
+
+    // sin saldo suficiente en el marketplace (solo crédito): no es un error, espera a que el cliente recargue
+    if (status === 402 && texto(data?.code) === 'INSUFFICIENT_CREDIT') {
+      return { ok: false, estado: 'sin_saldo', error: texto(data?.error), credit: data?.credit ?? null };
     }
 
     // el administrador cortó los cobros de la app: no es un error nuestro. Se detecta por el campo
@@ -382,57 +424,140 @@ export async function listarTarifas() {
   }
 }
 
-// ── Outbox: registrar el consumo y encolar el cobro ──────────────────────────────────────────
-/**
- * Se llama DESPUÉS de entregar el servicio (mensaje ya enviado al lead), nunca antes.
- * El INSERT ON CONFLICT DO NOTHING es lo que aplica «una conversación por día»: solo el primer
- * mensaje del día de esa conversación crea fila y encola cobro; el resto no hace ni una llamada.
- */
-export async function registrarConsumo({ account, conversationId }) {
-  if (!mdActivo() || !COBROS_ACTIVOS) return null;
-  const loc = texto(account?.location_id);
-  if (!conversationId) return null;
-  if (!loc) {
-    // Sin location_id no hay a quién cobrar. Antes era mudo y una conexión mal configurada podía
-    // atender gratis durante meses sin que nadie lo viera.
-    if (await unaVezCada(`sinloc:${account?.id}`, 21600)) {
-      await evento('marketplace_sin_location_id', {
-        account: account?.id ?? null, nombre: account?.name || '',
-        nota: 'Esta conexión atiende leads pero no tiene location_id de GHL: su consumo NO se puede cobrar.',
-      });
-    }
-    return null;
-  }
-  if (!precioValido() || !unidadesValidas()) {
-    if (await unaVezCada('cfgmal', 3600)) {
-      await evento('marketplace_config_invalida', {
-        precio: PRECIO_UNIDAD, unidades: UNIDADES_POR_COBRO,
-        nota: `MD_PRECIO_UNIDAD debe estar entre ${PRECIO_MIN} y ${PRECIO_MAX} y MD_UNIDADES_POR_COBRO ser > 0`,
-      });
-    }
-    return null;
-  }
+// ── (Retirado) cobro por conversación y día ──────────────────────────────────────────────────
+// Hasta la migración 056 cada conversación atendida generaba un cobro fijo por día. Ahora se cobra el CONSUMO DE IA
+// por lotes (cerrarLotesConsumo, más abajo). Se mantiene la firma porque el pipeline y el simulador la siguen
+// llamando tras entregar; ya no registra nada. Las filas antiguas que queden pendientes las sigue cerrando el worker.
+export async function registrarConsumo() {
+  return null;
+}
 
-  const dia = diaNatural();
-  const eventId = eventIdDe(loc, conversationId, dia);
+// ── Lotes de consumo de IA ─────────────────────────────────────────────────────────────────────
+const IMPORTE_MIN = 0.01;          // el mínimo que cobra la tarifa dinámica
+const IMPORTE_MAX_LOTE = 100;      // el máximo: lo que pase se va al lote siguiente
+const LOTE_MAX_DIAS = 1;           // como mucho, un cobro al día aunque no se llegue al umbral
+const redondear2 = (n) => Math.round((Number(n) || 0) * 100 + Number.EPSILON) / 100;
+
+// Primer id de llm_usage que se cobra (lo fija la migración 056: el consumo anterior estaba cubierto por la prueba
+// gratuita). null si no se puede leer o no existe: en ese caso NO se cierra ningún lote.
+export async function corteCobroIa() {
+  const v = await getSetting('cobro_ia_desde_usage_id', null);
+  const n = Number(v);
+  return v === null || v === undefined || !Number.isFinite(n) ? null : n;
+}
+
+/** hermes-ia-{locationId}-{último id de llm_usage del lote}: determinista y distinto del formato antiguo. */
+export function eventIdLote(locationId, hastaUsageId) {
+  return `hermes-ia-${limpio(locationId)}-${Number(hastaUsageId) || 0}`.slice(0, 190);
+}
+
+// Cierra los lotes que tocan. forzar = cerrar ya todo lo que llegue al mínimo (botón del panel). Un solo proceso a
+// la vez (lock en Redis) y, dentro, cada lote en UNA transacción: se crea la fila del outbox y se marcan sus llamadas.
+export async function cerrarLotesConsumo({ forzar = false, accountId = null } = {}) {
+  if (!mdActivo() || !COBROS_ACTIVOS) return { lotes: 0, motivo: 'integracion_apagada' };
+  let lock = false;
+  try { lock = Boolean(await redis.set('md:lotes', '1', 'EX', 240, 'NX')); } catch { lock = true; }
+  if (!lock) return { lotes: 0, motivo: 'otro_cierre_en_curso' };
+  const res = { lotes: 0, importe: 0, cuentas: [] };
   try {
-    // La fila se crea ANTES de llamar al marketplace (outbox): si el proceso muere entre medias,
-    // el barrido la recoge. El DO NOTHING devuelve 0 filas cuando ya existía → no se re-encola.
-    const fila = await one(
-      `INSERT INTO marketplace_charges (event_id, account_id, conversation_id, location_id, dia, units, price)
-       VALUES ($1,$2,$3,$4,$5::date,$6,$7)
-       ON CONFLICT (event_id) DO NOTHING
-       RETURNING id, event_id`,
-      [eventId, account.id, conversationId, loc, dia, UNIDADES_POR_COBRO, PRECIO_UNIDAD]
+    const fac = await getFacturacion();
+    const desde = await corteCobroIa();
+    if (desde === null) return { lotes: 0, motivo: 'sin_corte' }; // sin el corte se cobraría consumo antiguo: nunca
+    const params = [desde];
+    if (accountId) params.push(accountId);
+    // Una llamada sola de más de 100 USD (precio de API mal tecleado) no cabe en ningún cargo: se aparta con aviso para
+    // que no bloquee para siempre los lotes de ese cliente.
+    const fuera = await q(
+      `UPDATE llm_usage SET md_charge_id = -1
+        WHERE md_charge_id IS NULL AND id > $1 AND billed_usd > ${IMPORTE_MAX_LOTE} ${accountId ? 'AND account_id = $2' : ''}
+        RETURNING id, account_id`,
+      params
     );
-    if (!fila) return null; // esa conversación ya estaba contada hoy
-    // jobId determinista y SIN ':' (BullMQ lo rechaza): dos procesos a la vez no encolan dos veces
-    await chargeQueue.add('charge', { eventId }, { jobId: jobIdDe(eventId) });
-    return fila;
+    if (fuera.length) {
+      await evento('marketplace_llamada_fuera_de_rango', {
+        ids: fuera.map((f) => f.id).slice(0, 50), cuentas: [...new Set(fuera.map((f) => f.account_id))],
+        nota: `Llamadas de IA con un precio al cliente de más de ${IMPORTE_MAX_LOTE} USD: no se cobran. Revisa el precio de esa API.`,
+      });
+    }
+    // Lo consumido con el uso INCLUIDO va a lotes aparte que nacen ya 'incluido' (se ven en el panel; no se cobran).
+    const candidatas = await q(
+      `SELECT u.account_id, u.incluido, a.location_id, a.name, SUM(u.billed_usd)::float AS importe, COUNT(*)::int AS n,
+              MIN(u.created_at) AS primera
+         FROM llm_usage u JOIN accounts a ON a.id = u.account_id
+        WHERE u.md_charge_id IS NULL AND u.id > $1 AND u.billed_usd > 0 ${accountId ? 'AND u.account_id = $2' : ''}
+        GROUP BY u.account_id, u.incluido, a.location_id, a.name`,
+      params
+    );
+    for (const c of candidatas) {
+      const loc = texto(c.location_id);
+      if (!loc) {
+        if (await unaVezCada(`sinloc:${c.account_id}`, 21600)) {
+          await evento('marketplace_sin_location_id', { account: c.account_id, nombre: c.name || '', nota: 'Esta conexión consume IA pero no tiene location_id de GHL: su consumo NO se puede cobrar.' });
+        }
+        continue;
+      }
+      const vencido = Date.now() - new Date(c.primera).getTime() > LOTE_MAX_DIAS * 24 * 3600_000;
+      const llega = c.importe >= fac.umbral_usd || ((vencido || forzar) && redondear2(c.importe) >= IMPORTE_MIN);
+      if (!llega) continue;
+      // un cliente con mucho consumo puede necesitar varios lotes seguidos (máx. 100 USD cada uno)
+      for (let vuelta = 0; vuelta < 20; vuelta++) {
+        const lote = await cerrarUnLote(c.account_id, loc, desde, Boolean(c.incluido));
+        if (!lote) break;
+        res.lotes++; res.importe = redondear2(res.importe + lote.importe); res.cuentas.push(c.account_id);
+        if (!lote.quedaMas) break;
+      }
+    }
   } catch (err) {
-    await evento('marketplace_registro_error', { location: loc, conv: conversationId, error: texto(err?.message).slice(0, 200) });
-    return null;
+    res.error = true;
+    await evento('marketplace_lotes_error', { error: texto(err?.message).slice(0, 200) });
+  } finally {
+    await redis.del('md:lotes').catch(() => {});
   }
+  return res;
+}
+
+async function cerrarUnLote(accountId, loc, desde, incluido = false) {
+  const client = await pool.connect();
+  let creado = null;
+  try {
+    await client.query('BEGIN');
+    // FOR UPDATE: si algo más tocara estas filas a la vez, espera; el lock de Redis ya impide dos cierres.
+    const { rows } = await client.query(
+      `SELECT id, billed_usd::float AS b, COALESCE(cost_usd, 0)::float AS c FROM llm_usage
+        WHERE account_id = $1 AND md_charge_id IS NULL AND id > $2 AND billed_usd > 0 AND billed_usd <= ${IMPORTE_MAX_LOTE}
+          AND incluido = $3
+        ORDER BY id LIMIT 50000 FOR UPDATE`,
+      [accountId, desde, incluido]
+    );
+    let suma = 0; let coste = 0; const ids = [];
+    for (const r of rows) {
+      if (suma + r.b > IMPORTE_MAX_LOTE) continue; // lo que no cabe va al lote siguiente
+      suma += r.b; coste += r.c; ids.push(r.id);
+    }
+    const importe = redondear2(suma);
+    if (!ids.length || importe < IMPORTE_MIN || importe > IMPORTE_MAX_LOTE) { await client.query('ROLLBACK'); return null; }
+    const eventId = eventIdLote(loc, ids[ids.length - 1]);
+    const ins = await client.query(
+      `INSERT INTO marketplace_charges (event_id, account_id, conversation_id, location_id, dia, units, price,
+                                        tipo, cost_usd, importe_calculado, usage_desde, usage_hasta, llamadas, estado)
+       VALUES ($1,$2,NULL,$3,$4::date,1,$5,'consumo_ia',$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (event_id) DO NOTHING RETURNING id`,
+      [eventId, accountId, loc, diaNatural(), importe, coste, suma, ids[0], ids[ids.length - 1], ids.length,
+       incluido ? 'incluido' : 'pendiente']
+    );
+    if (!ins.rows[0]) { await client.query('ROLLBACK'); return null; }
+    await client.query(`UPDATE llm_usage SET md_charge_id = $1 WHERE id = ANY($2::int[])`, [ins.rows[0].id, ids]);
+    await client.query('COMMIT');
+    creado = { eventId, importe, quedaMas: ids.length < rows.length, incluido };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  // fuera de la transacción: si el encolado falla, el barrido recoge la fila 'pendiente'. Los lotes incluidos no se cobran.
+  if (!creado.incluido) await chargeQueue.add('charge', { eventId: creado.eventId }, { jobId: jobIdDe(creado.eventId) }).catch(() => {});
+  return creado;
 }
 
 // ── Worker de cobro ─────────────────────────────────────────────────────────────────────────
@@ -502,7 +627,10 @@ export async function procesarCobro(job) {
       price: fila.price === null || fila.price === undefined ? undefined : Number(fila.price),
       // dia_txt viene formateado por Postgres: usar la columna DATE cruda daba el día anterior
       // cuando la zona del contenedor y MD_ZONA_HORARIA no coinciden.
-      description: `Hermes Setter · 1 conversación (${fila.dia_txt})`,
+      description: fila.tipo === 'consumo_ia'
+        ? `Hermes Setter · consumo de IA (${Number(fila.llamadas) || 0} llamadas, cierre ${fila.dia_txt})`
+        : `Hermes Setter · 1 conversación (${fila.dia_txt})`,
+      soloSaldo: true, // NUNCA del monedero de GHL (también reintentos de filas antiguas o de prueba)
     });
 
     const ch = r.charge || {};
@@ -522,10 +650,24 @@ export async function procesarCobro(job) {
         ch.amount ?? null,
         texto(r.error),
         // un 'cortado' no es un intento nuestro fallido: no consume el tope (si no, un corte de
-        // unas horas del administrador acababa mandando cientos de filas a revisión manual)
-        r.estado === 'cortado' ? 0 : 1,
+        // unas horas del administrador acababa mandando cientos de filas a revisión manual). 'sin_saldo' tampoco:
+        // espera a que el cliente recargue.
+        ['cortado', 'sin_saldo'].includes(r.estado) ? 0 : 1,
       ]
     );
+    // el saldo del cliente ha cambiado (o se sabe que no llega): la puerta debe leerlo fresco, no el de hace 5 min
+    if (r.estado === 'cobrado') await redis.del(`md:acc:${fila.location_id}`, `md:fondos:${fila.location_id}`).catch(() => {});
+    if (r.estado === 'sin_saldo') {
+      // at:0 = «refresca en la próxima consulta», pero conservando el último bueno por si el marketplace falla justo ahora
+      await redis.set(`md:acc:${fila.location_id}`, JSON.stringify({ access: false, via: acceso?.via || '', credit: r.credit ?? acceso?.credit ?? null, at: 0 }), 'EX', CACHE_ACCESO_TTL_S).catch(() => {});
+      await redis.del(`md:fondos:${fila.location_id}`).catch(() => {});
+    }
+    if (r.estado === 'sin_saldo' && await unaVezCada(`sinsaldo:${fila.account_id}`, 3600)) {
+      await evento('marketplace_lote_sin_saldo', {
+        account: fila.account_id, location: fila.location_id, event_id: eventId, saldo: r.credit,
+        nota: 'El cliente no tiene saldo suficiente en el marketplace para este lote: se cobrará en cuanto recargue.',
+      });
+    }
 
     if (r.estado === 'error') {
       await evento('marketplace_cobro_rechazado', {
@@ -553,7 +695,10 @@ export async function procesarCobro(job) {
 export async function barrerPendientes({ limite = 50 } = {}) {
   if (!mdActivo() || !COBROS_ACTIVOS) return { revisadas: 0 };
   const lim = Math.min(Math.max(Number(limite) || 50, 1), 500);
-  const res = { reencolados: 0, cerrados: 0, reenviados: 0, esperando: 0, rendidos: 0, cortados_liberados: 0 };
+  const res = { reencolados: 0, cerrados: 0, reenviados: 0, esperando: 0, rendidos: 0, cortados_liberados: 0, lotes: 0 };
+
+  // 0) cerrar los lotes de consumo de IA que ya tocan (umbral o 24 h)
+  try { res.lotes = (await cerrarLotesConsumo()).lotes || 0; } catch { /* lo intenta el siguiente barrido */ }
 
   try {
     // 1) 'cortado': si el administrador ya reactivó los cobros, vuelven a la cola normal
@@ -575,7 +720,7 @@ export async function barrerPendientes({ limite = 50 } = {}) {
           SELECT id FROM marketplace_charges
            WHERE estado = 'pendiente' AND updated_at < now() - interval '5 minutes'
            ORDER BY updated_at LIMIT ${lim}
-        ) RETURNING event_id, intentos, (created_at < now() - interval '24 hours') AS vieja`
+        ) RETURNING event_id, intentos, (tipo <> 'consumo_ia' AND created_at < now() - interval '24 hours') AS vieja`
     );
     for (const p of pendientes) {
       // dos topes: intentos de POST reales (8) o 24 h esperando a que el marketplace responda
@@ -587,6 +732,25 @@ export async function barrerPendientes({ limite = 50 } = {}) {
       }
       await chargeQueue.add('charge', { eventId: p.event_id }, { jobId: jobIdDe(p.event_id, `-r${Date.now()}`) });
       res.reencolados++;
+    }
+
+    // 2b) 'sin_saldo': cada 10 min se mira el saldo del cliente (con caché) y se reenvía SOLO si ya alcanza. Sin
+    //     tope de intentos: esperan a que el cliente recargue.
+    const sinSaldo = await q(
+      `SELECT id, event_id, location_id, (units * price)::float AS importe FROM marketplace_charges
+        WHERE estado = 'sin_saldo' AND updated_at < now() - interval '10 minutes'
+        ORDER BY updated_at LIMIT 50`
+    );
+    for (const s of sinSaldo) {
+      await q(`UPDATE marketplace_charges SET updated_at = now() WHERE id = $1`, [s.id]);
+      const acc = await accesoDe(s.location_id).catch(() => null);
+      if (acc?.access && !acc.vencida) { // le han dado el uso incluido mientras tanto: no se cobra
+        await q(`UPDATE marketplace_charges SET estado = 'incluido', updated_at = now() WHERE id = $1 AND estado = 'sin_saldo'`, [s.id]);
+        continue;
+      }
+      if (!acc || !(Number(acc.credit) >= s.importe)) continue;
+      await chargeQueue.add('charge', { eventId: s.event_id }, { jobId: jobIdDe(s.event_id, `-s${Date.now()}`) });
+      res.reenviados++;
     }
 
     // 3) 'sin_confirmar': primero se pregunta, nunca se re-cobra a ciegas

@@ -24,7 +24,7 @@ const AUDIENCES = ['all', 'tag'];
 const METRICS = ['agendas', 'calificacion', 'conversion'];
 const STATUSES = ['active', 'paused', 'finished'];
 
-async function results(versusId) {
+async function results(versusId, verCoste = false) {
   const rows = await q(
     `SELECT s.id, s.name AS setter_name, COALESCE(NULLIF(a.alias,''), a.name) AS account_name, vs.weight,
       COUNT(c.id)::int AS leads,
@@ -32,7 +32,7 @@ async function results(versusId) {
       COUNT(c.id) FILTER (WHERE c.stage = 'en_conversion')::int AS en_conversion,
       COUNT(c.id) FILTER (WHERE c.stage = 'agendado')::int AS agendados,
       COUNT(c.id) FILTER (WHERE c.stage = 'descartado')::int AS descartados,
-      COALESCE((SELECT SUM(u.cost_usd) FROM llm_usage u JOIN conversations cc ON cc.id = u.conversation_id
+      COALESCE((SELECT SUM(${verCoste ? 'u.cost_usd' : 'COALESCE(u.billed_usd, 0)'}) FROM llm_usage u JOIN conversations cc ON cc.id = u.conversation_id
                 WHERE cc.versus_id = $1 AND u.setter_id = s.id), 0) AS gasto
      FROM versus_setters vs
      JOIN setters s ON s.id = vs.setter_id
@@ -117,7 +117,7 @@ export default async function versusRoutes(app) {
        WHERE vs.versus_id = $1 ORDER BY vs.id`,
       [v.id]
     );
-    const res = await results(v.id);
+    const res = await results(v.id, req.auth?.role === 'admin'); // el cliente ve lo que se le cobra, no nuestro coste
     return { ...v, setters, results: res, winner_id: winner(res, v.win_metric) };
   });
 

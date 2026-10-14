@@ -3,8 +3,9 @@ import { requireAdmin } from '../lib/session.js';
 import { chargeQueue } from '../queues.js';
 import {
   mdConfig, mdActivo, accesoDe, hayFondos, cobrar, consultarCobro,
-  listarTarifas, eventIdDe, diaNatural, barrerPendientes,
+  listarTarifas, eventIdDe, diaNatural, barrerPendientes, cerrarLotesConsumo, corteCobroIa,
 } from '../services/marketplace.js';
+import { getFacturacion, guardarFacturacion, FUENTES } from '../services/facturacion.js';
 
 // 💳 Panel del administrador para la integración con Marketplace Disruptivo: ver cómo está cada
 // subcuenta (uso incluido / por uso / sin saldo), auditar los cobros y disparar una prueba de
@@ -20,16 +21,19 @@ export default async function marketplaceRoutes(app) {
   // resumen de lo consumido hoy y este mes.
   app.get('/api/marketplace/estado', async () => {
     const cfg = mdConfig();
+    const desde = (await corteCobroIa()) ?? 2147483647; // sin corte: nada pendiente de cobro (id es int4)
+    // lo cobrado de verdad (sin los cargos de prueba del marketplace)
     const [hoy, mes, porEstado, cuentas] = await Promise.all([
       one(`SELECT COUNT(*)::int AS n, COALESCE(SUM(amount),0)::float AS usd
-             FROM marketplace_charges WHERE dia = $1::date AND estado = 'cobrado'`, [diaNatural()]),
+             FROM marketplace_charges WHERE dia = $1::date AND estado = 'cobrado' AND NOT test_mode`, [diaNatural()]),
       one(`SELECT COUNT(*)::int AS n, COALESCE(SUM(amount),0)::float AS usd
-             FROM marketplace_charges WHERE dia >= date_trunc('month', $1::date) AND estado = 'cobrado'`, [diaNatural()]),
+             FROM marketplace_charges WHERE dia >= date_trunc('month', $1::date) AND estado = 'cobrado' AND NOT test_mode`, [diaNatural()]),
       q(`SELECT estado, COUNT(*)::int AS n FROM marketplace_charges GROUP BY estado`),
+      // por_cobrar = precio al cliente del consumo que aún no ha entrado en ningún lote
       q(`SELECT a.id, a.name, a.location_id, a.md_acceso, a.md_acceso_at, a.md_sin_fondos_at,
-                (SELECT COUNT(*)::int FROM marketplace_charges c
-                  WHERE c.account_id = a.id AND c.dia = $1::date) AS conversaciones_hoy
-           FROM accounts a ORDER BY a.name`, [diaNatural()]),
+                COALESCE((SELECT SUM(u.billed_usd) FROM llm_usage u
+                           WHERE u.account_id = a.id AND u.md_charge_id IS NULL AND u.id > $1 AND u.billed_usd > 0 AND NOT u.incluido), 0)::float AS por_cobrar
+           FROM accounts a ORDER BY a.name`, [desde]),
     ]);
     // las tarifas se piden en vivo: es la forma de comprobar que la clave está viva y con alcance
     const tarifas = mdActivo() ? await listarTarifas().catch(() => ({ status: 0, meters: [], error: 'sin respuesta' })) : null;
@@ -89,6 +93,87 @@ export default async function marketplaceRoutes(app) {
   });
 
   app.post('/api/marketplace/barrer', async () => barrerPendientes({ limite: 100 }));
+
+  // ── 💰 Facturación por consumo de IA: multiplicador, umbral del lote y qué se cobra ──
+  app.get('/api/marketplace/facturacion', async () => ({ facturacion: await getFacturacion(), fuentes: FUENTES }));
+  app.put('/api/marketplace/facturacion', async (req) => ({ facturacion: await guardarFacturacion(req.body || {}), fuentes: FUENTES }));
+
+  // Cerrar YA los lotes de todo lo acumulado (≥ 0,01 USD), sin esperar al umbral ni a las 24 h. Opcional: una conexión.
+  app.post('/api/marketplace/lotes/cerrar', async (req) => cerrarLotesConsumo({ forzar: true, accountId: numId(req.body?.account_id) }));
+
+  // ── 📊 Rentabilidad por cliente en un rango de fechas ([desde, hasta] en días naturales de la zona del cobro) ──
+  // coste = lo que nos ha costado su IA (TODO: también pruebas y editor de prompts) · precio = lo que se le cobra por
+  // ese consumo (coste × multiplicador, solo trabajo con leads) · cobrado = cargos confirmados (sin los de prueba) ·
+  // incluido = lotes de clientes con el uso incluido (prueba/plan: no se les cobra) · pendiente = lotes aún sin cobrar.
+  app.get('/api/marketplace/rentabilidad', async (req) => {
+    const ok = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+    const hoy = diaNatural();
+    const desde = ok(req.query?.desde) ? req.query.desde : `${hoy.slice(0, 8)}01`;
+    const hasta = ok(req.query?.hasta) ? req.query.hasta : hoy;
+    // zona del cobro; si estuviera mal escrita, UTC (y se avisa) para que el panel no se caiga
+    let zona = mdConfig().zona_horaria;
+    let zonaValida = true;
+    try { new Intl.DateTimeFormat('sv-SE', { timeZone: zona }); } catch { zona = 'UTC'; zonaValida = false; }
+    const corte = (await corteCobroIa()) ?? 2147483647;
+    // Todo se cuenta por la FECHA DE CADA LLAMADA (el lote se cierra después y su día es el del cierre): así el coste
+    // y lo cobrado de esa misma IA caen en el mismo periodo. Precio y cobro solo del consumo posterior al cambio a cobro
+    // por consumo (antes la fórmula era otra y se cubría con la prueba gratuita).
+    const filas = await q(
+      `WITH uso AS (
+         SELECT u.account_id,
+                COALESCE(SUM(u.cost_usd), 0)::float AS coste,
+                COALESCE(SUM(u.billed_usd) FILTER (WHERE u.billed_usd > 0 AND u.id > $4), 0)::float AS precio,
+                COALESCE(SUM(u.billed_usd) FILTER (WHERE u.id > $4 AND c.estado = 'cobrado' AND NOT c.test_mode), 0)::float AS cobrado,
+                COALESCE(SUM(u.billed_usd) FILTER (WHERE u.id > $4 AND u.billed_usd > 0 AND (u.incluido OR c.estado = 'incluido')), 0)::float AS incluido,
+                COALESCE(SUM(u.billed_usd) FILTER (WHERE u.id > $4 AND u.billed_usd > 0 AND NOT u.incluido
+                           AND (u.md_charge_id IS NULL OR c.estado IN ('pendiente','sin_confirmar','error','cortado','sin_saldo'))), 0)::float AS pendiente,
+                COALESCE(SUM(u.billed_usd) FILTER (WHERE u.id > $4 AND u.billed_usd > 0 AND NOT u.incluido AND u.md_charge_id IN (0, -1)), 0)::float AS no_cobrable,
+                COUNT(*)::int AS llamadas,
+                COUNT(*) FILTER (WHERE u.cost_usd IS NULL)::int AS sin_coste
+           FROM llm_usage u LEFT JOIN marketplace_charges c ON c.id = u.md_charge_id
+          WHERE u.source <> 'archivo'
+            AND (u.created_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date
+          GROUP BY u.account_id),
+       cob AS (
+         SELECT account_id, COUNT(*) FILTER (WHERE estado = 'error')::int AS con_error
+           FROM marketplace_charges
+          WHERE tipo = 'consumo_ia' AND dia BETWEEN $1::date AND $2::date
+          GROUP BY account_id)
+       SELECT COALESCE(a.id, 0) AS id, COALESCE(a.name, '(conexiones borradas)') AS name, a.location_id, a.md_acceso, a.md_sin_fondos_at,
+              COALESCE(uso.coste, 0) AS coste, COALESCE(uso.precio, 0) AS precio, COALESCE(uso.llamadas, 0) AS llamadas,
+              COALESCE(uso.sin_coste, 0) AS sin_coste, COALESCE(uso.no_cobrable, 0) AS no_cobrable,
+              COALESCE(uso.cobrado, 0) AS cobrado, COALESCE(uso.incluido, 0) AS incluido,
+              COALESCE(uso.pendiente, 0) AS pendiente, COALESCE(cob.con_error, 0) AS con_error
+         FROM (SELECT account_id FROM uso UNION SELECT account_id FROM cob) k
+         LEFT JOIN accounts a ON a.id = k.account_id
+         LEFT JOIN uso ON uso.account_id IS NOT DISTINCT FROM k.account_id
+         LEFT JOIN cob ON cob.account_id IS NOT DISTINCT FROM k.account_id
+        ORDER BY COALESCE(uso.coste, 0) DESC`,
+      [desde, hasta, zona, corte]
+    );
+    const r2 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
+    const clientes = filas.map((f) => ({
+      ...f,
+      // beneficio REAL: lo cobrado menos lo que nos costó su IA en el rango
+      beneficio: r2(f.cobrado - f.coste),
+      // beneficio si se cobrara todo lo que su consumo vale (lo de los clientes con prueba gratuita incluido)
+      beneficio_previsto: r2(f.precio - f.coste),
+    }));
+    const suma = (k) => r2(clientes.reduce((s, c) => s + (Number(c[k]) || 0), 0));
+    const sinCliente = await one(
+      `SELECT COALESCE(SUM(cost_usd), 0)::float AS coste FROM llm_usage
+        WHERE source = 'archivo' AND (created_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date`,
+      [desde, hasta, zona]
+    );
+    return {
+      desde, hasta, zona, zona_valida: zonaValida, facturacion: await getFacturacion(), clientes,
+      totales: {
+        coste: suma('coste'), precio: suma('precio'), cobrado: suma('cobrado'), incluido: suma('incluido'),
+        pendiente: suma('pendiente'), no_cobrable: suma('no_cobrable'), beneficio: suma('beneficio'), beneficio_previsto: suma('beneficio_previsto'),
+        coste_sin_cliente: r2(sinCliente?.coste || 0),
+      },
+    };
+  });
 
   /**
    * 🧪 PRUEBA DE PUNTA A PUNTA (lo que pide el contrato para validar la integración).
@@ -158,20 +243,22 @@ export default async function marketplaceRoutes(app) {
     // El caso de error va con SU PROPIO event_id: reutilizar el del cobro válido con units distintos
     // lo prohíbe el contrato (y el marketplace respondería 200 idempotente, falseando la prueba).
     const eventId = eventIdDe(cuenta.location_id, `prueba${etiqueta}${b.forzar_error ? '-err' : ''}`, dia);
-    const units = b.forzar_error ? 0 : cfg.unidades_por_cobro;
+    const units = b.forzar_error ? 0 : 1;
+    const PRECIO_PRUEBA = 0.01; // el mínimo de la tarifa: la prueba mueve como mucho un céntimo
 
     // misma disciplina de outbox que en producción: la fila se crea ANTES de llamar
     await q(
       `INSERT INTO marketplace_charges (event_id, account_id, conversation_id, location_id, dia, units, price)
        VALUES ($1,$2,NULL,$3,$4::date,$5,$6) ON CONFLICT (event_id) DO NOTHING`,
-      [eventId, cuenta.id, cuenta.location_id, dia, units, cfg.precio_unidad]
+      [eventId, cuenta.id, cuenta.location_id, dia, units, PRECIO_PRUEBA]
     );
 
     const r = await cobrar({
       locationId: cuenta.location_id,
       units,
       eventId,
-      price: cfg.precio_unidad,
+      price: PRECIO_PRUEBA,
+      soloSaldo: true, // igual que los lotes reales: solo del saldo del marketplace
       description: `Hermes Setter · prueba de integración (${dia})`,
     });
     const ch = r.charge || {};

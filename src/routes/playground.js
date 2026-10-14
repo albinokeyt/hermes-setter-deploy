@@ -53,8 +53,10 @@ export default async function playgroundRoutes(app) {
       // la tanda; contra el historial no se filtra): lo que se prueba es lo que saldría de verdad
       const rep = filtrarRepetidos(result.mensajes, []);
       result.mensajes = rep.unicos;
+      // usage (con el coste real de la API) y debug (el prompt completo con el guardarraíl) son solo del admin
+      const { usage: _usage, debug: _debug, ...publico } = result;
       return {
-        ...result,
+        ...(req.auth?.role === 'admin' ? result : publico),
         repetidos_filtrados: rep.filtrados.length,
         memoria_final: { ...fakeConv.memory, ...result.memoria },
         delays: result.mensajes.map((m, i) => typingDelayMs(m, i)),

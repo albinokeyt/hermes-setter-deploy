@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import { requireAdmin, scopedAccountId, requireManageAgents, accessibleAccountIds, canAccessAccount } from '../lib/session.js';
 import * as ghl from '../services/ghl.js';
 import { activateSetterForContact, logEvent } from '../services/pipeline.js';
+import { cerrarLotesConsumo } from '../services/marketplace.js';
 import { redis } from '../lib/redis.js';
 import { WINDOWED_CHANNELS } from '../config.js';
 import { sanearPalabrasNombre } from '../lib/tags.js';
@@ -154,7 +155,13 @@ export default async function accountRoutes(app) {
 
   app.delete('/api/accounts/:id', async (req, reply) => {
     if (!requireAdmin(req, reply)) return;
-    await q(`DELETE FROM accounts WHERE id = $1`, [req.params.id]);
+    // lo que tenga consumido y aún sin cobrar se manda a cobrar ANTES de borrarla (después ya no tendría a quién)
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return reply.code(400).send({ error: 'id no válido' });
+    const cierre = await cerrarLotesConsumo({ forzar: true, accountId: id }).catch(() => null);
+    if (cierre?.motivo === 'otro_cierre_en_curso') return reply.code(409).send({ error: 'Se están cerrando los cobros pendientes: vuelve a intentarlo en un minuto.' });
+    if (!cierre || cierre.error) return reply.code(409).send({ error: 'No se pudieron cerrar sus cobros pendientes: vuelve a intentarlo.' });
+    await q(`DELETE FROM accounts WHERE id = $1`, [id]);
     return { ok: true };
   });
 

@@ -161,19 +161,11 @@ export default function Providers() {
             </div>
 
             <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4">
-              <span className="mb-1 block text-sm font-bold text-slate-800">💰 Precio al cliente (lo que FACTURAS)</span>
-              <p className="mb-3 text-xs text-slate-400">
-                Con estos valores se calcula el «Gasto IA» que ve el cliente en SU dashboard (tú ves costo y facturado). La vía fácil: pon solo el <b>margen %</b> y se aplica sobre el costo real. Si prefieres precios fijos, rellena los campos y estos mandan sobre el margen.
+              <span className="mb-1 block text-sm font-bold text-slate-800">💰 Precio al cliente</span>
+              <p className="text-xs text-slate-500">
+                Ya no se configura por API: a todos los clientes se les cobra el coste de su IA × el multiplicador que pongas en <b>Marketplace → Cobro por consumo de IA</b>.
+                Aquí solo hace falta el COSTO, y con OpenRouter ni eso: reporta el coste real de cada llamada.
               </p>
-              <div className="grid gap-4 sm:grid-cols-3">
-                <Input label="Margen sobre el costo (%)" type="number" step="1" min="0" value={form.markup_percent} onChange={(e) => setForm({ ...form, markup_percent: e.target.value })} hint="Ej. 100 = le cobras el doble del costo" />
-                <Input label="Precio entrada ($/1M)" type="number" step="0.001" min="0" value={form.bill_in} onChange={(e) => setForm({ ...form, bill_in: e.target.value })} />
-                <Input label="Precio salida ($/1M)" type="number" step="0.001" min="0" value={form.bill_out} onChange={(e) => setForm({ ...form, bill_out: e.target.value })} />
-              </div>
-              <div className="mt-3 grid gap-4 sm:grid-cols-2">
-                <Input label="🎤 Precio audio ($/minuto)" type="number" step="0.0001" min="0" value={form.bill_audio_min} onChange={(e) => setForm({ ...form, bill_audio_min: e.target.value })} />
-                <Input label="👁️ Precio imagen ($/imagen)" type="number" step="0.0001" min="0" value={form.bill_image} onChange={(e) => setForm({ ...form, bill_image: e.target.value })} />
-              </div>
             </div>
             <div className="flex gap-2">
               <Button type="submit" loading={saving}>{editingId ? 'Guardar cambios' : 'Añadir'}</Button>

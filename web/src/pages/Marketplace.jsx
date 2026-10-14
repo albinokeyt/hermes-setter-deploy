@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { Banner, Button, Card, SectionTitle, StatCard, Select } from '../components/ui.jsx';
-import { CreditCard, RefreshCw, Wallet, ShieldCheck, FlaskConical } from 'lucide-react';
+import { Banner, Button, Card, SectionTitle, StatCard, Select, Input } from '../components/ui.jsx';
+import { CreditCard, RefreshCw, Wallet, ShieldCheck, FlaskConical, TrendingUp, Save } from 'lucide-react';
 
 // 💳 Marketplace Disruptivo: qué clientes tienen el uso incluido, quién se quedó sin saldo y qué
 // se ha cobrado. Solo admin (el backend ya lo exige; aquí es cuestión de no enseñar el menú).
 
 const usd = (n) => `$${(Number(n) || 0).toFixed(2)}`;
+// importes de IA: por debajo de 1 USD con 4 decimales (una respuesta cuesta milésimas)
+const usdIa = (n) => { const v = Number(n) || 0; return `${v < 0 ? '−' : ''}$${Math.abs(v).toFixed(Math.abs(v) < 1 ? 4 : 2)}`; };
+const hoyIso = () => new Date().toISOString().slice(0, 10);
+const inicioMes = () => `${hoyIso().slice(0, 8)}01`;
 const fecha = (d) => (d ? new Date(d).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
 
 const ESTADO_COBRO = {
@@ -16,6 +20,7 @@ const ESTADO_COBRO = {
   sin_confirmar: { txt: 'Sin confirmar', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
   error: { txt: 'Error', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
   cortado: { txt: 'Cobros cortados', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
+  sin_saldo: { txt: 'Sin saldo (espera recarga)', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
 };
 
 const Chip = ({ tone = '', children }) => (
@@ -30,15 +35,57 @@ export default function Marketplace() {
   const [probando, setProbando] = useState(null);
   const [resultado, setResultado] = useState(null);
   const [ocupado, setOcupado] = useState(false);
+  const [fac, setFac] = useState(null);           // ajustes de facturación (multiplicador, umbral, fuentes)
+  const [fuentes, setFuentes] = useState([]);
+  const [facMsg, setFacMsg] = useState('');
+  const [rango, setRango] = useState(null);      // se fija con el día natural del servidor (la zona del cobro)
+  const [rent, setRent] = useState(null);         // rentabilidad por cliente
+
+  const cargarFac = useCallback(async () => {
+    try { const d = await api.get('/api/marketplace/facturacion'); setFac(d.facturacion); setFuentes(d.fuentes || []); } catch (e) { setFacMsg(e.message); }
+  }, []);
+  const cargarRent = useCallback(async (r, signal) => {
+    if (!r) return;
+    try { setRent(await api.get(`/api/marketplace/rentabilidad?desde=${r.desde}&hasta=${r.hasta}`, { signal })); }
+    catch (e) { if (e.name !== 'AbortError') setRent({ error: e.message }); }
+  }, []);
+  useEffect(() => { cargarFac(); }, [cargarFac]);
+  useEffect(() => {
+    // si se cambian las fechas seguido, la respuesta vieja no pisa a la nueva
+    const ac = new AbortController();
+    cargarRent(rango, ac.signal);
+    return () => ac.abort();
+  }, [cargarRent, rango]);
+
+  const guardarFac = async () => {
+    setFacMsg('');
+    try {
+      const d = await api.put('/api/marketplace/facturacion', fac);
+      setFac(d.facturacion);
+      setFacMsg('✓ Guardado. Se aplica a las llamadas de IA desde ahora (lo ya registrado no cambia).');
+      cargarRent(rango);
+    } catch (e) { setFacMsg(e.message); }
+  };
+  const cerrarLotes = async () => {
+    if (!window.confirm('Se cerrarán YA los lotes de todo el consumo acumulado (desde 0,01 USD) y se mandarán a cobrar a los clientes que no tengan el uso incluido. ¿Seguir?')) return;
+    setOcupado(true);
+    try {
+      const r = await api.post('/api/marketplace/lotes/cerrar', {});
+      setFacMsg(`Lotes cerrados: ${r.lotes || 0} (${usd(r.importe)}).${r.motivo ? ` ${r.motivo}` : ''}`);
+      await Promise.all([cargar(), cargarCobros(filtro), cargarRent(rango)]);
+    } catch (e) { setFacMsg(e.message); } finally { setOcupado(false); }
+  };
 
   const cargar = useCallback(async () => {
     try {
       const d = await api.get('/api/marketplace/estado');
       setDatos(d);
       setError('');
+      setRango((r) => r || { desde: `${String(d.dia_natural || hoyIso()).slice(0, 8)}01`, hasta: d.dia_natural || hoyIso() });
     } catch (e) {
       setError(e.message);
       setDatos({ config: {}, cuentas: [] });
+      setRango((r) => r || { desde: inicioMes(), hasta: hoyIso() });
     }
   }, []);
 
@@ -57,9 +104,9 @@ export default function Marketplace() {
   // Diagnóstico sin mover dinero (access + fondos + tarifas). Con «cobrar» hace el ciclo real.
   const probar = async (cuenta, cobrar) => {
     if (cobrar && !window.confirm(
-      `Se ejecutará un cobro de PRUEBA contra ${cuenta.name}.\n\n`
+      `Se ejecutará un cobro de PRUEBA de 0,01 USD contra ${cuenta.name}.\n\n`
       + 'Si el administrador del marketplace tiene activado el MODO PRUEBA de Hermes, no se mueve dinero. '
-      + 'Si no lo tiene, se cobrará de verdad el precio configurado.\n\n¿Continuar?'
+      + 'Si no lo tiene, se cobrará de verdad ese céntimo.\n\n¿Continuar?'
     )) return;
     setProbando(`${cuenta.id}:${cobrar ? 'cobro' : 'diag'}`);
     setResultado(null);
@@ -113,12 +160,6 @@ export default function Marketplace() {
           Modo observación (<code>MD_COBROS=false</code>): se comprueba el acceso y el saldo, pero <strong>no se cobra</strong>.
         </Banner>
       )}
-      {cfg.activo && (!cfg.precio_valido || !cfg.unidades_validas) && (
-        <Banner tone="error">
-          Configuración inválida: el precio por unidad debe estar entre 0,01 y 100 USD y las unidades ser mayores que cero.
-          Revisa <code>MD_PRECIO_UNIDAD</code> y <code>MD_UNIDADES_POR_COBRO</code>. Mientras esté así no se registra ningún consumo.
-        </Banner>
-      )}
       {datos.tarifas && datos.tarifas.status !== 200 && (
         <Banner tone="error">
           El marketplace no acepta nuestra clave (HTTP {datos.tarifas.status}). Revisa <code>MD_API_KEY</code>.
@@ -132,10 +173,113 @@ export default function Marketplace() {
       )}
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <StatCard label="Conversaciones cobradas hoy" value={datos.consumo?.hoy?.n ?? 0} sub={usd(datos.consumo?.hoy?.usd)} icon={CreditCard} tone="violet" />
-        <StatCard label="Este mes" value={datos.consumo?.mes?.n ?? 0} sub={usd(datos.consumo?.mes?.usd)} icon={Wallet} tone="emerald" />
-        <StatCard label="Precio por conversación/día" value={usd(cfg.precio_unidad)} sub={`tarifa «${cfg.meter || '—'}» · día ${datos.dia_natural} (${cfg.zona_horaria})`} icon={ShieldCheck} tone="sky" />
+        <StatCard label="Cobrado hoy" value={usd(datos.consumo?.hoy?.usd)} sub={`${datos.consumo?.hoy?.n ?? 0} cargos`} icon={CreditCard} tone="violet" />
+        <StatCard label="Cobrado este mes" value={usd(datos.consumo?.mes?.usd)} sub={`${datos.consumo?.mes?.n ?? 0} cargos`} icon={Wallet} tone="emerald" />
+        <StatCard label="Precio al cliente" value={fac ? `coste × ${fac.multiplicador}` : '…'} sub={`por consumo de IA · tarifa «${cfg.meter || '—'}» · día ${datos.dia_natural} (${cfg.zona_horaria})`} icon={ShieldCheck} tone="blue" />
       </div>
+
+      <Card className="p-5">
+        <h3 className="text-sm font-semibold text-slate-700">💰 Cobro por consumo de IA</h3>
+        <p className="mt-0.5 text-xs text-slate-400">
+          A cada cliente se le cobra lo que nos cuesta su IA (el coste que da OpenRouter o los precios de cada API) multiplicado por este número.
+          Se descuenta del SALDO que el cliente recarga en el Marketplace Disruptivo (nunca de su monedero de GHL): el consumo se acumula y se cobra en un solo cargo al llegar al umbral o, como mucho, una vez al día.
+          Cuando su saldo ya no cubre lo consumido, su setter se pausa hasta que recarga. A los clientes con el uso incluido (prueba o plan) no se les cobra.
+        </p>
+        {fac && (
+          <div className="mt-4 grid gap-4 lg:grid-cols-3">
+            <Input label="Multiplicador (precio al cliente = coste × …)" type="number" min="1" max="20" step="0.1"
+              value={fac.multiplicador} onChange={(e) => setFac({ ...fac, multiplicador: e.target.value })} hint="Precio al cliente = coste × este número" />
+            <Input label="Cobrar cada (USD acumulados)" type="number" min="0.1" max="50" step="0.1"
+              value={fac.umbral_usd} onChange={(e) => setFac({ ...fac, umbral_usd: e.target.value })} hint="Y como mucho una vez al día aunque no llegue" />
+            <div>
+              <span className="mb-1.5 block text-sm font-medium text-slate-700">Qué se le cobra al cliente</span>
+              <div className="space-y-1">
+                {fuentes.map((f) => (
+                  <label key={f.key} className="flex items-center gap-2 text-xs text-slate-600">
+                    <input type="checkbox" checked={(fac.fuentes || []).includes(f.key)}
+                      onChange={(e) => setFac({ ...fac, fuentes: e.target.checked ? [...(fac.fuentes || []), f.key] : (fac.fuentes || []).filter((x) => x !== f.key) })} />
+                    {f.txt}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button onClick={guardarFac} disabled={!fac}><Save size={15} /> Guardar</Button>
+          <Button variant="secondary" onClick={cerrarLotes} disabled={ocupado || !cfg.activo}>Cobrar ya lo acumulado</Button>
+          {facMsg && <span className={`text-xs ${facMsg.startsWith('✓') || facMsg.startsWith('Lotes') ? 'text-emerald-600' : 'text-rose-600'}`}>{facMsg}</span>}
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
+          <div>
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-700"><TrendingUp size={15} /> Rentabilidad por cliente</h3>
+            <p className="text-xs text-slate-400">Por fecha de cada llamada. Coste = lo que nos ha costado su IA (también pruebas y editor de prompts). Cobrado = lo ya cobrado de ese consumo. Incluido = consumo con prueba o plan (no se cobra). Pendiente = aún sin cobrar. Beneficio = cobrado − coste. «Previsto» = si se cobrara todo su consumo.</p>
+          </div>
+          <div className="flex items-end gap-2">
+            <Input label="Desde" type="date" value={rango?.desde || ''} onChange={(e) => setRango({ ...rango, desde: e.target.value })} className="!py-1.5" />
+            <Input label="Hasta" type="date" value={rango?.hasta || ''} onChange={(e) => setRango({ ...rango, hasta: e.target.value })} className="!py-1.5" />
+          </div>
+        </div>
+        {rent?.error && <div className="p-4"><Banner tone="error">{rent.error}</Banner></div>}
+        {rent && rent.zona_valida === false && <div className="p-4"><Banner tone="warn">La zona horaria del cobro (<code>MD_ZONA_HORARIA</code>) no es válida: se está usando UTC.</Banner></div>}
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-2 text-left">Cliente</th>
+                <th className="px-4 py-2 text-right">Coste IA</th>
+                <th className="px-4 py-2 text-right">Precio al cliente</th>
+                <th className="px-4 py-2 text-right">Cobrado</th>
+                <th className="px-4 py-2 text-right">Incluido</th>
+                <th className="px-4 py-2 text-right">Pendiente</th>
+                <th className="px-4 py-2 text-right">Beneficio</th>
+                <th className="px-4 py-2 text-right">Previsto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(rent?.clientes || []).map((c) => (
+                <tr key={c.id} className="border-t border-slate-50">
+                  <td className="px-4 py-2">
+                    <div className="font-medium text-slate-700">{c.name}</div>
+                    <div className="text-[10px] text-slate-400">
+                      {c.llamadas} llamadas{c.md_acceso === 'incluido' ? ' · uso incluido' : c.md_acceso === 'por_uso' ? ' · por uso' : ''}
+                      {c.sin_coste > 0 && <span className="text-amber-600"> · {c.sin_coste} sin coste conocido</span>}
+                      {c.con_error > 0 && <span className="text-rose-600"> · {c.con_error} cobros con error</span>}
+                      {c.no_cobrable > 0 && <span className="text-amber-600"> · {usdIa(c.no_cobrable)} no cobrable (sin location_id o cobros apagados)</span>}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-600">{usdIa(c.coste)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-600">{usdIa(c.precio)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums font-semibold text-slate-800">{usdIa(c.cobrado)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-sky-700">{usdIa(c.incluido)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-amber-700">{usdIa(c.pendiente)}</td>
+                  <td className={`px-4 py-2 text-right tabular-nums font-semibold ${c.beneficio >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{usdIa(c.beneficio)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-500">{usdIa(c.beneficio_previsto)}</td>
+                </tr>
+              ))}
+              {rent?.totales && (
+                <tr className="border-t-2 border-slate-200 bg-slate-50/60 font-semibold">
+                  <td className="px-4 py-2 text-slate-700">Total{rent.totales.coste_sin_cliente > 0 && <div className="text-[10px] font-normal text-slate-400">+ {usdIa(rent.totales.coste_sin_cliente)} de coste del archivo (sin cliente)</div>}</td>
+                  <td className="px-4 py-2 text-right tabular-nums">{usdIa(rent.totales.coste)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums">{usdIa(rent.totales.precio)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums">{usdIa(rent.totales.cobrado)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-sky-700">{usdIa(rent.totales.incluido)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-amber-700">{usdIa(rent.totales.pendiente)}</td>
+                  <td className={`px-4 py-2 text-right tabular-nums ${rent.totales.beneficio >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{usdIa(rent.totales.beneficio)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-500">{usdIa(rent.totales.beneficio_previsto)}</td>
+                </tr>
+              )}
+              {rent && !rent.error && (rent.clientes || []).length === 0 && (
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-400">Sin consumo en ese rango.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="border-t border-slate-100 px-5 py-2 text-[11px] text-slate-400">GHL no cobra comisión por los cargos del marketplace hasta el 31-12-2026; desde 2027 está prevista en torno al 15 % y habrá que descontarla del beneficio.</p>
+      </Card>
 
       <Card className="overflow-hidden">
         <div className="border-b border-slate-100 px-5 py-3.5">
@@ -148,7 +292,7 @@ export default function Marketplace() {
               <tr>
                 <th className="px-4 py-2 text-left">Conexión</th>
                 <th className="px-4 py-2 text-left">Acceso</th>
-                <th className="px-4 py-2 text-right">Hoy</th>
+                <th className="px-4 py-2 text-right">Por cobrar</th>
                 <th className="px-4 py-2 text-left">Saldo</th>
                 <th className="px-4 py-2"></th>
               </tr>
@@ -168,7 +312,7 @@ export default function Marketplace() {
                         : <Chip tone="bg-slate-50 text-slate-500 border-slate-200">Sin consultar</Chip>}
                     <div className="text-[10px] text-slate-400">{c.md_acceso_at ? fecha(c.md_acceso_at) : ''}</div>
                   </td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-slate-600">{c.conversaciones_hoy}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums text-slate-600" title="Consumo de IA a precio de cliente que aún no ha entrado en ningún cargo">{usdIa(c.por_cobrar)}</td>
                   <td className="px-4 py-2.5">
                     {c.md_sin_fondos_at
                       ? <Chip tone="bg-rose-50 text-rose-700 border-rose-200">Sin saldo desde {fecha(c.md_sin_fondos_at)}</Chip>
@@ -220,7 +364,7 @@ export default function Marketplace() {
         <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
           <div>
             <h3 className="text-sm font-semibold text-slate-700">Últimos cobros</h3>
-            <p className="text-xs text-slate-400">Una fila = una conversación en un día. El identificador es lo que impide cobrarla dos veces.</p>
+            <p className="text-xs text-slate-400">Cada fila es un cargo: los nuevos («hermes-ia-…») son lotes de consumo de IA; los antiguos, una conversación en un día. El identificador es lo que impide cobrarlo dos veces.</p>
           </div>
           <Select value={filtro} onChange={(e) => setFiltro(e.target.value)} className="w-48">
             <option value="">Todos los estados</option>
@@ -252,7 +396,10 @@ export default function Marketplace() {
                       {c.test_mode && <span className="ml-1"><Chip tone="bg-amber-50 text-amber-700 border-amber-200">prueba</Chip></span>}
                       {c.ultimo_error && <div className="mt-0.5 max-w-xs truncate text-[10px] text-rose-500" title={c.ultimo_error}>{c.ultimo_error}</div>}
                     </td>
-                    <td className="px-4 py-2 text-right tabular-nums text-slate-600">{c.amount === null || c.amount === undefined ? '—' : usd(c.amount)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums text-slate-600">
+                      {c.amount === null || c.amount === undefined ? (c.tipo === 'consumo_ia' ? usd(c.price) : '—') : usd(c.amount)}
+                      {c.tipo === 'consumo_ia' && <div className="text-[10px] text-slate-400">{c.llamadas} llamadas · coste {usdIa(c.cost_usd)}</div>}
+                    </td>
                     <td className="px-4 py-2 text-xs text-slate-400">{fecha(c.created_at)}</td>
                     <td className="px-4 py-2 text-right">
                       {!resuelto && (
