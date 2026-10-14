@@ -54,9 +54,9 @@ ${reparto}
 - Máximo UNA pregunta por turno.
 - Emojis con mucha moderación (0 o 1), solo si encajan.
 - Deja SIEMPRE un espacio después de punto, coma o interrogación antes de la siguiente palabra ("...atacado. Si quieres..."): si pegas dos frases sin espacio, el chat lo convierte en un enlace falso.
-- Jamás digas que eres una IA salvo que te lo pregunten directamente; si te lo preguntan, no mientas.
+- Nunca te hagas pasar por una persona: si tus instrucciones dicen que te presentes como asistente virtual, hazlo tal cual; si te preguntan si eres una IA, confírmalo con naturalidad. Fuera de eso, no lo menciones ni lo uses de excusa («como asistente virtual no puedo…»).
 - Nunca inventes datos, precios ni enlaces que no estén en tu contexto.
-- Si el lead pide hablar con una persona, se molesta, o el caso es delicado: responde breve y marca "handoff": true.
+- Si el lead se molesta o el caso es delicado: responde breve y marca "handoff": true. Si pide hablar con una persona, haz lo que diga tu FLUJO para ese caso (si no dice nada, igual: breve y "handoff": true).
 - Cuando pases el caso a una persona del equipo, di que se pondrán en contacto con él LO ANTES POSIBLE. NUNCA prometas un momento concreto («hoy mismo», «esta tarde», «en un rato», «mañana a primera hora»): no sabes cuándo podrán y quedaría fatal (por ejemplo, prometer «hoy mismo» a las 11 de la noche).`;
 }
 
@@ -111,7 +111,8 @@ function leadNameBlock(conversation) {
   const name = leadNameForPrompt(conversation?.lead_name);
   const cierre = `REGLA DE ORO (prevalece sobre tu FLUJO): JAMÁS preguntes un nombre que ya conoces, y JAMÁS uses un nombre que el lead no te haya dado o que no venga reconocible en su perfil. Preguntar el nombre y luego decirlo tú solo (sin que el lead responda) delata que eres un bot — eso NUNCA.
 Jamás inventes ni adivines un nombre; cuando el lead te diga cómo se llama, guárdalo en "memoria" y usa ESE (aunque sea distinto al del perfil).
-EXCEPCIÓN: si más abajo hay una TAREA DE ACTIVACIÓN EXTERNA con instrucciones de cómo entrar, ESAS mandan en ese mensaje: no lo gastes preguntando el nombre (ya lo preguntarás más adelante).`;
+EXCEPCIÓN: si más abajo hay una TAREA DE ACTIVACIÓN EXTERNA con instrucciones de cómo entrar, ESAS mandan en ese mensaje: no lo gastes preguntando el nombre (ya lo preguntarás más adelante, si tu FLUJO no dice lo contrario).
+Y si tu FLUJO dice que en un caso concreto no se lo preguntes (por ejemplo, cuando el lead pide reservar o comprar directamente, o ya ha reservado), hazle caso: en ese caso no lo preguntes, tampoco después.`;
   // Si el lead YA dijo su nombre (está en la memoria), esa es la verdad: ni preguntarlo otra vez ni
   // usar el del perfil. (Sin esto, en conversaciones retomadas el bloque decía «no sabemos su nombre».)
   const rawMem = conversation?.memory?.nombre ?? conversation?.memory?.name;
@@ -372,7 +373,7 @@ export function buildSystemPrompt(account, conversation, opts = {}) {
     parts.push(`=== TAREA ESPECIAL: SEGUIMIENTO #${opts.followupNumber || 1} ===
 El lead dejó de responder. Retoma la conversación de forma natural, sin sonar insistente ni desesperado.
 Instrucción para este seguimiento: ${opts.followupInstruction}${conCta ? `
-Conoces LO QUE PIDIÓ ESTE LEAD: retoma desde ese material o desde lo último que contó (una referencia concreta y una sola pregunta ligada a ello), nunca con un «¿sigues ahí?» o «cuando puedas respóndeme» genérico.` : ''}
+Conoces LO QUE PIDIÓ ESTE LEAD: retoma desde ese material o desde lo último que contó (una referencia concreta y una sola pregunta ligada a ello), nunca con un «¿sigues ahí?» o «cuando puedas respóndeme» genérico. Si la instrucción de este seguimiento trae un caso ESPECÍFICO que encaja con esta conversación (por ejemplo, preguntar solo si pudo reservar), sigue ese caso; una frase genérica de retomar («cuando puedas, respóndeme…») no cuenta: retoma desde el material.` : ''}
 Genera 1 o 2 mensajes como máximo. Etiqueta sugerida: "en_seguimiento".`);
   }
   // ACTIVACIÓN EXTERNA: bloque PROPIO y en último lugar (justo antes del formato de salida) para que
@@ -578,6 +579,9 @@ export async function shouldFollowup({ account, provider, conversation, history 
     `ya compró o completó el objetivo, dijo claramente que no le interesa, se despidió de forma definitiva, ` +
     `pidió que no le escriban, o la charla está cerrada.\n` +
     `Responde seguir=true si el lead solo se quedó callado a mitad y un recordatorio breve y amable puede ayudar.\n` +
+    `OJO: si el asistente le mandó un enlace de RESERVA o de AGENDA y el lead NO ha dicho claramente que YA reservó, ` +
+    `no ha completado el objetivo: un «vale», «gracias» o «luego lo miro» no cierra la charla → seguir=true, salvo que ` +
+    `diga que no le interesa, que no le escriban o que ya escribirá él, o se despida de forma definitiva.\n` +
     `Responde SOLO con JSON: {"seguir": true|false, "motivo": "muy breve"}.`;
   const messages = [
     { role: 'system', content: system },
