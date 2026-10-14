@@ -71,7 +71,7 @@ export default async function simuladorRoutes(app) {
     const setters = await q(`SELECT * FROM setters WHERE account_id = $1 ORDER BY is_default DESC, id`, [accountId]);
     const lms = (Array.isArray(account.lead_magnets) ? account.lead_magnets : []).map((l) => ({ name: l.name || '', keyword: l.keyword || '', tag: l.tag || '', tags: tagsDeLeadMagnet(l), url: l.url || '' }));
     return {
-      account: { id: account.id, name: account.alias || account.name, ai_enabled: Boolean(account.ai_enabled), bot_enabled: Boolean(account.bot_enabled), exclude_tag: account.exclude_tag || '', active_hours: account.active_hours || {}, timezone: account.timezone || 'Europe/Madrid', tiene_proveedor: Boolean(account.provider_id), ctas: Array.isArray(account.ctas) ? account.ctas : [] },
+      account: { id: account.id, name: account.alias || account.name, ai_enabled: Boolean(account.ai_enabled), bot_enabled: Boolean(account.bot_enabled), exclude_tag: account.exclude_tag || '', excluded_name_words: Array.isArray(account.excluded_name_words) ? account.excluded_name_words : [], active_hours: account.active_hours || {}, timezone: account.timezone || 'Europe/Madrid', tiene_proveedor: Boolean(account.provider_id), ctas: Array.isArray(account.ctas) ? account.ctas : [] },
       setters: setters.map(resumenSetter),
       lead_magnets: lms,
     };

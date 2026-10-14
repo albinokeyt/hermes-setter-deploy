@@ -77,6 +77,13 @@ export default function AccountEdit() {
   if (!acc) return <div className="py-24 text-center text-sm text-slate-400">{error || 'Cargando…'}</div>;
 
   const set = (patch) => setAcc({ ...acc, ...patch });
+  // Palabra del filtro por nombre: entra con Enter y también al salir del campo (pulsar «Guardar» sin Enter no la pierde).
+  const meterPalabraNombre = (el) => {
+    const v = el.value.trim().slice(0, 60);
+    const cur = acc.excluded_name_words || [];
+    if (v && !cur.some((x) => x.toLowerCase() === v.toLowerCase()) && cur.length < 30) set({ excluded_name_words: [...cur, v] });
+    el.value = '';
+  };
 
   const save = async () => {
     setSaving(true); setError('');
@@ -301,6 +308,25 @@ export default function AccountEdit() {
               hint="Lo contrario de «responder solo a»: si un contacto de GHL tiene esta etiqueta, NINGÚN setter de esta conexión le responde. Vacío = sin exclusión (al sacar a alguien desde un chat se usa «sin-ia» por defecto)."
             />
           </div>
+          <details data-tour="conexion-avanzado" open={(acc.excluded_name_words || []).length > 0} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+            <summary className="cursor-pointer text-sm font-bold text-slate-800">⚙️ Configuración avanzada</summary>
+            <div className="mt-3 space-y-2">
+              <span className="block text-xs font-semibold text-slate-700">🚫 No responder si el NOMBRE del contacto contiene…</span>
+              <p className="text-[11px] text-slate-500">Si el nombre del contacto en GHL lleva alguna de estas palabras, NINGÚN setter de esta conexión le contesta, ni le escribe por una etiqueta, ni le manda seguimientos. Sirve, por ejemplo, para que no atienda a vuestros clientes si los marcáis con «PC» en el nombre. Se busca la palabra completa, sin distinguir mayúsculas ni acentos: «PC» casa con «Laura PC», «PC - Laura» o «Laura P.C.», pero no con «Pcarmen». Poner o quitar la palabra en el nombre del contacto en GHL cuenta en un minuto. Ojo: tiene que ir en el contacto de la conversación (el de Instagram, Facebook o WhatsApp); si el cliente tiene otro contacto distinto de cuando compró, marcar solo ese no basta.</p>
+              <div className="flex flex-wrap items-center gap-2">
+                {(acc.excluded_name_words || []).map((w) => (
+                  <span key={w} className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-600">
+                    {w}
+                    <button type="button" onClick={() => set({ excluded_name_words: (acc.excluded_name_words || []).filter((x) => x !== w) })} className="text-red-400 hover:text-red-700" title="Quitar">×</button>
+                  </span>
+                ))}
+                <input placeholder="palabra o frase y Enter (p. ej. PC)"
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); meterPalabraNombre(e.target); } }}
+                  onBlur={(e) => meterPalabraNombre(e.target)}
+                  className="min-w-[220px] flex-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-red-400" />
+              </div>
+            </div>
+          </details>
           <div data-tour="conexion-pausa-humano" className="space-y-4 border-t border-slate-100 pt-5">
             <Toggle checked={acc.auto_handoff} onChange={(v) => set({ auto_handoff: v })} label="Pausar bot si un humano interviene" description="Si alguien responde manual desde GHL, el bot se aparta en ese chat" />
             {acc.auto_handoff && (

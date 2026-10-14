@@ -19,6 +19,36 @@ export const tagsDeLeadMagnet = (l) => [l?.tag, ...String(l?.tags_extra || '').s
 // «❤️ Quiero la Guía», «quiero la guia» y «QUIERO LA GUÍA!» son lo mismo.
 export const normPalabra = (s) => normTag(s).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 
+// 🚫 «No responder si el NOMBRE del contacto contiene…» (ajuste de la conexión). Cada entrada se busca como palabra o
+// frase COMPLETA, sin distinguir mayúsculas ni acentos y sin contar la puntuación: «PC» casa con «Laura PC»,
+// «PC - Laura», «laura_pc», «(PC)» o «Laura P.C.», pero no con «Pcarmen» ni con «López»; «Programa completo» casa
+// con «Marta · programa completo». Devuelve la entrada que casó (tal como está configurada) o null.
+export function palabraEnNombre(nombre, palabras) {
+  const n = ` ${normPalabra(nombre)} `;
+  if (!n.trim()) return null;
+  const sinPuntos = ` ${normPalabra(String(nombre || '').replace(/\./g, ''))} `; // «P.C.» → «PC»
+  for (const p of Array.isArray(palabras) ? palabras : []) {
+    const w = normPalabra(p);
+    if (w && (n.includes(` ${w} `) || sinPuntos.includes(` ${w} `))) return String(p).trim();
+  }
+  return null;
+}
+// La lista tal como se guarda: texto, sin vacíos ni repetidas, como mucho 30 entradas de 60 caracteres.
+export function sanearPalabrasNombre(valor) {
+  const lista = Array.isArray(valor) ? valor : String(valor || '').split(/[,;\n]/);
+  const vistas = new Set();
+  const out = [];
+  for (const v of lista) {
+    if (typeof v !== 'string' && typeof v !== 'number') continue;
+    const t = String(v).trim().slice(0, 60);
+    const k = normPalabra(t);
+    if (!k || vistas.has(k)) continue;
+    vistas.add(k); out.push(t);
+    if (out.length >= 30) break;
+  }
+  return out;
+}
+
 // Palabras clave de una ficha del catálogo. `keyword` admite varias separadas por coma, «;», «/» o «|»
 // (p. ej. «VÍDEO, CLASE»): la primera es la principal, las demás son alias que también escribe la gente.
 export const palabrasDeLeadMagnet = (l) => String(l?.keyword || '').split(/[,;/|]/).map(normPalabra).filter(Boolean);

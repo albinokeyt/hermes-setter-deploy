@@ -6,6 +6,7 @@ import * as ghl from '../services/ghl.js';
 import { activateSetterForContact, logEvent } from '../services/pipeline.js';
 import { redis } from '../lib/redis.js';
 import { WINDOWED_CHANNELS } from '../config.js';
+import { sanearPalabrasNombre } from '../lib/tags.js';
 
 // URL de comentarios: FIJA y LIMPIA, la misma para todas las conexiones (enruta por location.id).
 const COMMENT_WEBHOOK_URL = `${config.appBaseUrl}/api/webhooks/comentarios`;
@@ -18,7 +19,7 @@ const ADMIN_EDITABLE = [
   'timezone', 'sync_tags', 'auto_handoff', 'bot_enabled', 'ai_enabled', 'test_mode', 'test_tag', 'exclude_tag',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
   'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode', 'ctas',
-  'insertion_wait_seconds', 'insertion_idle_hours', 'lead_magnets',
+  'insertion_wait_seconds', 'insertion_idle_hours', 'lead_magnets', 'excluded_name_words',
 ];
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
@@ -31,10 +32,10 @@ const USER_EDITABLE = [
   'followups', 'debounce_seconds', 'max_msgs', 'max_words',
   'active_hours', 'timezone', 'temperature', 'bot_enabled', 'test_mode', 'test_tag', 'auto_handoff_minutes',
   'required_tags', 'required_tags_mode', 'insertion_wait_seconds', 'insertion_idle_hours',
-  'ctas', 'exclude_tag', 'auto_handoff', 'sync_tags', 'lead_magnets',
+  'ctas', 'exclude_tag', 'auto_handoff', 'sync_tags', 'lead_magnets', 'excluded_name_words',
 ];
 
-const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags', 'ctas', 'lead_magnets']);
+const JSON_FIELDS = new Set(['channels', 'followups', 'active_hours', 'calendar_ids', 'required_tags', 'ctas', 'lead_magnets', 'excluded_name_words']);
 
 // CTAs = [{ keyword, wait_seconds }]. La keyword vacía es el «cualquiera» que matchCtaWait (pipeline)
 // usa como comodín, así que se conserva; lo que se tira es lo que no tiene una espera válida.
@@ -139,6 +140,7 @@ export default async function accountRoutes(app) {
       let value = JSON_FIELDS.has(field) ? JSON.stringify(b[field]) : b[field] === '' && field === 'location_id' ? null : b[field];
       if (field === 'ctas') value = JSON.stringify(sanearCtas(b[field]));
       if (field === 'lead_magnets') value = JSON.stringify(sanearLeadMagnets(b[field]));
+      if (field === 'excluded_name_words') value = JSON.stringify(sanearPalabrasNombre(b[field]));
       if (field === 'insertion_wait_seconds') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 3600);
       if (field === 'insertion_idle_hours') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 720);
       vals.push(value);

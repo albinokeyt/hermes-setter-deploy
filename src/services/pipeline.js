@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
-import { normTag, normPalabra, tagsDeLeadMagnet, palabrasDeLeadMagnet, leadMagnetPorPalabra, fichaLeadMagnet } from '../lib/tags.js';
+import { normTag, normPalabra, tagsDeLeadMagnet, palabrasDeLeadMagnet, leadMagnetPorPalabra, fichaLeadMagnet, palabraEnNombre } from '../lib/tags.js';
 import { estadoDelWorkflow, olvidarFinDeFlujo } from './fotosEtiquetas.js';
 // 🧪 Simulador: contactos «sim:…» recorren este motor sin tocar GHL ni cobrar (ver lib/sim.js)
 import { esSim, getSimTags } from '../lib/sim.js';
@@ -60,6 +60,7 @@ const insFreshKey = (id) => `insfresh:${id}`; // pendiente de re-leer etiquetas 
 // devuelve el webhook aunque el envío falle después y no lleguemos a guardar nada.
 const ecoKey = (convId, body) => `eco:${convId}:${crypto.createHash('sha1').update(String(body || '')).digest('hex')}`;
 const ctagsKey = (conv) => `ctags:${conv.account_id}:${conv.ghl_contact_id}`; // caché de etiquetas del contacto
+const cnameKey = (conv) => `cname:${conv.account_id}:${conv.ghl_contact_id}`; // caché del nombre del contacto en GHL
 
 // ¿El origen que da GHL es una AUTOMATIZACIÓN? ('workflow', 'campaign', 'bulk_actions', 'api'…). 'app' es una
 // persona escribiendo desde el panel o el móvil.
@@ -1120,6 +1121,7 @@ export async function activateSetterForContact(account, setter, contactId, waitS
   await redis.del(ctaBotonKey(conv.id));
   await redis.del(insFreshKey(conv.id));
   await redis.del(ctagsKey(conv));
+  await redis.del(cnameKey(conv)).catch(() => {}); // y el nombre: si lo acaban de renombrar con una palabra excluida, cuenta ya
 
   // importar el historial que no tengamos (con fecha real y sin duplicar/re-etiquetar los propios)
   await saveGhlMessages(conv, ghlHistory.messages);
@@ -1829,33 +1831,68 @@ async function loadContext(conversationId) {
 // Modo test: el bot solo responde a contactos de GHL que tengan la etiqueta de prueba.
 // Se consulta el contacto en GHL (con caché de 60 s) y ante cualquier duda NO se responde.
 // Etiquetas del contacto en GHL (minúsculas), cacheadas 60s.
-async function getContactTags(account, conv) {
-  // 🧪 contacto simulado: sus «etiquetas de GHL» son las que puso el simulador (sin llamada ni caché)
-  if (esSim(conv.ghl_contact_id)) return (await getSimTags(conv.account_id, conv.ghl_contact_id)).map((t) => String(t).trim().toLowerCase());
-  const cacheKey = ctagsKey(conv);
-  const cached = await redis.get(cacheKey);
-  if (cached !== null) { try { return JSON.parse(cached); } catch { return []; } }
-  let tags = [];
+// Todas las formas de nombre que GHL guarda del contacto (el equipo puede haberlo renombrado en cualquiera).
+const nombreDeContacto = (c) => [...new Set([[c?.firstName, c?.lastName].filter(Boolean).join(' '), c?.name, c?.contactName, c?.fullNameLowerCase]
+  .map((x) => String(x || '').trim()).filter(Boolean))].join(' | ');
+// Lee el contacto de GHL UNA vez y deja en caché (60 s) sus etiquetas y su nombre. null si GHL falla (sin cachear).
+async function cargarContacto(account, conv) {
+  let contact;
   try {
-    const contact = await ghl.getContact(account, conv.ghl_contact_id);
-    tags = Array.isArray(contact?.tags) ? contact.tags.map((t) => String(t).trim().toLowerCase()) : [];
+    contact = await ghl.getContact(account, conv.ghl_contact_id);
   } catch (err) {
     await logEvent('error_contact_tags', { conv: conv.id, error: err.message });
     return null; // error al consultar: NO cachear (evita envenenar 60s y misenrutar); se reintenta
   }
-  await redis.setex(cacheKey, 60, JSON.stringify(tags));
-  return tags;
+  const tags = Array.isArray(contact?.tags) ? contact.tags.map((t) => String(t).trim().toLowerCase()) : [];
+  const nombre = nombreDeContacto(contact);
+  await redis.setex(ctagsKey(conv), 60, JSON.stringify(tags));
+  await redis.setex(cnameKey(conv), 60, nombre).catch(() => {});
+  return { tags, nombre };
+}
+async function getContactTags(account, conv) {
+  // 🧪 contacto simulado: sus «etiquetas de GHL» son las que puso el simulador (sin llamada ni caché)
+  if (esSim(conv.ghl_contact_id)) return (await getSimTags(conv.account_id, conv.ghl_contact_id)).map((t) => String(t).trim().toLowerCase());
+  const cached = await redis.get(ctagsKey(conv));
+  if (cached !== null) { try { return JSON.parse(cached); } catch { return []; } }
+  const c = await cargarContacto(account, conv);
+  return c ? c.tags : null;
+}
+// Nombre del contacto tal como está AHORA en GHL (si el equipo lo renombra, cuenta al minuto). null si GHL falla.
+async function getContactName(account, conv) {
+  // 🧪 contacto simulado o conexión sin acceso a GHL: el nombre que tiene la conversación
+  if (esSim(conv.ghl_contact_id) || !(account.location_id || account.pit_token)) return conv.lead_name || '';
+  const cached = await redis.get(cnameKey(conv)).catch(() => null);
+  if (cached !== null) return cached;
+  const c = await cargarContacto(account, conv);
+  return c ? c.nombre : null;
 }
 
 // El bot solo responde si pasa el canal del setter, el modo test Y el filtro de etiquetas.
 // activacion=true (activador externo): el workflow ya eligió este setter → se saltan las etiquetas
 // requeridas y el modo test, pero SÍ se respetan canal, "sin-ia" (exclude_tag) y el bloqueo humano.
-async function allowedByTags(account, conv, activacion = false) {
+// motivo (opcional): objeto que se rellena con { nombre: '<palabra>' } cuando el «no» es por el nombre del contacto.
+async function allowedByTags(account, conv, activacion = false, motivo = null) {
   // Canal: el setter (ya fusionado en account) solo responde en SUS canales. Cubre también las
   // conversaciones ya asignadas (sticky): si le quitan un canal, deja de responder ahí al instante.
   const chans = Array.isArray(account.channels) ? account.channels : [];
   if (chans.length && conv.channel && !chans.includes(conv.channel)) {
     return false;
+  }
+  // 🚫 NOMBRE EXCLUIDO (conexión): si el nombre del contacto contiene una de estas palabras —p. ej. los clientes del
+  // programa, que el equipo marca con «PC» en el nombre—, no se le responde. Aplica SIEMPRE, como la etiqueta de
+  // exclusión general: respuestas, activaciones por etiqueta y seguimientos. Se mira el nombre ACTUAL del contacto
+  // en GHL (el de la conversación solo si GHL no tiene ninguno): poner o quitar la palabra en GHL cuenta al minuto.
+  // OJO: es el contacto de ESTA conversación; si el cliente escribe por Instagram desde un contacto distinto del de
+  // su compra, la marca tiene que ir en el de Instagram (o fusionarlos en GHL).
+  const palabrasNombre = Array.isArray(account.excluded_name_words) ? account.excluded_name_words.filter((p) => String(p || '').trim()) : [];
+  if (palabrasNombre.length) {
+    const nombre = await getContactName(account, conv);
+    if (nombre === null) return 'error'; // no se ha podido comprobar: quien llama reintenta, nunca responde a ciegas
+    const palabra = palabraEnNombre(nombre || conv.lead_name || '', palabrasNombre);
+    if (palabra) {
+      if (motivo) motivo.nombre = palabra;
+      return false;
+    }
   }
   const needTest = Boolean(account.test_mode) && !activacion;
   const norm = (arr) => (Array.isArray(arr) ? arr.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : []);
@@ -2065,11 +2102,13 @@ async function processDebounceInner(job) {
   // el objetivo de la espera era dar tiempo a que la etiqueta se asignara, y la caché (60 s) la pobló
   // selectSetter con el estado anterior. Sin esto, una espera < 60 s no vería la etiqueta nueva.
   if (await redis.get(insFreshKey(conversationId))) {
+    await redis.del(cnameKey(conv)).catch(() => {}); // y el nombre: pudieron renombrarlo durante la inserción
     await redis.del(ctagsKey(conv));
     await redis.del(insFreshKey(conversationId));
   }
 
-  const permiso = await allowedByTags(account, conv, activacion);
+  const motivoPermiso = {};
+  const permiso = await allowedByTags(account, conv, activacion, motivoPermiso);
   if (permiso === 'error') {
     // No sabemos si el lead pasa el filtro: GHL no contestó. Antes esto se trataba como un "no" y el
     // lead se quedaba sin respuesta para siempre por un fallo pasajero. Se reprograma este mismo
@@ -2087,6 +2126,11 @@ async function processDebounceInner(job) {
     return;
   }
   await redis.del(`tagerr:${conversationId}`).catch(() => {});
+  if (!permiso && motivoPermiso.nombre) {
+    await logEvent('respuesta_omitida_por_nombre', { conv: conv.id, contacto: conv.ghl_contact_id, palabra: motivoPermiso.nombre, activacion });
+    await descartarActivacion('filtro_nombre');
+    return;
+  }
   if (!permiso) {
     await logEvent('respuesta_omitida_por_etiqueta', { conv: conv.id, contacto: conv.ghl_contact_id, test_mode: account.test_mode, required_tags: account.required_tags, activacion });
     await descartarActivacion('filtro_etiqueta'); // borra activarKey + marca el registro (no dejar 'esperando' colgado)
@@ -2780,7 +2824,8 @@ async function processFollowupInner(job) {
       return;
     }
   }
-  const permisoFu = await allowedByTags(account, conv);
+  const motivoFu = {};
+  const permisoFu = await allowedByTags(account, conv, false, motivoFu);
   if (permisoFu === 'error') {
     // No se han podido leer las etiquetas: NO se manda a ciegas (el contacto podría llevar "sin-ia"),
     // pero tampoco se mata la cadena por un fallo pasajero de GHL. Se reintenta en 10 min.
@@ -2792,7 +2837,10 @@ async function processFollowupInner(job) {
     return;
   }
   await redis.del(`tagerrfu:${conversationId}`).catch(() => {});
-  if (!permisoFu) return;
+  if (!permisoFu) {
+    if (motivoFu.nombre) await logEvent('seguimiento_omitido_por_nombre', { conv: conv.id, contacto: conv.ghl_contact_id, palabra: motivoFu.nombre });
+    return;
+  }
 
   if (windowBlocked(conv)) {
     await q(`UPDATE conversations SET followup_state = 'ventana_cerrada', updated_at = now() WHERE id = $1`, [conv.id]);
@@ -2888,7 +2936,7 @@ async function processFollowupInner(job) {
   for (let i = 0; i < result.mensajes.length; i++) {
     cursor += typingDelayMs(result.mensajes[i], i);
     await sendQueue.add('send', {
-      conversationId, body: result.mensajes[i], snapshotId, source: 'seguimiento',
+      conversationId, body: result.mensajes[i], snapshotId, source: 'seguimiento', bypassPause: result.handoff,
       gasto: i === 0 && (gastoFu || debugIdFu) ? { pt: gastoFu?.pt, ct: gastoFu?.ct, usd: gastoFu?.cost, modelo: result.model || '', debugId: debugIdFu } : null,
     }, { delay: cursor });
   }
@@ -2897,6 +2945,16 @@ async function processFollowupInner(job) {
   await q(`UPDATE conversations SET followup_step = $1, followup_state = $2, updated_at = now() WHERE id = $3`, [
     newStep, `enviado_${newStep}`, conv.id,
   ]);
+  // La IA pasó el caso al equipo EN el seguimiento (p. ej. el cierre de un caso que se deriva): igual que en una
+  // respuesta normal —estado «Requiere atención humana» + pausa y sin más seguimientos—. Antes se ignoraba aquí: el
+  // lead leía «el equipo te escribirá» y el motor le seguía mandando seguimientos.
+  if (result.handoff) {
+    await applyStage(conv, account, 'atencion_humana', result.motivo || 'la IA pidió atención humana (seguimiento)');
+    await q(`UPDATE conversations SET bot_paused = true, paused_by = 'ia', updated_at = now() WHERE id = $1`, [conv.id]);
+    await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
+    await logEvent('handoff_ia', { conv: conv.id, motivo: result.motivo, origen: 'seguimiento' });
+    return;
+  }
   if (conv.stage === 'calificado' || conv.stage === 'seguimiento_calificado') {
     // estaba calificado pero no agendó → seguimiento específico de calificación
     await applyStage(conv, account, 'seguimiento_calificado', `seguimiento #${newStep} (calificado sin agendar)`, true, { cas: true, noSi: ['comprador', 'agendado'] });
