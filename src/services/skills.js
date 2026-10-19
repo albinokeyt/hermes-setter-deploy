@@ -77,11 +77,12 @@ export function parseAcciones(raw, account) {
 
 const EMAIL_RE = /^[^\s@<>()[\]",;:\\]+@[^\s@<>()[\]",;:\\]+\.[a-z]{2,}$/i;
 
-// ¿Escribió el lead ese correo? Defensa contra un correo alucinado: solo vale si aparece literal
-// (sin mayúsculas) en sus últimos mensajes.
+// ¿Salió ese correo en la conversación? Defensa contra un correo alucinado: solo vale si aparece literal (sin
+// mayúsculas) en los últimos mensajes: escrito por el lead, o propuesto por el setter («¿es ana@gmail.com?», p. ej.
+// al corregir una errata) y confirmado por el lead justo después.
 function loEscribioElLead(email, history) {
-  const entrantes = (Array.isArray(history) ? history : []).filter((m) => m.direction === 'inbound').slice(-12);
-  return entrantes.some((m) => String(m.body || '').toLowerCase().includes(email));
+  const ult = (Array.isArray(history) ? history : []).slice(-12);
+  return ult.some((m) => String(m.body || '').toLowerCase().includes(email));
 }
 
 /**
