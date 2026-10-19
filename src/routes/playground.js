@@ -3,6 +3,7 @@ import { generateReply } from '../services/agent.js';
 import { typingDelayMs } from '../services/humanize.js';
 import { recordUsage, mergeSetter, filtrarRepetidos } from '../services/pipeline.js';
 import { requireManageAgents, canAccessAccount, accessibleAccountIds } from '../lib/session.js';
+import { sanitizeSkills } from '../services/skills.js';
 
 export default async function playgroundRoutes(app) {
   // Gasto acumulado en pruebas y ajustes (playground + corrector + arquitecto), scoped:
@@ -23,7 +24,7 @@ export default async function playgroundRoutes(app) {
 
   app.post('/api/playground/reply', async (req, reply) => {
     if (!(await requireManageAgents(req, reply))) return;
-    const { account_id, setter_id, history = [], memory = {} } = req.body || {};
+    const { account_id, setter_id, history = [], memory = {}, skills = null, lead_email = '' } = req.body || {};
     if (!(await canAccessAccount(req, account_id))) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });
     let account = await one(`SELECT * FROM accounts WHERE id = $1`, [account_id]);
     if (!account) return reply.code(404).send({ error: 'Cuenta no encontrada' });
@@ -36,6 +37,9 @@ export default async function playgroundRoutes(app) {
       account = { ...mergeSetter(account, s), bot_enabled: true }; // en el playground se prueba aunque esté apagado
       setterId = s.id;
     }
+    // 🧩 Probar skills SIN guardarlas: el panel puede mandar las skills a probar (en el playground nunca se ejecutan,
+    // solo se devuelve qué acción pediría el setter en "acciones").
+    if (skills && typeof skills === 'object') account = { ...account, skills: sanitizeSkills(skills) };
 
     const provider = account.provider_id ? await one(`SELECT * FROM providers WHERE id = $1`, [account.provider_id]) : null;
     if (!provider) return reply.code(400).send({ error: 'Este setter no tiene proveedor de IA configurado (sección APIs)' });
@@ -45,7 +49,7 @@ export default async function playgroundRoutes(app) {
       .map((m) => ({ direction: m.role === 'lead' ? 'inbound' : 'outbound', body: String(m.text || '') }))
       .filter((m) => m.body);
 
-    const fakeConv = { channel: 'IG', memory: memory && typeof memory === 'object' ? memory : {} };
+    const fakeConv = { channel: 'IG', memory: memory && typeof memory === 'object' ? memory : {}, lead_email: String(lead_email || '').slice(0, 254) };
     try {
       const result = await generateReply({ account, provider, conversation: fakeConv, history: mapped });
       await recordUsage(account.id, null, provider, result.model, result.usage, 'playground', null, setterId);
