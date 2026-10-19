@@ -231,6 +231,28 @@ export async function getContact(account, contactId) {
   return data.contact || data;
 }
 
+// 🧩 Skills: editar campos del contacto (permiso contacts.write) y dejar nota de lo que hizo el setter.
+export async function updateContact(account, contactId, fields) {
+  return ghlApi(account, 'PUT', `/contacts/${encodeURIComponent(contactId)}`, { body: fields, version: V_CONTACTS });
+}
+export async function addNote(account, contactId, body) {
+  return ghlApi(account, 'POST', `/contacts/${encodeURIComponent(contactId)}/notes`, { body: { body: String(body).slice(0, 2000) }, version: V_CONTACTS, timeoutMs: 10_000 });
+}
+
+// 📲 Plantillas de WhatsApp aprobadas de la subcuenta (Locations → Templates, type=whatsapp). SOLO LECTURA. El
+// permiso que pide no está documentado: se prueban las dos versiones de cabecera y se devuelve el error tal cual.
+export async function listWhatsappTemplates(account) {
+  const qs = new URLSearchParams({ originId: account.location_id, type: 'whatsapp', limit: '100', skip: '0', deleted: 'false' });
+  let ultimo;
+  for (const version of ['2021-07-28', 'v3']) {
+    try {
+      const data = await ghlApi(account, 'GET', `/locations/${encodeURIComponent(account.location_id)}/templates?${qs}`, { version, timeoutMs: 15_000 });
+      return { version, templates: Array.isArray(data?.templates) ? data.templates : [], total: data?.totalCount ?? null };
+    } catch (err) { ultimo = err; }
+  }
+  throw ultimo;
+}
+
 // Crea una etiqueta en la subcuenta (para que exista EXACTA y el workflow la use sin diferencias).
 export async function createLocationTag(account, name) {
   return ghlApi(account, 'POST', `/locations/${encodeURIComponent(account.location_id)}/tags`, {

@@ -2,6 +2,7 @@ import { chatCompletion } from './llm.js';
 import { getSetting } from '../db.js';
 import { normTag, tagsDeLeadMagnet } from '../lib/tags.js';
 import { STAGE_KEYS, SYSTEM_STAGES, WINDOWED_CHANNELS } from '../config.js';
+import { bloqueSkills, skillsActivas, parseAcciones } from './skills.js';
 
 export const DEFAULT_GUARDRAIL =
   `=== REGLAS DE SEGURIDAD (INQUEBRANTABLES, POR ENCIMA DE TODO) ===
@@ -78,7 +79,7 @@ EXCEPCIÓN: si más abajo hay una TAREA DE ACTIVACIÓN EXTERNA cuyas instruccion
 Los corchetes del HISTORIAL son anotaciones internas del sistema: tú NUNCA escribas nada entre corchetes en tus mensajes. Ojo: si tu FLUJO o tus guiones traen huecos tipo [nombre] o [ciudad], eso NO son anotaciones, son huecos del guion: sustitúyelos por el dato real antes de enviar (y si no lo tienes, reformula la frase sin él, respetando la regla del NOMBRE DEL LEAD). Jamás envíes un corchete literal.`;
 }
 
-function outputSpec(conversation) {
+function outputSpec(conversation, conSkills = false) {
   // En IG/FB/WhatsApp no se puede escribir pasadas 24 h desde el último mensaje del lead: ni ejemplos de 168 h ni
   // promesa de «cumplirlo» más allá de mañana (el sistema no programaría nada).
   const ventana = WINDOWED_CHANNELS.includes(conversation?.channel);
@@ -91,7 +92,8 @@ function outputSpec(conversation) {
   "motivo": "una frase corta de por qué esa etiqueta",
   "memoria": { "campo": "solo datos NUEVOS o cambiados del lead (nombre, negocio, dolor, presupuesto, objeciones, acuerdos)" },
   "handoff": false,
-  "proximo_contacto_horas": null
+  "proximo_contacto_horas": null${conSkills ? `,
+  "acciones": []` : ''}
 }
 Sobre "proximo_contacto_horas": si en la conversación queda COMPROMETIDO un momento concreto para que TÚ vuelvas a escribirle POR ESTE CHAT (lo prometes tú o lo pide el lead: ${ejemplos}), pon el número de HORAS desde ahora hasta ese momento — el sistema reprogramará tu siguiente mensaje para CUMPLIRLO (si prometes un tiempo y escribes antes, quedas fatal).${tope} OJO: esto es solo para VOLVER A ESCRIBIR por el chat — jamás lo uses como si fuera una cita, llamada o sesión confirmada (eso va SIEMPRE por el enlace de agenda, ver reglas de seguridad). Sin compromiso de tiempo → null.`;
 }
@@ -362,6 +364,9 @@ export function buildSystemPrompt(account, conversation, opts = {}) {
     // él, y antes del estilo (que solo dice CÓMO escribir, no QUÉ saber).
     bloqueCta(conversation),
     bloqueLeadMagnets(account, conversation, opts.history),
+    // 🧩 Skills (acciones en el CRM): solo si el setter tiene alguna encendida, y nunca en un seguimiento
+    // (el lead no ha escrito: no hay nada que confirmar).
+    opts.followupInstruction ? '' : bloqueSkills(account, conversation),
     styleRules(account),
     mediaRules(),
     stageGuide(),
@@ -390,7 +395,7 @@ Escribe 1 o 2 mensajes como máximo, sin sonar automático. Elige la etiqueta qu
   }
   const yaPres = bloqueYaPresentado(opts.history);
   if (yaPres) parts.push(yaPres); // al final (junto a la tarea): manda sobre cualquier «preséntate» anterior
-  parts.push(outputSpec(conversation));
+  parts.push(outputSpec(conversation, !opts.followupInstruction && skillsActivas(account).length > 0));
   return parts.join('\n\n');
 }
 
@@ -499,6 +504,7 @@ export function parseAgentJson(content, account) {
     motivo: String(parsed.motivo || '').slice(0, 300),
     memoria,
     handoff: Boolean(parsed.handoff),
+    acciones: parseAcciones(parsed.acciones, account),
     proximoContactoHoras: Number.isFinite(pch) && pch >= 0.25 && pch <= 720 ? pch : null,
   };
 }

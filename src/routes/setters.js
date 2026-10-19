@@ -2,6 +2,7 @@ import { q, one } from '../db.js';
 import { config } from '../config.js';
 import { requireAdmin, requireManageAgents, canAccessAccount } from '../lib/session.js';
 import * as ghl from '../services/ghl.js';
+import { sanitizeSkills, SKILLS } from '../services/skills.js';
 
 // El admin edita todo; un usuario del portal solo el cerebro de su setter (no el proveedor/modelo de IA).
 const ADMIN_EDITABLE = [
@@ -9,7 +10,7 @@ const ADMIN_EDITABLE = [
   'prompt_identity', 'prompt_business', 'prompt_flow',
   'provider_id', 'model', 'temperature', 'debounce_seconds', 'max_msgs', 'max_words', 'followup_fit_window', 'followups', 'followup_ai_check',
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
-  'calendar_ids', 'activation_enabled', 'activation_tags', 'insertion_wait_seconds', 'insertion_idle_hours',
+  'calendar_ids', 'activation_enabled', 'activation_tags', 'insertion_wait_seconds', 'insertion_idle_hours', 'skills',
 ];
 const USER_EDITABLE = [
   'name', 'bot_enabled', 'test_mode', 'test_tag', 'channels', 'required_tags', 'required_tags_mode', 'excluded_tags',
@@ -19,9 +20,9 @@ const USER_EDITABLE = [
   'temperature', 'debounce_seconds', 'max_msgs', 'max_words', 'followups', 'followup_ai_check',
   // pestaña IA: el usuario elige sus APIs (solo las habilitadas para usuarios; se valida abajo)
   'provider_id', 'model', 'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
-  'calendar_ids', 'activation_enabled', 'activation_tags', 'insertion_wait_seconds', 'insertion_idle_hours',
+  'calendar_ids', 'activation_enabled', 'activation_tags', 'insertion_wait_seconds', 'insertion_idle_hours', 'skills',
 ];
-const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids', 'channels', 'activation_tags']);
+const JSON_FIELDS = new Set(['required_tags', 'followups', 'excluded_tags', 'calendar_ids', 'channels', 'activation_tags', 'skills']);
 
 // Solo aceptamos enlaces http/https: el link se renderiza como <a> en el panel, así que un
 // "javascript:..." sería ejecución de código al pulsarlo. Cualquier otro esquema se descarta.
@@ -154,6 +155,7 @@ export default async function setterRoutes(app) {
     return {
       ...setter,
       provider_name,
+      skills_catalogo: SKILLS, // nombre y descripción de cada skill, para la pestaña «Skills»
       // URL DEDICADA para ContactTagUpdate (misma para todos; se pega en el «Custom webhook URL» de esa fila).
       tag_webhook_url: `${config.appBaseUrl}/api/webhooks/etiquetas`,
       // Alternativa avanzada: webhook por setter con token (nodo Webhook dentro de un workflow de GHL).
@@ -363,6 +365,7 @@ export default async function setterRoutes(app) {
       // No dejar el setter sin canales (estado ambiguo): si llega vacío/invalido, se ignora el cambio.
       if (f === 'channels' && !(Array.isArray(b[f]) && b[f].length)) continue;
       let val = f === 'activation_tags' ? sanitizeActivationTags(b[f]) : b[f];
+      if (f === 'skills') val = sanitizeSkills(b[f]);
       if (f === 'insertion_wait_seconds') val = Math.min(Math.max(0, Math.round(Number(b[f]) || 0)), 3600);
       if (f === 'insertion_idle_hours') val = Math.min(Math.max(0, Math.round(Number(b[f]) || 0)), 720);
       // Un usuario elige la API, no el modelo suelto: se usa el default_model de la API (más seguro y

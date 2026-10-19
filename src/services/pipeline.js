@@ -8,6 +8,7 @@ import { esSim, getSimTags } from '../lib/sim.js';
 import { quitarPresentacionRepetida } from './agent.js';
 import { debounceQueue, sendQueue, followupQueue, reactivateQueue } from '../queues.js';
 import { generateReply, shouldFollowup } from './agent.js';
+import { ejecutarAcciones } from './skills.js';
 // 💳 Marketplace Disruptivo: puerta de acceso antes de atender y registro de consumo al entregar.
 import { puedeAtender, registrarConsumo, cobrosIaActivos } from './marketplace.js';
 import { getFacturacion, precioCliente } from './facturacion.js';
@@ -342,6 +343,8 @@ export function mergeSetter(account, s) {
     audio_enabled: s.audio_enabled,
     audio_provider_id: s.audio_provider_id,
     audio_model: s.audio_model,
+    // 🧩 skills (acciones en el CRM) SON del setter; la conexión no tiene
+    skills: s.skills && typeof s.skills === 'object' ? s.skills : {},
   };
 }
 
@@ -2266,6 +2269,19 @@ async function processDebounceInner(job) {
   }
   if (token && !(await consumeDebounceToken(conversationId, token))) return; // otra ejecución ganó
   await redis.del(ctaSaltadaKey(conversationId)).catch(() => {}); // ya responde: no queda espera saltada que reponer
+
+  // 🧩 Skills: las acciones en el CRM se ejecutan ANTES de enviar. Si una no se pudo hacer, el setter no puede
+  // decir «ya está»: sus mensajes se sustituyen por la salida segura (y, si hace falta, pasa a una persona).
+  if (result.acciones?.length) {
+    const salida = await ejecutarAcciones({ account, conv, acciones: result.acciones, history, logEvent }).catch(async (err) => {
+      await logEvent('skill_error', { conv: conv.id, error: String(err.message).slice(0, 200) });
+      return { reemplazo: ['Uy, no he podido hacerlo desde aquí 🙏 Se lo paso al equipo para que lo revisen.'], handoff: true, motivo: 'falló una skill' };
+    });
+    if (salida) {
+      result.mensajes = salida.reemplazo;
+      if (salida.handoff) { result.handoff = true; result.motivo = salida.motivo || result.motivo; }
+    }
+  }
 
   if (Object.keys(result.memoria).length) {
     await q(`UPDATE conversations SET memory = memory || $1::jsonb, updated_at = now() WHERE id = $2`, [

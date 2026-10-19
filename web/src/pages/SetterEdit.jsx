@@ -13,6 +13,7 @@ const TABS = [
   { key: 'comportamiento', label: 'Comportamiento' },
   { key: 'activaciones', label: '⚡ Activaciones' },
   { key: 'seguimientos', label: 'Seguimientos' },
+  { key: 'skills', label: '🧩 Skills' },
   { key: 'arquitecto', label: '✨ Arquitecto' },
 ];
 
@@ -541,6 +542,34 @@ export default function SetterEdit() {
           </Button>
         </div>
       )}
+
+      {tab === 'skills' && (() => {
+        const cat = s.skills_catalogo || {};
+        const sk = s.skills && typeof s.skills === 'object' ? s.skills : {};
+        const setSkill = (k, patch) => set({ skills: { ...sk, [k]: { activo: false, etiqueta: '', instrucciones: '', ...(sk[k] || {}), ...patch } } });
+        return (
+          <div data-tour="setter-skills" className="max-w-2xl space-y-4">
+            <Banner tone="info">Las skills son cosas que el setter puede HACER en GoHighLevel además de conversar. Cada una se enciende por separado y viene apagada. Si una acción no se puede hacer, el setter no dice que está hecha: se lo pasa a una persona.</Banner>
+            {Object.entries(cat).map(([k, meta]) => {
+              const cfg = sk[k] || {};
+              return (
+                <Card key={k} className="space-y-4 p-5">
+                  <Toggle checked={Boolean(cfg.activo)} onChange={(v) => setSkill(k, { activo: v })} label={meta.nombre} description={meta.descripcion} />
+                  {k === 'cambiar_email' && cfg.activo && (
+                    <div className="space-y-4 border-t border-slate-100 pt-4">
+                      <Input label="Etiqueta a poner después del cambio (opcional)" value={cfg.etiqueta || ''} onChange={(e) => setSkill(k, { etiqueta: e.target.value })}
+                        placeholder="Ej.: correo-actualizado" hint="Con ella, un workflow tuyo de GHL puede reenviar el acceso o el lead magnet al correo nuevo." />
+                      <Textarea label="Qué decir o hacer después de cambiarlo (opcional)" rows={2} value={cfg.instrucciones || ''} onChange={(e) => setSkill(k, { instrucciones: e.target.value })}
+                        placeholder="Ej.: dile que en unos minutos le llega el acceso al correo nuevo y que mire también en spam." />
+                      <p className="text-xs text-slate-500">Cómo funciona: el setter ofrece el cambio, repite el correo nuevo y espera a que el lead lo confirme. Hermes cambia el correo del contacto en GHL, deja una nota con el correo anterior y el nuevo, y pone la etiqueta si la has escrito. Solo usa un correo que el lead haya escrito él mismo.</p>
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {tab === 'arquitecto' && (
         <div data-tour="setter-arquitecto" className="max-w-3xl space-y-4">

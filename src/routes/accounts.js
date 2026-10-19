@@ -222,6 +222,29 @@ export default async function accountRoutes(app) {
     return { calendars: seen.map((s) => ({ id: s.id, name: s.id })), source: 'historial' };
   });
 
+  // 📲 Plantillas de WhatsApp de la subcuenta (solo lectura): para elegirlas en las activaciones. Si GHL no deja
+  // (permiso), devuelve el error para saberlo; no cambia nada.
+  app.get('/api/accounts/:id/plantillas-whatsapp', async (req, reply) => {
+    if (!(await requireManageAgents(req, reply))) return;
+    if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso' });
+    const account = await one(`SELECT * FROM accounts WHERE id = $1`, [req.params.id]);
+    if (!account?.location_id) return reply.code(400).send({ error: 'Esta conexión no está enlazada a una subcuenta de GHL' });
+    try {
+      const r = await ghl.listWhatsappTemplates(account);
+      return {
+        ok: true, version: r.version, total: r.total,
+        plantillas: r.templates.map((t) => ({
+          id: t.id, nombre: t.name, estado: t.status || t.template?.status || '', idioma: t.language || t.template?.language || '',
+          categoria: t.category || t.template?.category || '',
+          texto: t.template?.body || (Array.isArray(t.template?.components) ? (t.template.components.find((c) => c.type === 'BODY')?.text || '') : ''),
+          crudo: req.auth?.role === 'admin' ? t : undefined,
+        })),
+      };
+    } catch (err) {
+      return { ok: false, status: err.status || null, error: String(err.message).slice(0, 400) };
+    }
+  });
+
   // 🪪 Recuperar nombres: repasa las conversaciones SIN nombre de esta conexión y las rellena desde
   // la API de GHL. Repara el daño de una racha de tokens muertos (p. ej. la app desinstalada): en
   // ese periodo cada getContact fallaba en silencio y los leads quedaban «Lead sin nombre».
