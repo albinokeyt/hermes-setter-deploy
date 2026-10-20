@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { one, q, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, GHL_ED25519_KEY, GHL_RSA_KEY } from '../config.js';
-import { handleInbound, handleOutboundEvent, handleAppointmentEvent, handleOrderEvent, accountByLocation, logEvent, activateSetterForContact, guardarContextoCta, limpiarContextoCta, reponerEsperaSaltada } from '../services/pipeline.js';
+import { handleInbound, handleOutboundEvent, handleAppointmentEvent, handleOrderEvent, accountByLocation, logEvent, activateSetterForContact, guardarContextoCta, limpiarContextoCta, reponerEsperaSaltada, invalidateContactTags } from '../services/pipeline.js';
 import { tagsDeLeadMagnet, fichaLeadMagnet } from '../lib/tags.js';
 import { leerFoto, guardarFoto, anotarFlujo } from '../services/fotosEtiquetas.js';
 
@@ -154,6 +154,10 @@ async function procesarEtiquetas(account, p) {
   // ¿el payload trae DE VERDAD la lista de etiquetas? (para no confundir "sin lista" con "sin la etiqueta")
   const tagsArray = Array.isArray(p.tags) ? p.tags : (Array.isArray(p.contact?.tags) ? p.contact.tags : null);
   const tags = (tagsArray || []).map(normTag).filter(Boolean);
+  // Sus etiquetas acaban de cambiar: fuera la caché de 60 s. Si no, el siguiente mensaje se decidía con las
+  // etiquetas viejas (p. ej. el workflow pone la etiqueta de prueba y el lead escribe en ese mismo minuto: el
+  // setter en modo prueba no lo veía y se lo comía en silencio).
+  if (contactId) await invalidateContactTags(account.id, contactId).catch(() => {});
   const setters = await q(
     `SELECT * FROM setters WHERE account_id = $1 AND activation_enabled = true`,
     [account.id]
