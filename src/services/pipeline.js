@@ -762,6 +762,35 @@ export async function handleInbound(account, evt) {
   // 🧪 el lead simulado nace en el simulador (no aquí): su primer mensaje debe contar como ENTRADA igualmente
   if (esSim(conv.ghl_contact_id) && (await redis.del(`simentrada:${conv.id}`)) === 1) conv.is_new = true;
 
+  // 🧪 «test-setter»: palabra de PRUEBA del equipo. Solo cuenta si la conexión tiene algún setter en MODO PRUEBA (a un
+  // lead real que la escriba no le pasa nada distinto). Quien la escribe está probando: se quita la AUTO-pausa por
+  // intervención humana o la manual del panel (el equipo ya había hablado con esa cuenta y el setter se apartaba
+  // para siempre, caso Escuela MPI 20-oct) y ESTE mensaje no se contesta: el workflow de GHL le pone la etiqueta de
+  // prueba y el setter responde desde el siguiente. No toca la exclusión (sin-ia) ni la pausa que pidió la IA.
+  let palabraTest = false;
+  if (/^test[\s_-]*setter[\s.!¡]*$/i.test(textBody)) {
+    const sTest = account.test_mode ? null : await one(`SELECT test_tag FROM setters WHERE account_id = $1 AND test_mode = true ORDER BY id DESC LIMIT 1`, [account.id]);
+    const enPrueba = Boolean(account.test_mode || sTest);
+    if (enPrueba) {
+      palabraTest = true;
+      // La etiqueta de prueba la pone Hermes YA (sin esperar al workflow de GHL): si el siguiente mensaje llega en el
+      // mismo segundo, el enrutado ya la ve y no se queda sin setter.
+      const tagTest = String((account.test_mode ? account.test_tag : (sTest?.test_tag || account.test_tag)) || 'hermes-test').trim();
+      if (tagTest && !esSim(conv.ghl_contact_id)) {
+        await ghl.addTags(account, conv.ghl_contact_id, [tagTest]).catch((err) => logEvent('error_palabra_test_etiqueta', { conv: conv.id, error: String(err.message).slice(0, 160) }).catch(() => {}));
+      }
+      await redis.del(ctagsKey(conv)).catch(() => {});
+      if (conv.bot_paused && (conv.paused_by === 'humano' || conv.paused_by === 'manual')) {
+        await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
+        await cancelReactivate(conv.id).catch(() => {});
+        await marcarReactivado(conv.id);
+        conv.bot_paused = false;
+        conv.paused_by = '';
+      }
+      await logEvent('palabra_test_setter', { conv: conv.id, contacto: conv.ghl_contact_id, nota: 'prueba del equipo: pausa humana quitada, este mensaje no se contesta' }).catch(() => {});
+    }
+  }
+
   // Enrutado al setter de la conexión que casa por etiqueta. Se reintenta mientras el
   // lead no tenga setter (por si se etiqueta más tarde). Si hay setters pero ninguno
   // aplica a este lead, NO se responde (respetar el filtro de etiquetas del setter).
@@ -874,6 +903,8 @@ export async function handleInbound(account, evt) {
         if (fresh) await logEvent('error_nombre_contacto', { account: account.id, contactId: evt.contactId, error: String(err.message || err).slice(0, 200) }).catch(() => {});
       });
   }
+
+  if (palabraTest) respond = false; // 🧪 la palabra de prueba no se contesta: el setter entra desde el siguiente mensaje
 
   // Visibilidad: si NADIE va a responder, que quede en el Registro de eventos (1/h por cuenta) y
   // culpando al CULPABLE correcto — `account` aquí puede venir fusionado con el setter (mergeSetter
