@@ -2367,6 +2367,7 @@ async function processDebounceInner(job) {
     await activationLogDone(conversationId, 'respondido', result.mensajes.join('\n')); // panel: el mensaje que respondió
   }
 
+  if (result.handoffPorFrase) await logEvent('handoff_por_frase', { conv: conv.id, nota: 'el setter dijo que lo pasaba a una persona sin marcar handoff: se marca igualmente' }).catch(() => {});
   if (result.handoff) {
     // Etiqueta VISIBLE «Requiere atención humana» + pausa; mientras la tenga, el bot no responde.
     await applyStage(conv, account, 'atencion_humana', result.motivo || 'la IA pidió atención humana');

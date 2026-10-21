@@ -447,6 +447,20 @@ function salvageMensajes(text) {
   return out.map((s) => String(s).trim()).filter(Boolean);
 }
 
+// ¿Promete en firme pasar la conversación a una persona? Frase a frase: «se lo paso (al equipo)», «le paso tu mensaje»,
+// «lo paso al equipo», «te paso con…». No cuenta si en esa frase va un «si» antes (ofrecimiento condicional) ni las
+// formas de pregunta o subjuntivo («¿quieres que se lo pase?»).
+const PASO_RE = /\b(se lo paso|le paso tu mensaje|lo paso al equipo|te paso con (?:una persona|alguien|el equipo|lorena))\b/i;
+export function prometePasoAPersona(texto) {
+  const frases = String(texto || "").split(/(?<=[.!?…])\s+|\n+/);
+  return frases.some((f) => {
+    const m = f.match(PASO_RE);
+    if (!m) return false;
+    const antes = f.slice(0, m.index).toLowerCase();
+    return !/(^|[^\p{L}])si([^\p{L}]|$)/u.test(antes) && !/[¿?]/.test(f);
+  });
+}
+
 export function parseAgentJson(content, account) {
   let text = String(content).trim();
   text = text.replace(/^```(?:json)?/i, '').replace(/```$/,'').trim();
@@ -494,6 +508,13 @@ export function parseAgentJson(content, account) {
     }
     mensajes = keep.slice(0, max);
   }
+  // Red de seguridad: el setter PROMETE pasarlo a una persona («se lo paso al equipo», «le paso tu mensaje») pero se
+  // olvida de marcar "handoff". El lead se quedaría esperando a alguien que nunca llega (medido en Escuela MPI con la
+  // alumna sin acceso y la palabra EMPIEZA). Si lo dijo en firme, se marca handoff igualmente. Un ofrecimiento en
+  // condicional («si prefieres que lo vea una persona, se lo paso») no cuenta.
+  let handoff = Boolean(parsed.handoff);
+  let handoffPorFrase = false;
+  if (!handoff && mensajes.some(prometePasoAPersona)) { handoff = true; handoffPorFrase = true; }
   const etiqueta = STAGE_KEYS.includes(parsed.etiqueta) && !SYSTEM_STAGES.includes(parsed.etiqueta) ? parsed.etiqueta : null;
   const memoria = parsed.memoria && typeof parsed.memoria === 'object' && !Array.isArray(parsed.memoria) ? parsed.memoria : {};
   // compromiso de recontacto («te escribo mañana» → 24): entre 15 min y 30 días, si no null
@@ -503,7 +524,8 @@ export function parseAgentJson(content, account) {
     etiqueta,
     motivo: String(parsed.motivo || '').slice(0, 300),
     memoria,
-    handoff: Boolean(parsed.handoff),
+    handoff,
+    handoffPorFrase,
     acciones: parseAcciones(parsed.acciones, account),
     proximoContactoHoras: Number.isFinite(pch) && pch >= 0.25 && pch <= 720 ? pch : null,
   };
