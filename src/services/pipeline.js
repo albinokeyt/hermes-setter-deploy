@@ -904,7 +904,17 @@ export async function handleInbound(account, evt) {
       });
   }
 
-  if (palabraTest) respond = false; // 🧪 la palabra de prueba no se contesta: el setter entra desde el siguiente mensaje
+  if (palabraTest) {
+    respond = false; // 🧪 la palabra de prueba no la contesta el setter: entra desde el siguiente mensaje
+    // …pero sí se confirma (sin IA y sin coste), para que quien prueba sepa que funcionó y no se quede esperando una
+    // respuesta a «test-setter» (Escuela MPI, 22-oct: el equipo solo escribía la palabra y creía que no iba).
+    if (!esSim(conv.ghl_contact_id)) {
+      await sendQueue.add('send', {
+        conversationId: conv.id, body: '🧪 Modo prueba activado. Escríbeme ahora como si fueras una lead y te contesto.',
+        snapshotId: await lastInboundId(conv.id), source: 'bot',
+      }, { delay: 2000 }).catch(() => {});
+    }
+  }
 
   // Visibilidad: si NADIE va a responder, que quede en el Registro de eventos (1/h por cuenta) y
   // culpando al CULPABLE correcto — `account` aquí puede venir fusionado con el setter (mergeSetter
