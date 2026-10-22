@@ -63,6 +63,7 @@ const insFreshKey = (id) => `insfresh:${id}`; // pendiente de re-leer etiquetas 
 const ecoKey = (convId, body) => `eco:${convId}:${crypto.createHash('sha1').update(String(body || '')).digest('hex')}`;
 const ctagsKey = (conv) => `ctags:${conv.account_id}:${conv.ghl_contact_id}`; // caché de etiquetas del contacto
 const cnameKey = (conv) => `cname:${conv.account_id}:${conv.ghl_contact_id}`; // caché del nombre del contacto en GHL
+const pruebaDesdeKey = (convId) => `prueba_desde:${convId}`; // 🧪 «test-setter»: el setter solo ve el historial desde aquí
 
 // ¿El origen que da GHL es una AUTOMATIZACIÓN? ('workflow', 'campaign', 'bulk_actions', 'api'…). 'app' es una
 // persona escribiendo desde el panel o el móvil.
@@ -780,14 +781,22 @@ export async function handleInbound(account, evt) {
         await ghl.addTags(account, conv.ghl_contact_id, [tagTest]).catch((err) => logEvent('error_palabra_test_etiqueta', { conv: conv.id, error: String(err.message).slice(0, 160) }).catch(() => {}));
       }
       await redis.del(ctagsKey(conv)).catch(() => {});
-      if (conv.bot_paused && (conv.paused_by === 'humano' || conv.paused_by === 'manual')) {
-        await q(`UPDATE conversations SET bot_paused = false, paused_by = '', updated_at = now() WHERE id = $1`, [conv.id]);
-        await cancelReactivate(conv.id).catch(() => {});
+      // PRUEBA LIMPIA: quien prueba suele escribir desde su propia cuenta (equipo, amigas de la dueña), con historial
+      // personal que el setter lee y trata como lo que es (contacto personal → se lo pasa a la dueña). Desde aquí el
+      // setter solo ve lo que se escriba a partir de ahora: sin memoria previa, sin pausa (humana, manual o de la IA
+      // tras un handoff de la prueba anterior) y en «nuevo». El archivo de mensajes NO se borra (es del cliente).
+      // La exclusión (sin-ia) se sigue respetando.
+      if (conv.paused_by !== 'excluido') {
+        await cancelBotJobs(conv.id).catch(() => {});
+        await q(`UPDATE conversations SET bot_paused = false, paused_by = '', memory = '{}'::jsonb, followup_step = 0, followup_state = 'ninguno', updated_at = now() WHERE id = $1`, [conv.id]);
         await marcarReactivado(conv.id);
         conv.bot_paused = false;
         conv.paused_by = '';
+        conv.memory = {};
+        if (conv.stage !== 'nuevo') conv.stage = await applyStage(conv, account, 'nuevo', 'prueba reiniciada con test-setter').catch(() => conv.stage);
+        await redis.set(pruebaDesdeKey(conv.id), String(Date.now() + 1000), 'EX', 30 * 86400).catch(() => {}); // +1 s: fuera el propio «test-setter»
       }
-      await logEvent('palabra_test_setter', { conv: conv.id, contacto: conv.ghl_contact_id, nota: 'prueba del equipo: pausa humana quitada, este mensaje no se contesta' }).catch(() => {});
+      await logEvent('palabra_test_setter', { conv: conv.id, contacto: conv.ghl_contact_id, nota: 'prueba limpia: sin historial previo, sin memoria ni pausa; este mensaje no se contesta' }).catch(() => {});
     }
   }
 
@@ -1882,9 +1891,12 @@ async function loadContext(conversationId) {
     }
   }
   const provider = account?.provider_id ? await one(`SELECT * FROM providers WHERE id = $1`, [account.provider_id]) : null;
-  const history = (
+  let history = (
     await q(`SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC, id DESC LIMIT 30`, [conversationId])
   ).reverse();
+  // 🧪 prueba limpia («test-setter»): el setter solo ve lo escrito desde que empezó la prueba
+  const pruebaDesde = Number(await redis.get(pruebaDesdeKey(conversationId)).catch(() => 0)) || 0;
+  if (pruebaDesde) history = history.filter((m) => new Date(m.created_at).getTime() >= pruebaDesde);
   return { conv, account, provider, history, variantId, setterId };
 }
 
