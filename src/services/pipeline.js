@@ -768,24 +768,31 @@ export async function handleInbound(account, evt) {
   // intervención humana o la manual del panel (el equipo ya había hablado con esa cuenta y el setter se apartaba
   // para siempre, caso Escuela MPI 20-oct) y ESTE mensaje no se contesta: el workflow de GHL le pone la etiqueta de
   // prueba y el setter responde desde el siguiente. No toca la exclusión (sin-ia) ni la pausa que pidió la IA.
-  let palabraTest = false;
-  if (/^test[\s_-]*setter[\s.!¡]*$/i.test(textBody)) {
+  // 🧪 PALABRAS DE PRUEBA del equipo (un lead real no las escribe). ACTIVAR = «test-setter» o «11:35-2026»; DESACTIVAR =
+  // «11:37-2026» (las claves que ya usaban los workflows de Albatros; pedidas para Rodrigo el 23-oct). Funcionan con el
+  // setter en modo prueba o ya en producción:
+  //  · activar → PRUEBA LIMPIA: quien prueba suele escribir desde su propia cuenta (equipo, amigas de la dueña), con
+  //    historial personal que el setter lee y trata como lo que es (contacto personal → se lo pasa a la dueña). Desde aquí
+  //    el setter solo ve lo que se escriba a partir de ahora: sin memoria previa, sin pausa (humana, manual o de la IA tras
+  //    un handoff de la prueba anterior) y en «nuevo»; si hay un setter en prueba, además se pone su etiqueta YA (sin
+  //    esperar al workflow de GHL), para que el mensaje siguiente no se quede sin setter. El archivo NO se borra.
+  //  · desactivar → el asistente se aparta en ESTA conversación (pausa manual) y se quita la etiqueta de prueba.
+  // La exclusión (sin-ia) se respeta siempre. El mensaje con la palabra no lo contesta el setter (se confirma aparte).
+  const esActivar = /^(test[\s_-]*setter|11[:.]35[\s_-]*2026)[\s.!¡]*$/i.test(textBody);
+  const esDesactivar = /^11[:.]37[\s_-]*2026[\s.!¡]*$/i.test(textBody);
+  let palabraTest = false; // activar
+  let palabraFin = false;  // desactivar
+  let enPrueba = false;
+  if (esActivar || esDesactivar) {
     const sTest = account.test_mode ? null : await one(`SELECT test_tag FROM setters WHERE account_id = $1 AND test_mode = true ORDER BY id DESC LIMIT 1`, [account.id]);
-    const enPrueba = Boolean(account.test_mode || sTest);
-    if (enPrueba) {
+    enPrueba = Boolean(account.test_mode || sTest);
+    const tagTest = enPrueba ? String((account.test_mode ? account.test_tag : (sTest?.test_tag || account.test_tag)) || 'hermes-test').trim() : '';
+    if (esActivar) {
       palabraTest = true;
-      // La etiqueta de prueba la pone Hermes YA (sin esperar al workflow de GHL): si el siguiente mensaje llega en el
-      // mismo segundo, el enrutado ya la ve y no se queda sin setter.
-      const tagTest = String((account.test_mode ? account.test_tag : (sTest?.test_tag || account.test_tag)) || 'hermes-test').trim();
       if (tagTest && !esSim(conv.ghl_contact_id)) {
         await ghl.addTags(account, conv.ghl_contact_id, [tagTest]).catch((err) => logEvent('error_palabra_test_etiqueta', { conv: conv.id, error: String(err.message).slice(0, 160) }).catch(() => {}));
       }
       await redis.del(ctagsKey(conv)).catch(() => {});
-      // PRUEBA LIMPIA: quien prueba suele escribir desde su propia cuenta (equipo, amigas de la dueña), con historial
-      // personal que el setter lee y trata como lo que es (contacto personal → se lo pasa a la dueña). Desde aquí el
-      // setter solo ve lo que se escriba a partir de ahora: sin memoria previa, sin pausa (humana, manual o de la IA
-      // tras un handoff de la prueba anterior) y en «nuevo». El archivo de mensajes NO se borra (es del cliente).
-      // La exclusión (sin-ia) se sigue respetando.
       if (conv.paused_by !== 'excluido') {
         await cancelBotJobs(conv.id).catch(() => {});
         await q(`UPDATE conversations SET bot_paused = false, paused_by = '', memory = '{}'::jsonb, followup_step = 0, followup_state = 'ninguno', updated_at = now() WHERE id = $1`, [conv.id]);
@@ -793,10 +800,21 @@ export async function handleInbound(account, evt) {
         conv.bot_paused = false;
         conv.paused_by = '';
         conv.memory = {};
-        if (conv.stage !== 'nuevo') conv.stage = await applyStage(conv, account, 'nuevo', 'prueba reiniciada con test-setter').catch(() => conv.stage);
-        await redis.set(pruebaDesdeKey(conv.id), String(Date.now() + 1000), 'EX', 30 * 86400).catch(() => {}); // +1 s: fuera el propio «test-setter»
+        if (conv.stage !== 'nuevo') conv.stage = await applyStage(conv, account, 'nuevo', 'prueba reiniciada con la palabra de activar').catch(() => conv.stage);
+        await redis.set(pruebaDesdeKey(conv.id), String(Date.now() + 1000), 'EX', 30 * 86400).catch(() => {}); // +1 s: fuera la propia palabra
       }
-      await logEvent('palabra_test_setter', { conv: conv.id, contacto: conv.ghl_contact_id, nota: 'prueba limpia: sin historial previo, sin memoria ni pausa; este mensaje no se contesta' }).catch(() => {});
+      await logEvent('palabra_test_setter', { conv: conv.id, contacto: conv.ghl_contact_id, palabra: textBody.slice(0, 20), nota: 'prueba limpia: sin historial previo, sin memoria ni pausa; este mensaje no se contesta' }).catch(() => {});
+    } else {
+      palabraFin = true;
+      if (tagTest && !esSim(conv.ghl_contact_id)) await ghl.removeTags(account, conv.ghl_contact_id, [tagTest]).catch(() => {});
+      await redis.del(ctagsKey(conv)).catch(() => {});
+      if (conv.paused_by !== 'excluido') {
+        await cancelBotJobs(conv.id).catch(() => {});
+        await q(`UPDATE conversations SET bot_paused = true, paused_by = 'manual', updated_at = now() WHERE id = $1`, [conv.id]);
+        conv.bot_paused = true;
+        conv.paused_by = 'manual';
+      }
+      await logEvent('palabra_desactivar', { conv: conv.id, contacto: conv.ghl_contact_id, nota: 'el asistente se aparta en esta conversación (pausa manual)' }).catch(() => {});
     }
   }
 
@@ -913,14 +931,17 @@ export async function handleInbound(account, evt) {
       });
   }
 
-  if (palabraTest) {
-    respond = false; // 🧪 la palabra de prueba no la contesta el setter: entra desde el siguiente mensaje
+  if (palabraTest || palabraFin) {
+    respond = false; // 🧪 la palabra no la contesta el setter: con «activar» entra desde el siguiente mensaje
     // …pero sí se confirma (sin IA y sin coste), para que quien prueba sepa que funcionó y no se quede esperando una
-    // respuesta a «test-setter» (Escuela MPI, 22-oct: el equipo solo escribía la palabra y creía que no iba).
+    // respuesta (Escuela MPI, 22-oct: el equipo solo escribía la palabra y creía que no iba). La de «desactivar» sale
+    // aunque la conversación ya esté en pausa (bypassPause).
     if (!esSim(conv.ghl_contact_id)) {
+      const body = palabraFin
+        ? '⏸️ Asistente desactivado en esta conversación. Para volver a activarlo, escribe 11:35-2026.'
+        : (enPrueba ? '🧪 Modo prueba activado. Escríbeme ahora como si fueras un cliente y te contesto.' : '✅ Asistente activado. Escríbeme ahora como si fueras un cliente y te contesto.');
       await sendQueue.add('send', {
-        conversationId: conv.id, body: '🧪 Modo prueba activado. Escríbeme ahora como si fueras una lead y te contesto.',
-        snapshotId: await lastInboundId(conv.id), source: 'bot',
+        conversationId: conv.id, body, snapshotId: await lastInboundId(conv.id), source: 'bot', bypassPause: palabraFin,
       }, { delay: 2000 }).catch(() => {});
     }
   }
