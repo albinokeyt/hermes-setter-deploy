@@ -4,6 +4,7 @@ import { typingDelayMs } from '../services/humanize.js';
 import { recordUsage, mergeSetter, filtrarRepetidos } from '../services/pipeline.js';
 import { requireManageAgents, canAccessAccount, accessibleAccountIds } from '../lib/session.js';
 import { sanitizeSkills } from '../services/skills.js';
+import { puedeProbar, SIN_SALDO_PRUEBAS } from '../services/marketplace.js';
 
 export default async function playgroundRoutes(app) {
   // Gasto acumulado en pruebas y ajustes (playground + corrector + arquitecto), scoped:
@@ -43,6 +44,7 @@ export default async function playgroundRoutes(app) {
 
     const provider = account.provider_id ? await one(`SELECT * FROM providers WHERE id = $1`, [account.provider_id]) : null;
     if (!provider) return reply.code(400).send({ error: 'Este setter no tiene proveedor de IA configurado (sección APIs)' });
+    if (!(await puedeProbar(req, account))) return reply.code(402).send({ error: SIN_SALDO_PRUEBAS }); // 💳
 
     const mapped = (Array.isArray(history) ? history : [])
       .slice(-30)

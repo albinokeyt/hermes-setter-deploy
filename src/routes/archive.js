@@ -2,6 +2,7 @@ import { q, one, getSetting, setSetting } from '../db.js';
 import { requireAdmin, requireManageAgents, accessibleAccountIds } from '../lib/session.js';
 import { chatCompletion } from '../services/llm.js';
 import { recordUsage, invalidateArchiveCache } from '../services/pipeline.js';
+import { puedeProbar, SIN_SALDO_PRUEBAS } from '../services/marketplace.js';
 
 function quien(m) {
   if (m.direction === 'inbound') return 'Lead';
@@ -147,8 +148,13 @@ export default async function archiveRoutes(app) {
     if (!question) return reply.code(400).send({ error: 'Escribe una pregunta' });
     const provider = b.provider_id ? await one(`SELECT * FROM providers WHERE id = $1`, [b.provider_id]) : null;
     if (!provider) return reply.code(400).send({ error: 'Elige un modelo de texto para la IA de esta sección' });
+    const idsAcceso = await accessibleAccountIds(req);
+    if (Array.isArray(idsAcceso) && idsAcceso.length) { // 💳 el usuario de una subcuenta necesita saldo (el admin, no)
+      const cuenta = await one(`SELECT * FROM accounts WHERE id = $1`, [idsAcceso[0]]);
+      if (!(await puedeProbar(req, cuenta))) return reply.code(402).send({ error: SIN_SALDO_PRUEBAS });
+    }
 
-    const { clause, vals } = buildFilter(b, await accessibleAccountIds(req));
+    const { clause, vals } = buildFilter(b, idsAcceso);
     // newest-first; recortamos por presupuesto quedándonos con los MÁS RECIENTES,
     // luego los ordenamos cronológicamente para el prompt.
     const rows = await q(`${BASE_SELECT} ${clause} ORDER BY m.created_at DESC, m.id DESC LIMIT 500`, vals);

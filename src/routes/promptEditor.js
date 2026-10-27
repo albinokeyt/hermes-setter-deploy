@@ -3,6 +3,7 @@ import { q, one, getSetting } from '../db.js';
 import { requireManageAgents, canAccessAccount } from '../lib/session.js';
 import { chatCompletion } from '../services/llm.js';
 import { recordUsage } from '../services/pipeline.js';
+import { puedeProbar, SIN_SALDO_PRUEBAS } from '../services/marketplace.js';
 
 export const DEFAULT_ARCHITECT = `Eres un ARQUITECTO DE PROMPTS de élite para setters de ventas por IA (chat de Instagram/WhatsApp). Tu trabajo: entrevistar al dueño del negocio y construir los 3 bloques del prompt de su setter CON CALIDAD DE PRODUCCIÓN — densos, específicos y accionables, no esqueletos genéricos.
 
@@ -577,6 +578,8 @@ export default async function promptEditorRoutes(app) {
     const setter = await one(`SELECT * FROM setters WHERE id = $1`, [req.params.id]);
     if (!setter) return reply.code(404).send({ error: 'Setter no encontrado' });
     if (!(await canAccessAccount(req, setter.account_id))) return reply.code(403).send({ error: 'Sin acceso a este setter' });
+    const cuentaSetter = await one(`SELECT * FROM accounts WHERE id = $1`, [setter.account_id]);
+    if (!(await puedeProbar(req, cuentaSetter))) return reply.code(402).send({ error: SIN_SALDO_PRUEBAS }); // 💳
     const body = req.body || {};
     if (body.async) {
       limpiarJobs();

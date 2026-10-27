@@ -283,6 +283,17 @@ export async function puedeAtender(account) {
   return { atender: false, acceso, motivo: 'sin_fondos' };
 }
 
+// 💳 Puerta de saldo para las PRUEBAS con IA del panel (Probar agente, Arquitecto/corrector de prompt, IA del Archivo).
+// Las pruebas no se cobran, pero sin saldo no se pueden usar: antes cualquiera probaba gratis con el saldo a 0 (caso
+// Gabs.Health, 27-oct: 18 llamadas de prueba sin saldo). El ADMIN de la agencia queda fuera (revisa setters de clientes
+// sin saldo). Fail-open, igual que la puerta del setter: si el marketplace no contesta, se deja probar.
+export const SIN_SALDO_PRUEBAS = 'Sin saldo en Marketplace Disruptivo: recarga tu saldo para usar la IA en las pruebas.';
+export async function puedeProbar(req, account) {
+  if (req?.auth?.role === 'admin' || !account) return true;
+  const puerta = await puedeAtender(account).catch(() => ({ atender: true }));
+  return puerta.atender !== false;
+}
+
 // Lo que el cliente ya ha consumido y aún no se le ha cobrado (precio al cliente): llamadas sin lote + lotes de
 // consumo todavía sin cobrar. null si no se puede calcular (entonces no se corta el servicio).
 export async function deudaPendiente(accountId) {
