@@ -19,7 +19,7 @@
 // probarlo con una base en memoria (test/devoluciones.test.mjs).
 
 import { pool as poolReal } from '../db.js';
-import { ES_NUEVA, DESDE_SQL, correoDelClubSQL } from './club.js';
+import { ES_NUEVA, DESDE_SQL, correoDelClubSQL, SIN_CONFIRMAR_SQL } from './club.js';
 
 export const AJUSTES_POR_DEFECTO = Object.freeze({
   plazo_dias: 14,
@@ -387,7 +387,7 @@ export function evaluarPlazo(fecha, fechaTexto, ajustes, ahora = new Date()) {
 
 // ── Cuenta: conexión de Hermes y consumo de IA ──────────────────────────────────────────────
 const MOTIVOS_CONEXION = {
-  no_encontrada: 'No se encuentra su cuenta de Hermes por ese correo (ni de responsable, ni de correo del Club, ni de correo de la subcuenta): lo revisa soporte.',
+  no_encontrada: 'No se encuentra su cuenta de Hermes por ese correo (ninguna conexión lo tiene confirmado como correo del Club): lo revisa soporte.',
   sin_conexion: 'La subcuenta indicada no tiene cuenta de Hermes: lo revisa soporte.',
   protegida: 'La subcuenta indicada no es una cuenta del Club (su conexión de Hermes es anterior al Club): lo revisa soporte.',
   no_casa: 'El correo de la solicitud no es de ningún usuario conocido de esa subcuenta: lo revisa soporte.',
@@ -402,9 +402,11 @@ const MOTIVOS_CONEXION = {
  *     del Club, correo de la subcuenta, correo autorizado o usuario que entró por SSO) — si no, algo no cuadra
  *     (¿subcuenta equivocada?) → revisión. Si esa subcuenta NO tiene conexión → revisión (fase C): ya no se busca por
  *     correo, que podría medir OTRA conexión de esa persona (otra subcuenta suya);
- *  2) sin location_id, por correo → la ÚNICA conexión nueva con ese correo del Club (club_email si el admin lo puso; si
- *     no, el responsable o el correo de la subcuenta en GHL: club.js · correoDelClubSQL), y siempre que ese correo no
- *     haya entrado por SSO en OTRA conexión nueva (si no, no se sabe cuál es).
+ *  2) sin location_id, por correo → la conexión nueva cuyo correo del Club CONFIRMADO (club_email, lo pone soporte: club.js
+ *     · correoDelClubSQL) es ese, y siempre que ese correo no haya entrado por SSO en OTRA conexión nueva (si no, no se
+ *     sabe cuál es). El responsable y el correo de la subcuenta en GHL NO bastan (repaso de la fase C: el correo de la
+ *     subcuenta lo elige el cliente y el responsable suele ser soporte): sin confirmar → revisión, con la pista de qué
+ *     conexión(es) lo tienen sin confirmar («sin_confirmar», solo para el panel).
  */
 export async function resolverConexion({ location_id, email }, pg = poolReal) {
   const correo = String(email || '');
@@ -445,6 +447,10 @@ export async function resolverConexion({ location_id, email }, pg = poolReal) {
       if (otras.length) return { estado: 'ambiguo', via: 'correo', cuentas: [cands[0], ...otras] };
       return { estado: 'ok', via: 'correo', cuentas: cands };
     }
+    const sinConfirmar = (await pg.query(
+      `SELECT id FROM accounts WHERE ${ES_NUEVA} AND ${SIN_CONFIRMAR_SQL('$1')} ORDER BY id LIMIT 20`, [correo]
+    )).rows.map((r) => r.id);
+    if (sinConfirmar.length) return { estado: 'no_encontrada', via: 'correo', cuentas: [], sin_confirmar: sinConfirmar };
   }
   return { estado: 'no_encontrada', via: 'correo', cuentas: [] };
 }
@@ -479,7 +485,7 @@ export async function consumoIa(cuentas, desde, pg = poolReal) {
 async function evaluarCuenta(datos, plazo, ajustes, pg) {
   const limite = ajustes.max_ia_usd;
   const con = await resolverConexion(datos, pg);
-  const base = { ...plazo.medida, limite_usd: limite, via: con.via, cuentas: con.cuentas };
+  const base = { ...plazo.medida, limite_usd: limite, via: con.via, cuentas: con.cuentas, ...(con.sin_confirmar ? { sin_confirmar: con.sin_confirmar } : {}) };
   if (con.estado !== 'ok') return { decision: 'revision', motivo: MOTIVOS_CONEXION[con.estado] || MOTIVOS_CONEXION.no_encontrada, medida: base };
   const c = await consumoIa(con.cuentas, plazo.fecha, pg);
   const medida = { ...base, consumo_usd: Math.round(c.usd * 10000) / 10000, llamadas: c.llamadas, sin_precio: c.sin_precio, desde: plazo.fecha.toISOString() };
@@ -497,7 +503,9 @@ async function evaluarCuenta(datos, plazo, ajustes, pg) {
 
 // ── Brain: tareas hechas desde el cobro (lo cuenta el propio Brain) ────────────────────────
 /**
- * GET brain_uso_url?email=&desde=<ISO> con la cabecera X-Club-Secret. Respuesta esperada (200, JSON):
+ * POST brain_uso_url con el cuerpo JSON { email, desde: <ISO> } y la cabecera X-Club-Secret (el Brain lo acepta desde
+ * 75ef629, igual que el GET de antes). El correo va en el CUERPO y no en la dirección: las direcciones acaban en los
+ * registros de proxies y servidores. Respuesta esperada (200, JSON):
  *   { "tareas": <entero ≥ 0> }   — también se acepta "tasks".
  *   { "medible": false } / { "encontrado": false } / { "ok": false } → no se puede medir (revisión).
  * Cualquier otra cosa (HTTP ≠ 2xx, redirección, tiempo agotado, JSON raro, número no entero) → no medible.
@@ -507,13 +515,12 @@ export async function medirBrain({ email, desde, url, secreto, fetchFn = globalT
   let destino;
   try { destino = new URL(url); } catch { return fallo('La URL de uso del Brain no es válida: lo revisa soporte.'); }
   if (destino.protocol !== 'https:') return fallo('La URL de uso del Brain no es https: lo revisa soporte.');
-  destino.searchParams.set('email', email);
-  destino.searchParams.set('desde', desde.toISOString());
   let res;
   try {
     res = await fetchFn(destino.toString(), {
-      method: 'GET',
-      headers: { 'x-club-secret': secreto, accept: 'application/json' },
+      method: 'POST',
+      headers: { 'x-club-secret': secreto, accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ email, desde: desde.toISOString() }),
       redirect: 'error', // el secreto no sigue redirecciones a otro sitio
       signal: AbortSignal.timeout(timeoutMs),
     });

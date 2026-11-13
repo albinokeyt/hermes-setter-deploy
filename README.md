@@ -123,10 +123,13 @@ prueba de que no se duplica).
 - **Interruptor del Club**: `POST /api/club/estado` con la cabecera `X-Club-Secret: <CLUB_WEBHOOK_SECRET>` (o
   `Authorization: Bearer <secreto>`), `Content-Type: application/json` y el cuerpo
   `{ "location_id"?: "…", "email"?: "…", "activo": true|false, "motivo": "…" }`. Pone `ai_enabled` en todas las
-  conexiones NUEVAS de la subcuenta. Solo correo: la única conexión nueva cuyo **responsable** (`owner_email`, lo fija
-  el SSO de GHL) es ese correo; los «correos autorizados» no cuentan (los edita el cliente). Sin conexión → pendiente
-  (202) que se aplica al crearse (subcuenta) o cuando ese responsable entra por SSO (correo); varias → 202 «ambiguo» sin
-  tocar nada. Conexiones anteriores a la 059 → 202 «protegida», nunca se tocan. Un pendiente más viejo que el último
+  conexiones NUEVAS de la subcuenta. Solo correo: la conexión nueva cuyo **correo del Club confirmado** (`club_email`,
+  migración 061: lo pone soporte en la ficha de la conexión → Conexión GHL → «Club de Sistemas», o el admin con
+  `PUT /api/accounts/:id`; es único) es ese correo. El responsable (`owner_email`), el correo de la subcuenta en GHL
+  (`ghl_location_email`) y los «correos autorizados» NO enlazan (soporte puede ser el responsable y los otros dos los
+  edita el cliente): solo son pistas para soporte (`sin_confirmar`). Sin conexión → pendiente (202) que se aplica al
+  crearse (subcuenta) o cuando soporte confirma ese correo del Club en una conexión (correo; se aplica el último).
+  Conexiones anteriores a la 059 → 202 «protegida», nunca se tocan. Un pendiente más viejo que el último
   estado aplicado (`accounts.club_estado_at`) se descarta («pendiente_obsoleto»). Sin la variable → 503; secreto malo →
   401. Registro en la tabla `club_eventos` (Configuración → «Interruptor del Club»).
 - **Tope de gasto mensual** (`accounts.tope_mensual_usd`, solo admin, pestaña Ajustes de la conexión): al llegar al
@@ -137,9 +140,10 @@ prueba de que no se duplica).
   (sin la variable → 503). Cuerpo `{ "email", "contact_id", "producto": "cuenta"|"brain"|"ambos", "motivo",
   "fecha_cobro"?, "location_id"? }`. Por producto: fuera de plazo (días naturales en Madrid desde `fecha_cobro`) →
   `denegada`; **cuenta** → consumo de IA (precio al cliente, `llm_usage.billed_usd`) de su conexión desde el cobro
-  ≤ `max_ia_usd` → `aprobada`, más → `denegada` («Has usado X USD de IA (límite 5)»); **brain** → `GET brain_uso_url
-  ?email=&desde=` con `X-Club-Secret` y respuesta `{ "tareas": N }` ≤ `max_brain_tareas` → `aprobada`, más →
-  `denegada`. Falta un dato, no se puede medir o algo no cuadra → `revision` (nunca se aprueba por un fallo). Se guarda
+  ≤ `max_ia_usd` → `aprobada`, más → `denegada` («Has usado X USD de IA (límite 5)»); **brain** → `POST brain_uso_url`
+  con el cuerpo `{ "email", "desde" }` (el correo no va en la dirección) y `X-Club-Secret`, respuesta `{ "tareas": N }` ≤ `max_brain_tareas` → `aprobada`, más →
+  `denegada`. Sin `location_id`, la cuenta se busca por el correo del Club confirmado (`club_email`). Falta un dato, no
+  se puede medir o algo no cuadra → `revision` (nunca se aprueba por un fallo). Se guarda
   en `club_devoluciones` (idempotente por contacto + producto + día del cobro) y el resultado va a GHL
   (`POST ghl_resultado_url` con `{ email, contact_id, producto, decision, motivo, solicitud_id, fecha_cobro, … }`) en
   segundo plano, con reintentos cada 5 min (`workers.js`) y reenvío manual. Ajustes y solicitudes en Configuración →

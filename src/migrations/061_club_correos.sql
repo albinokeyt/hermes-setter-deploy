@@ -3,15 +3,17 @@
 -- Los workflows de 4ttZ solo mandan el correo del comprador (no conocen la subcuenta del cliente). Hasta ahora Hermes solo
 -- lo reconocía si era el RESPONSABLE (owner_email = el primer usuario que abre Hermes por SSO). Si soporte abría Hermes
 -- antes que el cliente, el alta quedaba pendiente, la baja no apagaba nada y las devoluciones iban todas a revisión.
--- Ahora una conexión del Club se reconoce por correo con (services/club.js · correoDelClubSQL):
---   · club_email (lo pone SOLO el admin en la ficha de la conexión o por la API de admin). Si está puesto, MANDA: el
---     responsable y el correo de la subcuenta ya no cuentan para esa conexión.
---   · si no hay club_email: el responsable (owner_email) o el correo de la subcuenta en GHL (ghl_location_email).
--- Los «correos autorizados» siguen sin contar (los edita el propio cliente). Todo en minúsculas.
+-- Ahora (services/club.js · correoDelClubSQL) una conexión del Club se reconoce por correo SOLO con:
+--   · club_email: el correo de la compra, CONFIRMADO por soporte en la ficha de la conexión (Conexión GHL → «Club de
+--     Sistemas») o por la API de admin al instalar Hermes. Al confirmarlo se aplica el último estado que esperaba por él.
+-- El responsable (owner_email), el correo de la subcuenta en GHL (ghl_location_email, abajo) y los «correos autorizados»
+-- NO enlazan: el responsable suele ser soporte y los otros dos los edita el cliente (con ellos podía quedarse con el alta
+-- o la baja de otro comprador). Solo son pistas que la ficha enseña a soporte. Todo en minúsculas.
 -- Solo se usan en conexiones del Club (creadas desde el corte club_desde de la 059); las anteriores no se tocan.
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS club_email TEXT;
--- correo de la subcuenta tal como lo tiene GHL (GET /locations/{id}), leído al crear o reconectar la conexión. Se guarda
--- la PRIMERA vez y no se pisa solo (si el cliente lo cambia luego en GHL, no se sigue: se anota en el registro).
+-- correo de la subcuenta tal como lo tiene GHL (GET /locations/{id}), leído al crear la conexión y al reconectarla por
+-- OAuth. Es solo una PISTA para soporte. Se guarda la PRIMERA vez y no se pisa sola: si en una reconexión GHL tiene otro,
+-- se anota «club_correo_subcuenta_distinto» en el registro de eventos.
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ghl_location_email TEXT;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ghl_location_email_at TIMESTAMPTZ;
 

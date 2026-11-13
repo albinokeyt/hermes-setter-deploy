@@ -9,7 +9,7 @@ import { redis } from '../lib/redis.js';
 import { WINDOWED_CHANNELS } from '../config.js';
 import { sanearPalabrasNombre } from '../lib/tags.js';
 import { sanearTope } from '../services/tope.js';
-import { DESDE_SQL, sanearClubEmail, aplicarPendientesDeConexion } from '../services/club.js';
+import { DESDE_SQL, sanearClubEmail, aplicarPendientesDeConexion, pendientesParaFicha } from '../services/club.js';
 
 // URL de comentarios: FIJA y LIMPIA, la misma para todas las conexiones (enruta por location.id).
 const COMMENT_WEBHOOK_URL = `${config.appBaseUrl}/api/webhooks/comentarios`;
@@ -24,8 +24,24 @@ const ADMIN_EDITABLE = [
   'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode', 'ctas',
   'insertion_wait_seconds', 'insertion_idle_hours', 'lead_magnets', 'excluded_name_words',
   'tope_mensual_usd', // 💸 tope de gasto mensual (USD): SOLO admin (services/tope.js)
-  'club_email', // 🏛️ correo del Club (el de la compra): SOLO admin (services/club.js · correoDelClubSQL)
+  'club_email', // 🏛️ correo del Club CONFIRMADO (el de la compra): SOLO admin (services/club.js · correoDelClubSQL)
 ];
+
+// 🏛️ ai_enabled que llega en el cuerpo: true/false (o "true"/"false" de un cliente que manda texto); otra cosa → null
+function aBooleano(v) {
+  if (v === true || v === false) return v;
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === 'true' ? true : s === 'false' ? false : null;
+}
+// ¿el club_estado_at que trae el cuerpo (texto ISO de la ficha) es el mismo instante que el de la base (Date)? A la
+// precisión del JSON (milisegundos), que es con la que lo recibió el panel. Uno que no se entiende nunca es «el mismo».
+function mismoInstante(enviado, enBase) {
+  const vacio = (v) => v === null || v === undefined || v === '';
+  if (vacio(enviado) || vacio(enBase)) return vacio(enviado) && vacio(enBase);
+  const a = Date.parse(String(enviado));
+  const b = enBase instanceof Date ? enBase.getTime() : Date.parse(String(enBase));
+  return Number.isFinite(a) && Number.isFinite(b) && a === b;
+}
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
 // REGLA: todo campo que la pestaña Ajustes/CTAs del PORTAL enseñe tiene que estar aquí. Si falta,
@@ -80,7 +96,7 @@ function stripSecrets(row, req) {
   // el token crudo de comentarios no se expone; solo la URL ya montada (comment_webhook_url)
   // 🏛️ los correos del Club son cosa del admin y soporte: el panel del cliente no los enseña
   const { pit_token, webhook_token, webhook_url, portal_key, portal_url, comment_token,
-    club_email, ghl_location_email, ghl_location_email_at, es_club, ...safe } = row;
+    club_email, ghl_location_email, ghl_location_email_at, es_club, club_pendientes, ...safe } = row;
   return safe;
 }
 
@@ -115,6 +131,9 @@ export default async function accountRoutes(app) {
     row.comment_webhook_url = COMMENT_WEBHOOK_URL;
     if (req.auth?.role === 'admin') {
       row.portal_url = `${config.appBaseUrl}/ghl-portal?key=${row.portal_key}&location_id={{location.id}}&email={{user.email}}&name={{user.name}}`;
+      // 🏛️ tarjeta «Club de Sistemas»: los estados del Club que esperan por algún correo de esta conexión, para que soporte
+      // los vea ANTES de confirmar el correo del Club (al confirmarlo se aplica el último). Nunca rompe la ficha.
+      if (row.es_club) row.club_pendientes = await pendientesParaFicha(row).catch(() => []);
     }
     return stripSecrets(row, req);
   });
@@ -147,8 +166,26 @@ export default async function accountRoutes(app) {
       tope = sanearTope(b.tope_mensual_usd);
       if (!tope.ok) return reply.code(400).send({ error: tope.error });
     }
-    // 🏛️ correo del Club (solo admin): también se valida antes de escribir nada. Solo se escribe si CAMBIA (el panel
-    // manda la ficha entera en cada «Guardar»).
+    // 🏛️ FICHA VIEJA (repaso de la fase C, hallazgo A5): quien manda la ficha ENTERA (el panel de antes, o una llamada a la
+    // API con lo que devolvió el GET) manda también el club_estado_at que tenía al abrirla. Si desde entonces el interruptor
+    // del Club (impago, baja, devolución) o el admin han decidido otro estado de la IA, el ai_enabled que trae es VIEJO: no
+    // se escribe (una IA apagada por impago no se reenciende al guardar otra cosa). El panel de ahora solo manda los campos
+    // que cambian, así que un cambio de verdad del admin no trae club_estado_at y se aplica como siempre.
+    let iaVieja = null;
+    if (editable.includes('ai_enabled') && 'ai_enabled' in b && 'club_estado_at' in b) {
+      const enviado = aBooleano(b.ai_enabled);
+      if (enviado !== null && enviado !== Boolean(existing.ai_enabled) && !mismoInstante(b.club_estado_at, existing.club_estado_at)) {
+        iaVieja = { enviado, actual: Boolean(existing.ai_enabled), decidido_at: existing.club_estado_at, ficha_de: b.club_estado_at ?? null };
+      }
+    }
+    const anotarIaVieja = () => (iaVieja
+      ? logEvent('ai_enabled_no_pisado', {
+        account: existing.id, ...iaVieja,
+        nota: 'la ficha que se guardó era de antes del último cambio de la IA (interruptor del Club o admin): no se ha vuelto a poner el valor viejo',
+      }).catch(() => {})
+      : null);
+    // 🏛️ correo del Club (solo admin): también se valida antes de escribir nada. Solo se escribe si CAMBIA (una ficha
+    // entera trae el mismo valor que ya tiene).
     let clubEmail = null; // { antes, ahora } si cambia
     if (editable.includes('club_email') && 'club_email' in b) {
       const c = sanearClubEmail(b.club_email);
@@ -169,6 +206,7 @@ export default async function accountRoutes(app) {
     for (const field of editable) {
       if (!(field in b)) continue;
       if (field === 'club_email' && !clubEmail) continue; // sin cambios: no se reescribe
+      if (field === 'ai_enabled' && iaVieja) continue; // ficha vieja: no se pisa el estado de la IA que se decidió después
       let value = JSON_FIELDS.has(field) ? JSON.stringify(b[field]) : b[field] === '' && field === 'location_id' ? null : b[field];
       if (field === 'ctas') value = JSON.stringify(sanearCtas(b[field]));
       if (field === 'lead_magnets') value = JSON.stringify(sanearLeadMagnets(b[field]));
@@ -189,7 +227,10 @@ export default async function accountRoutes(app) {
         sets.push(`club_estado_at = CASE WHEN ai_enabled IS DISTINCT FROM $${vals.length}::boolean THEN now() ELSE club_estado_at END`);
       }
     }
-    if (!sets.length) return stripSecrets(existing, req);
+    if (!sets.length) {
+      await anotarIaVieja();
+      return stripSecrets(existing, req);
+    }
     vals.push(existing.id);
     let row;
     try {
@@ -201,14 +242,15 @@ export default async function accountRoutes(app) {
       }
       throw err;
     }
+    await anotarIaVieja();
     const antes = existing.tope_mensual_usd === null || existing.tope_mensual_usd === undefined ? null : Number(existing.tope_mensual_usd);
     if (tope && antes !== tope.valor) {
       await logEvent('tope_mensual_cambiado', { account: existing.id, antes, ahora: tope.valor }).catch(() => {});
     }
     if (clubEmail) {
       await logEvent('club_email_cambiado', { account: existing.id, ...clubEmail }).catch(() => {});
-      // 🏛️ la conexión queda enlazada a ese correo: si el interruptor del Club dejó un estado PENDIENTE para él (alta,
-      // baja, impago), se aplica ahora (el último). Best effort: el cambio ya está guardado.
+      // 🏛️ soporte ha CONFIRMADO ese correo del Club: si el interruptor dejó un estado PENDIENTE para él (alta, baja,
+      // impago), se aplica ahora (el último), con el candado de ese correo. Best effort: el cambio ya está guardado.
       const aplicados = await aplicarPendientesDeConexion(existing.id, undefined, { via: 'club_email' })
         .catch((err) => { logEvent('club_pendiente_error', { account: existing.id, error: String(err?.message || err).slice(0, 160) }).catch(() => {}); return []; });
       if (aplicados.length) row = (await one(`SELECT * FROM accounts WHERE id = $1`, [existing.id])) || row;

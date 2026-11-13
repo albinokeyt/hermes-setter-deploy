@@ -1,6 +1,6 @@
-// Fase C · 4) correo del Club de una conexión: el de la subcuenta en GHL (se lee al crear o reconectar) y el que pone el
-// admin (club_email). Rutas REALES (OAuth, SSO de la Custom Page, ficha de la conexión) sobre Postgres real en memoria
-// (PGlite) con las migraciones de verdad; GHL, Redis y el pipeline se sustituyen por dobles.
+// Fase C · 4) correo del Club de una conexión: el que CONFIRMA soporte (club_email) y, como pista, el de la subcuenta en
+// GHL (se lee al crear y en cada reconexión por OAuth). Rutas REALES (OAuth, SSO de la Custom Page, ficha de la conexión)
+// sobre Postgres real en memoria (PGlite) con las migraciones de verdad; GHL, Redis y el pipeline se sustituyen por dobles.
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -54,9 +54,10 @@ mock.module(u('../src/services/pipeline.js'), {
 });
 mock.module(u('../src/services/marketplace.js'), { namedExports: { cerrarLotesConsumo: async () => ({ ok: true }) } });
 
-// GHL falso: lo que devuelve GET /locations/{id} por subcuenta, y cuántas veces se ha pedido
+// GHL falso: lo que devuelve GET /locations/{id} por subcuenta, y cuántas veces se ha pedido (y con qué opciones)
 const infoGhl = new Map();
 const llamadasInfo = [];
+const opcionesInfo = [];
 const codigos = new Map(); // code de OAuth → locationId
 mock.module(u('../src/services/ghl.js'), {
   namedExports: {
@@ -66,8 +67,9 @@ mock.module(u('../src/services/ghl.js'), {
                       ON CONFLICT (location_id) DO NOTHING`, [tok.locationId]);
       return tok.locationId;
     },
-    getLocationInfo: async (_account, locationId) => {
+    getLocationInfo: async (_account, locationId, opts) => {
       llamadasInfo.push(locationId);
+      opcionesInfo.push(opts ?? null);
       return infoGhl.get(locationId) || { ok: true, name: `Subcuenta ${locationId}`, email: '' };
     },
     getLocationName: async (_account, locationId) => { llamadasInfo.push(locationId); return (infoGhl.get(locationId) || {}).name || ''; },
@@ -118,7 +120,7 @@ function cifrarSso(obj, secreto) {
   return Buffer.concat([Buffer.from('Salted__'), salt, c.update(JSON.stringify(obj), 'utf8'), c.final()]).toString('base64');
 }
 
-test('OAuth de una subcuenta NUEVA: crea la conexión del Club, guarda el correo de la subcuenta y aplica la baja que esperaba', async () => {
+test('OAuth de una subcuenta NUEVA: crea la conexión del Club y guarda el correo de la subcuenta como PISTA; la baja que esperaba se aplica al CONFIRMAR', async () => {
   const a = await app();
   await aplicarEstadoClub({ email: 'comprador@x.com', activo: false, motivo: 'baja antes de instalar' }, pg); // 202 pendiente
   codigos.set('c1', 'locOAuth0001');
@@ -131,30 +133,55 @@ test('OAuth de una subcuenta NUEVA: crea la conexión del Club, guarda el correo
   assert.equal(acc.name, 'Empresa del comprador');
   assert.equal(acc.ghl_location_email, 'comprador@x.com');
   assert.ok(acc.ghl_location_email_at);
-  assert.equal(acc.ai_enabled, false, 'la baja pendiente se aplicó al enlazar el correo');
+  assert.equal(acc.ai_enabled, true, 'el correo de la subcuenta no enlaza: la baja sigue esperando');
   assert.equal(acc.test_mode, true, 'nace en modo prueba como siempre');
   assert.deepEqual(llamadasInfo, ['locOAuth0001'], 'una sola llamada a GHL para el nombre y el correo');
-  assert.equal((await filas(`SELECT count(*)::int AS n FROM club_estado_pendiente`))[0].n, 0);
+  assert.equal((await filas(`SELECT count(*)::int AS n FROM club_estado_pendiente WHERE clave = 'email:comprador@x.com'`))[0].n, 1);
+  // la ficha (admin) enseña ese pendiente a soporte, y al confirmar el correo del Club se aplica
+  const ficha = (await a.inject({ method: 'GET', url: `/api/accounts/${acc.id}`, headers: { 'x-rol': 'admin' } })).json();
+  assert.deepEqual(ficha.club_pendientes.map((x) => [x.email, x.de, x.activo]), [['comprador@x.com', ['correo_subcuenta'], false]]);
+  const put = await a.inject({ method: 'PUT', url: `/api/accounts/${acc.id}`, headers: { 'x-rol': 'admin' }, payload: { club_email: 'comprador@x.com' } });
+  assert.equal(put.statusCode, 200, put.body);
+  assert.equal((await cuenta('locOAuth0001')).ai_enabled, false);
+  assert.equal((await filas(`SELECT count(*)::int AS n FROM club_estado_pendiente WHERE clave = 'email:comprador@x.com'`))[0].n, 0);
+  const ficha2 = (await a.inject({ method: 'GET', url: `/api/accounts/${acc.id}`, headers: { 'x-rol': 'admin' } })).json();
+  assert.deepEqual(ficha2.club_pendientes, []);
 });
 
-test('OAuth de una conexión del Club que ya existía SIN correo (reconexión): lo lee y lo guarda; si ya lo tiene, no pregunta', async () => {
+test('A6 · OAuth de una conexión del Club que ya existía: lo lee y lo guarda; en cada reconexión vuelve a preguntar (10 s como máximo) y, si GHL tiene otro, NO lo pisa y lo anota', async () => {
   const a = await app();
   const { account } = await crearConexionNueva({ name: 'Creada antes', locationId: 'locReco00001' }, pg);
   infoGhl.set('locReco00001', { ok: true, name: 'X', email: 'reco@x.com' });
   codigos.set('c2', 'locReco00001');
-  llamadasInfo.length = 0;
+  llamadasInfo.length = 0; opcionesInfo.length = 0;
   let r = await a.inject({ method: 'GET', url: '/api/oauth/callback?code=c2' });
   assert.equal(r.statusCode, 302);
   assert.equal((await cuenta('locReco00001')).ghl_location_email, 'reco@x.com');
   assert.deepEqual(llamadasInfo, ['locReco00001']);
-  // otra reconexión: ya lo tiene → ni se pregunta a GHL (y aunque el cliente lo cambie allí, no se sigue solo)
+  assert.deepEqual(opcionesInfo, [{ timeoutMs: 10_000 }], 'con tope corto: no retrasa la vuelta de OAuth');
+  // la misma: se pregunta y no se anota nada
+  llamadasInfo.length = 0;
+  r = await a.inject({ method: 'GET', url: '/api/oauth/callback?code=c2' });
+  assert.deepEqual(llamadasInfo, ['locReco00001']);
+  assert.equal((await eventos('club_correo_subcuenta_distinto')).filter((e) => e.account === account.id).length, 0);
+  // el cliente lo cambia en GHL y se reconecta: se pregunta, NO se pisa y queda anotado para soporte (antes: 0 eventos)
   infoGhl.set('locReco00001', { ok: true, name: 'X', email: 'cambiado@x.com' });
   llamadasInfo.length = 0;
   r = await a.inject({ method: 'GET', url: '/api/oauth/callback?code=c2' });
   assert.equal(r.statusCode, 302);
-  assert.deepEqual(llamadasInfo, []);
+  assert.deepEqual(llamadasInfo, ['locReco00001']);
   assert.equal((await cuenta('locReco00001')).ghl_location_email, 'reco@x.com');
   assert.equal((await cuenta('locReco00001')).id, account.id);
+  const dist = (await eventos('club_correo_subcuenta_distinto')).filter((e) => e.account === account.id);
+  assert.equal(dist.length, 1);
+  assert.deepEqual({ guardado: dist[0].guardado, en_ghl: dist[0].en_ghl, origen: dist[0].origen }, { guardado: 'reco@x.com', en_ghl: 'cambiado@x.com', origen: 'oauth' });
+  // también desde el enlace de agencia (selfserve) se vuelve a leer
+  almacen.set('oauthstate:n2b', 'selfserve:clave:locReco00001');
+  llamadasInfo.length = 0;
+  r = await a.inject({ method: 'GET', url: '/api/oauth/callback?code=c2&state=n2b' });
+  assert.equal(r.statusCode, 302);
+  assert.deepEqual(llamadasInfo, ['locReco00001']);
+  assert.equal((await eventos('club_correo_subcuenta_distinto')).filter((e) => e.account === account.id).length, 2);
 });
 
 test('OAuth de una conexión ANTERIOR al Club (DEP, Rodrigo, Lorena…): ni se pregunta el correo ni se guarda nada', async () => {
@@ -264,7 +291,7 @@ test('SSO en una subcuenta SIN la app instalada (sin token) o con un correo raro
   assert.match((await eventos('club_correo_subcuenta_vacio')).find((e) => e.account === raro.id).nota, /no es válido/);
 });
 
-test('SSO de la Custom Page en una subcuenta sin conexión: la crea, soporte queda de responsable y el comprador se reconoce por correo', async () => {
+test('SSO de la Custom Page en una subcuenta sin conexión: la crea con soporte de responsable; el comprador NO se reconoce solo y al confirmar su correo del Club sí', async () => {
   const a = await app();
   await pg.query(`INSERT INTO settings (key, value) VALUES ('ghl_app', '{"sso_secret":"secreto-sso-de-prueba"}'::jsonb)
                   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`);
@@ -275,11 +302,20 @@ test('SSO de la Custom Page en una subcuenta sin conexión: la crea, soporte que
   const acc = await cuenta('locSSO000001');
   assert.equal(acc.owner_email, SOPORTE, 'el primero que entra queda de responsable (como siempre)');
   assert.equal(acc.ghl_location_email, 'cliente.sso@x.com');
-  // la baja del comprador (4ttZ solo manda su correo) ya encuentra SU conexión
-  const e = await aplicarEstadoClub({ email: 'cliente.sso@x.com', activo: false, motivo: 'impago' }, pg);
+  // la baja del comprador (4ttZ solo manda su correo) espera a que soporte confirme el correo del Club
+  let e = await aplicarEstadoClub({ email: 'cliente.sso@x.com', activo: false, motivo: 'impago' }, pg);
+  assert.equal(e.code, 202);
+  assert.deepEqual(e.body.sin_confirmar, [acc.id]);
+  // una prueba con el correo de soporte tampoco toca la conexión que soporte ha abierto (A4)
+  e = await aplicarEstadoClub({ email: SOPORTE, activo: false, motivo: 'prueba' }, pg);
+  assert.equal(e.code, 202);
+  assert.equal((await cuenta('locSSO000001')).ai_enabled, true);
+  const put = await a.inject({ method: 'PUT', url: `/api/accounts/${acc.id}`, headers: { 'x-rol': 'admin' }, payload: { club_email: 'Cliente.SSO@x.com' } });
+  assert.equal(put.statusCode, 200, put.body);
+  assert.equal((await cuenta('locSSO000001')).ai_enabled, false, 'la baja del comprador se aplica al confirmar');
+  e = await aplicarEstadoClub({ email: 'cliente.sso@x.com', activo: true, motivo: 'pago recuperado' }, pg);
   assert.equal(e.code, 200);
   assert.deepEqual(e.body.cuentas, [acc.id]);
-  assert.equal((await cuenta('locSSO000001')).ai_enabled, false);
 });
 
 test('ficha de la conexión: club_email solo lo pone el admin (valida, minúsculas, único, solo del Club) y aplica los pendientes', async () => {
@@ -334,10 +370,105 @@ test('ficha de la conexión: club_email solo lo pone el admin (valida, minúscul
   r = await put(B.id, { club_email: 'hack@x.com', alias: 'Mi B' }, String(B.id));
   assert.equal(r.statusCode, 200);
   assert.equal((await cuenta('locFichaB001')).club_email, null);
-  // vaciarlo vuelve a dejar que cuenten el responsable y el correo de la subcuenta
+  // vaciarlo deja la conexión SIN confirmar (por correo ya no la encuentra nadie)
   r = await put(A.id, { club_email: '' });
   assert.equal(r.statusCode, 200);
   assert.equal((await cuenta('locFichaA001')).club_email, null);
+  // la ficha del cliente tampoco recibe los pendientes del Club
+  r = await a.inject({ method: 'GET', url: `/api/accounts/${A.id}`, headers: { 'x-rol': String(A.id) } });
+  assert.equal('club_pendientes' in r.json(), false);
+});
+
+test('A1 · por la ficha: confirmar el correo del Club en la BUENA basta, aunque otra conexión lo tenga de responsable', async () => {
+  const a = await app();
+  const { account: buena } = await crearConexionNueva({ name: 'Buena', locationId: 'locAmbBuena1' }, pg);
+  const { account: otra } = await crearConexionNueva({ name: 'Otra', locationId: 'locAmbOtra01' }, pg);
+  await pg.query(`UPDATE accounts SET ghl_location_email = 'comprador.a1@x.com' WHERE id = $1`, [buena.id]);
+  await pg.query(`UPDATE accounts SET owner_email = 'comprador.a1@x.com' WHERE id = $1`, [otra.id]);
+  let r = await aplicarEstadoClub({ email: 'comprador.a1@x.com', activo: false, motivo: 'baja' }, pg);
+  assert.equal(r.body.resultado, 'pendiente', 'antes: ambiguo');
+  assert.deepEqual(r.body.sin_confirmar, [buena.id, otra.id]);
+  const put = await a.inject({ method: 'PUT', url: `/api/accounts/${buena.id}`, headers: { 'x-rol': 'admin' }, payload: { club_email: 'comprador.a1@x.com' } });
+  assert.equal(put.statusCode, 200);
+  assert.equal((await cuenta('locAmbBuena1')).ai_enabled, false, 'la baja que esperaba se aplica a la buena');
+  r = await aplicarEstadoClub({ email: 'comprador.a1@x.com', activo: false, motivo: 'baja' }, pg);
+  assert.equal(r.code, 200, 'antes (A1): seguía en 202 ambiguo');
+  assert.deepEqual(r.body.cuentas, [buena.id]);
+  assert.equal((await cuenta('locAmbOtra01')).ai_enabled, true);
+});
+
+test('A2/A4 · por el SSO real: ni el correo de subcuenta que pone el cliente ni el responsable se llevan pendientes ajenos', async () => {
+  const a = await app();
+  await pg.query(`INSERT INTO settings (key, value) VALUES ('ghl_app', '{"sso_secret":"secreto-sso-de-prueba"}'::jsonb)
+                  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`);
+  const sso = (email, loc) => a.inject({ method: 'POST', url: '/api/portal/sso', payload: { encrypted: cifrarSso({ email, activeLocation: loc }, 'secreto-sso-de-prueba') } });
+  // A2: la víctima tiene una baja esperando; el atacante instala con el correo de la víctima en SU subcuenta
+  await aplicarEstadoClub({ email: 'victima.sso@x.com', activo: false, motivo: 'baja de la víctima' }, pg);
+  infoGhl.set('locAtacaSSO1', { ok: true, name: 'Atacante', email: 'Victima.SSO@X.com' });
+  assert.equal((await sso('atacante.sso@x.com', 'locAtacaSSO1')).statusCode, 200);
+  const atac = await cuenta('locAtacaSSO1');
+  assert.equal(atac.ghl_location_email, 'victima.sso@x.com');
+  assert.equal(atac.ai_enabled, true, 'antes (A2): ai_enabled=false y el pendiente consumido');
+  assert.equal((await filas(`SELECT count(*)::int AS n FROM club_estado_pendiente WHERE clave = 'email:victima.sso@x.com'`))[0].n, 1);
+  // la víctima entra en SU subcuenta: tampoco se aplica solo (ser responsable no basta); soporte confirma → le llega
+  infoGhl.set('locVictiSSO1', { ok: true, name: 'Víctima', email: 'victima.sso@x.com' });
+  assert.equal((await sso('victima.sso@x.com', 'locVictiSSO1')).statusCode, 200);
+  const vic = await cuenta('locVictiSSO1');
+  assert.equal(vic.ai_enabled, true);
+  const put = await a.inject({ method: 'PUT', url: `/api/accounts/${vic.id}`, headers: { 'x-rol': 'admin' }, payload: { club_email: 'victima.sso@x.com' } });
+  assert.equal(put.statusCode, 200);
+  assert.equal((await cuenta('locVictiSSO1')).ai_enabled, false);
+  const imp = await aplicarEstadoClub({ email: 'victima.sso@x.com', activo: false, motivo: 'impago' }, pg);
+  assert.equal(imp.code, 200, 'antes: 202 ambiguo [atacante, víctima]');
+  assert.deepEqual(imp.body.cuentas, [vic.id]);
+  assert.equal((await cuenta('locAtacaSSO1')).ai_enabled, true);
+  // A4: prueba con el correo de soporte y soporte abre después la conexión de un cliente real
+  await aplicarEstadoClub({ email: SOPORTE, activo: false, motivo: 'prueba del workflow' }, pg);
+  infoGhl.set('locClienteS1', { ok: true, name: 'Cliente real', email: 'cliente.real@x.com' });
+  assert.equal((await sso(SOPORTE, 'locClienteS1')).statusCode, 200);
+  const real = await cuenta('locClienteS1');
+  assert.equal(real.owner_email, SOPORTE);
+  assert.equal(real.ai_enabled, true, 'antes (A4): ai_enabled=false');
+});
+
+test('A5 · ficha abierta antes de un impago: guardar la ficha ENTERA vieja (con el club_email) no vuelve a encender la IA; un cambio de verdad sí se aplica', async () => {
+  const a = await app();
+  const { account: d } = await crearConexionNueva({ name: 'Ficha', locationId: 'locFichaV001' }, pg);
+  const ficha = (await a.inject({ method: 'GET', url: `/api/accounts/${d.id}`, headers: { 'x-rol': 'admin' } })).json(); // soporte abre la ficha
+  assert.equal(ficha.ai_enabled, true);
+  await aplicarEstadoClub({ location_id: 'locFichaV001', activo: false, motivo: 'impago' }, pg); // llega el impago
+  assert.equal((await cuenta('locFichaV001')).ai_enabled, false);
+  // el panel ANTERIOR mandaba la ficha entera (con el ai_enabled y el club_estado_at de cuando se abrió)
+  const body = { ...ficha, club_email: 'compra-ficha@x.com', name: 'Ficha renombrada' };
+  delete body.webhook_url; delete body.webhook_token; delete body.oauth_connected; delete body.provider_name;
+  let r = await a.inject({ method: 'PUT', url: `/api/accounts/${d.id}`, headers: { 'x-rol': 'admin' }, payload: body });
+  assert.equal(r.statusCode, 200, r.body);
+  let fila = await cuenta('locFichaV001');
+  assert.equal(fila.ai_enabled, false, 'antes (A5): volvía a true');
+  assert.equal(fila.club_email, 'compra-ficha@x.com', 'lo demás sí se guarda');
+  assert.equal(fila.name, 'Ficha renombrada');
+  assert.equal(r.json().ai_enabled, false, 'y la respuesta enseña el estado de verdad');
+  const ev = (await eventos('ai_enabled_no_pisado')).find((e) => e.account === d.id);
+  assert.ok(ev, 'queda anotado');
+  assert.equal(ev.enviado, true);
+  assert.equal(ev.actual, false);
+  // con la ficha RECARGADA (club_estado_at al día), encender a mano sí se aplica
+  const fresca = (await a.inject({ method: 'GET', url: `/api/accounts/${d.id}`, headers: { 'x-rol': 'admin' } })).json();
+  r = await a.inject({ method: 'PUT', url: `/api/accounts/${d.id}`, headers: { 'x-rol': 'admin' }, payload: { ...fresca, ai_enabled: true } });
+  assert.equal(r.statusCode, 200);
+  assert.equal((await cuenta('locFichaV001')).ai_enabled, true);
+  // el interruptor de la lista de conexiones (solo { ai_enabled }) funciona como siempre
+  r = await a.inject({ method: 'PUT', url: `/api/accounts/${d.id}`, headers: { 'x-rol': 'admin' }, payload: { ai_enabled: false } });
+  assert.equal(r.statusCode, 200);
+  assert.equal((await cuenta('locFichaV001')).ai_enabled, false);
+  r = await a.inject({ method: 'PUT', url: `/api/accounts/${d.id}`, headers: { 'x-rol': 'admin' }, payload: { ai_enabled: true } });
+  assert.equal((await cuenta('locFichaV001')).ai_enabled, true);
+  // una ficha vieja que solo trae el ai_enabled viejo (nada más que cambiar) tampoco lo pisa
+  await aplicarEstadoClub({ location_id: 'locFichaV001', activo: false, motivo: 'baja' }, pg);
+  r = await a.inject({ method: 'PUT', url: `/api/accounts/${d.id}`, headers: { 'x-rol': 'admin' }, payload: { ai_enabled: true, club_estado_at: fresca.club_estado_at } });
+  assert.equal(r.statusCode, 200);
+  fila = await cuenta('locFichaV001');
+  assert.equal(fila.ai_enabled, false);
 });
 
 test('authHook con las rutas REALES: las públicas siguen llegando a su ruta sin sesión; las demás piden login', async () => {

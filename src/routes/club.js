@@ -16,11 +16,11 @@
 //
 // /api/club/estado — Cuerpo JSON: { location_id?: string, email?: string, activo: boolean, motivo?: string }
 //   · location_id → ai_enabled = activo en TODAS las conexiones nuevas de esa subcuenta (si no hay, queda pendiente: 202).
-//   · solo email  → la ÚNICA conexión NUEVA con ese CORREO DEL CLUB: club_email (lo pone el admin; si está, manda) o, si
-//                   no lo tiene, el responsable (owner_email, certificado por el SSO de GHL) o el correo de la subcuenta
-//                   en GHL (ghl_location_email, leído al conectar). Ninguna → pendiente (202, se aplica cuando una
-//                   conexión quede enlazada a ese correo); varias → ambiguo, no se toca nada (202). Los «correos
-//                   autorizados» no cuentan (los edita el propio cliente).
+//   · solo email  → la conexión NUEVA cuyo CORREO DEL CLUB CONFIRMADO (club_email, lo pone soporte al instalar; único)
+//                   es ese. Ninguna → pendiente (202, se aplica cuando soporte confirme ese correo en una conexión), con
+//                   «sin_confirmar»: las conexiones que lo tienen de responsable o de correo de la subcuenta, que NO se
+//                   tocan (son solo una pista). El responsable, el correo de la subcuenta y los «correos autorizados» no
+//                   enlazan (soporte puede ser el responsable; los otros dos los edita el cliente).
 //   · Las conexiones ANTERIORES al Club (creadas antes de la migración 059) nunca se tocan desde aquí («protegida»).
 //   Respuestas: 200 aplicado/sin_cambios · 202 pendiente/ambiguo/protegida · 400 cuerpo no válido · 401 secreto ·
 //   429 freno · 503 sin configurar.

@@ -189,7 +189,7 @@ export default async function portalRoutes(app) {
       const nm = (info.ok && info.name) || `Setter ${loc.slice(0, 6)}`;
       // 🧪 nace en MODO PRUEBA con la plantilla de conexiones nuevas (services/club.js)
       ({ account } = await crearConexionNueva({ name: nm, locationId: loc, conPortalKey: true, origen: 'enlace_agencia' }));
-      // 🏛️ correo de la subcuenta (conexión del Club): el interruptor y las devoluciones la encuentran por él
+      // 🏛️ correo de la subcuenta (conexión del Club): se guarda como PISTA para que soporte confirme el correo del Club
       await enlazarCorreoSubcuenta(account, { origen: 'enlace_agencia', info });
       // Recién conectada → a la app embebida; el 1er usuario que entre por SSO queda como responsable.
       return reply.redirect('/');
@@ -260,13 +260,14 @@ export default async function portalRoutes(app) {
       const nm = (info.ok && info.name) || `Setter ${locationId.slice(0, 6)}`;
       // 🧪 nace en MODO PRUEBA con la plantilla de conexiones nuevas (services/club.js)
       ({ account } = await crearConexionNueva({ name: nm, locationId, conPortalKey: true, origen: 'sso' }));
-      // 🏛️ correo de la subcuenta (conexión del Club): así no depende de quién abra Hermes primero (soporte o el cliente)
+      // 🏛️ correo de la subcuenta (conexión del Club): se guarda como PISTA para que soporte confirme el correo del Club
       await enlazarCorreoSubcuenta(account, { origen: 'sso', info });
     }
     // GHL ya certifica que el usuario pertenece a esta subcuenta → acceso directo (sin roster ni lista).
     if (!normEmail(account.owner_email)) await claimOwner(account.id, email); // primer usuario = responsable
-    // 🏛️ ¿el interruptor del Club llegó por CORREO antes de existir la conexión? GHL certifica que este usuario es de
-    // esta subcuenta: se aplica aquí (solo a conexiones nuevas, una vez). Nunca bloquea la entrada.
+    // 🏛️ ¿quedó un estado del Club PENDIENTE para el correo de este usuario? Solo se aplica si ese correo es el correo del
+    // Club CONFIRMADO de esta conexión (club_email, lo pone soporte); ser el responsable no basta (a menudo es soporte,
+    // que abre muchas subcuentas). Normalmente ya se aplicó al confirmarlo: esto solo reintenta. Nunca bloquea la entrada.
     await aplicarPendientePorEmail(account.id, email).catch((err) => logEvent('club_pendiente_error', { account: account.id, error: String(err.message).slice(0, 160) }).catch(() => {}));
     await startPortalSession(reply, account, name, email);
     return { ok: true };

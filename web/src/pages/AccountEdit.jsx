@@ -5,6 +5,7 @@ import { api, fmtMonedas } from '../api.js';
 import { useMe } from '../components/Layout.jsx';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Toggle, Banner, CopyField } from '../components/ui.jsx';
 import { AccessManager } from '../components/AccessManager.jsx';
+import { camposCambiados, camposDelFormulario } from '../cambios.js';
 
 const TABS = [
   { key: 'setters', label: '🤖 Setters' },
@@ -31,6 +32,7 @@ export default function AccountEdit() {
   const [searchParams] = useSearchParams();
   const [tab, setTab] = useState(searchParams.get('conectada') !== null && isAdmin ? 'conexion' : 'setters');
   const [acc, setAcc] = useState(null);
+  const [original, setOriginal] = useState(null); // la ficha tal como está guardada: «Guardar» manda solo lo que cambia
   const [setters, setSetters] = useState(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
@@ -58,7 +60,7 @@ export default function AccountEdit() {
 
   const loadSetters = () => api.get(`/api/accounts/${id}/setters`).then(setSetters).catch(() => setSetters([]));
   useEffect(() => {
-    api.get(`/api/accounts/${id}`).then((a) => { setAcc(a); setAliasDraft(a.alias || ''); }).catch((e) => setError(e.message));
+    api.get(`/api/accounts/${id}`).then((a) => { setAcc(a); setOriginal(a); setAliasDraft(a.alias || ''); }).catch((e) => setError(e.message));
     loadSetters();
   }, [id]);
 
@@ -88,10 +90,15 @@ export default function AccountEdit() {
   const save = async () => {
     setSaving(true); setError('');
     try {
-      const body = { ...acc };
-      delete body.webhook_url; delete body.webhook_token; delete body.oauth_connected; delete body.provider_name;
+      // 🏛️ SOLO lo que ha cambiado: mandar la ficha entera reescribía valores viejos (p. ej. volvía a encender la IA que
+      // un impago del Club había apagado mientras la ficha estaba abierta)
+      const body = camposCambiados(original, acc);
       const updated = await api.put(`/api/accounts/${id}`, body);
-      setAcc({ ...acc, ...updated });
+      // se recarga la ficha entera (estado de la IA, correo del Club, pendientes…) sin perder lo del formulario
+      const fresca = await api.get(`/api/accounts/${id}`).catch(() => null);
+      const guardada = fresca || { ...original, ...updated };
+      setAcc({ ...(fresca || { ...acc, ...updated }), ...camposDelFormulario(acc) });
+      setOriginal(guardada);
       setSaved(true); setTimeout(() => setSaved(false), 2000);
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   };
@@ -106,6 +113,7 @@ export default function AccountEdit() {
     try {
       const updated = await api.put(`/api/accounts/${id}/alias`, { alias: v });
       setAcc({ ...acc, ...updated });
+      setOriginal((o) => (o ? { ...o, ...updated } : o));
       setAliasDraft(updated.alias || '');
       setSaved(true); setTimeout(() => setSaved(false), 2000);
     } catch (err) { setError(err.message); }
@@ -576,15 +584,45 @@ export default function AccountEdit() {
             <h3 className="text-sm font-bold text-slate-700">🏛️ Club de Sistemas</h3>
             {acc.es_club ? (
               <>
-                <p className="text-xs text-slate-500">Los workflows del Club (alta, baja, impago y devoluciones) solo mandan el <b>correo de la compra</b>. Hermes reconoce esta conexión por ese correo si es el del <b>responsable</b> o el <b>correo de la subcuenta en GHL</b> (se lee solo al conectar). Si no coincide con ninguno (p. ej. soporte abrió Hermes primero y la subcuenta tiene otro correo), escríbelo aquí: entonces <b>manda este</b> y los otros dos dejan de contar.</p>
-                <Input label="Correo del Club (el de la compra)" type="email" className="max-w-md" placeholder="vacío = responsable o correo de la subcuenta"
+                <p className="text-xs text-slate-500">Los workflows del Club (alta, baja, impago y devoluciones) solo mandan el <b>correo de la compra</b>, y Hermes solo reconoce esta conexión por el <b>correo del Club confirmado</b>. Confírmalo <b>siempre al instalar</b>: hasta entonces, lo que llegue por correo queda <b>pendiente</b> y las devoluciones de la cuenta van a revisión.</p>
+                {original?.club_email ? (
+                  <div className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">✅ Correo del Club confirmado: <b>{original.club_email}</b></div>
+                ) : (
+                  <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">⚠️ Sin confirmar: el interruptor del Club y las devoluciones aún no reconocen esta conexión por correo.</div>
+                )}
+                <Input label="Correo del Club (el de la compra)" type="email" className="max-w-md" placeholder="el correo con el que compró en 4ttZ"
                   value={acc.club_email ?? ''}
                   onChange={(e) => set({ club_email: e.target.value })}
-                  hint="Solo admin. Al guardarlo se aplica el alta o la baja que estuviera esperando por ese correo." />
+                  hint="Solo admin. Antes de guardarlo, comprueba en 4ttZ que ese correo compró y que esta subcuenta es la suya. Al guardarlo se aplica el último estado que esperaba por ese correo." />
                 <div className="space-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                  <div>👤 Responsable (primer usuario que entró por SSO): <b>{acc.owner_email || '—'}</b>{acc.club_email ? ' · no cuenta: manda el correo del Club' : ''}</div>
-                  <div>🏢 Correo de la subcuenta en GHL: <b>{acc.ghl_location_email || 'sin leer'}</b>{acc.ghl_location_email_at ? ` (leído el ${new Date(acc.ghl_location_email_at).toLocaleDateString('es-ES')})` : ''}{acc.club_email && acc.ghl_location_email ? ' · no cuenta: manda el correo del Club' : ''}</div>
+                  <div className="font-medium text-slate-500">Pistas (no cuentan hasta que confirmes el correo del Club):</div>
+                  <div>
+                    👤 Responsable (primer usuario que entró por SSO; a menudo soporte): <b>{acc.owner_email || '—'}</b>
+                    {acc.owner_email && acc.owner_email !== acc.club_email && (
+                      <button type="button" className="ml-2 font-semibold text-violet-600 hover:underline" onClick={() => set({ club_email: acc.owner_email })}>Usar</button>
+                    )}
+                  </div>
+                  <div>
+                    🏢 Correo de la subcuenta en GHL (lo puede cambiar el cliente): <b>{acc.ghl_location_email || 'sin leer'}</b>
+                    {acc.ghl_location_email_at ? ` (leído el ${new Date(acc.ghl_location_email_at).toLocaleDateString('es-ES')})` : ''}
+                    {acc.ghl_location_email && acc.ghl_location_email !== acc.club_email && (
+                      <button type="button" className="ml-2 font-semibold text-violet-600 hover:underline" onClick={() => set({ club_email: acc.ghl_location_email })}>Usar</button>
+                    )}
+                  </div>
                 </div>
+                {Array.isArray(acc.club_pendientes) && acc.club_pendientes.length > 0 && (
+                  <div className="space-y-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    <div className="font-medium">⏳ Estados del Club que esperan por un correo de esta conexión:</div>
+                    {acc.club_pendientes.map((p) => (
+                      <div key={p.email}>
+                        <b>{p.email}</b> → {p.activo ? 'encender la IA' : 'apagar la IA'}{p.motivo ? ` («${p.motivo}»)` : ''}
+                        {p.updated_at ? `, llegó el ${new Date(p.updated_at).toLocaleString('es-ES')}` : ''}
+                        {p.vigente === false ? ' · caducado (más de 60 días): ya no se aplicará' : ''}
+                      </div>
+                    ))}
+                    <div>Si confirmas uno de esos correos como correo del Club, se aplica el último. Si alguno es una prueba (p. ej. con el correo de soporte), no lo confirmes en la conexión de un cliente.</div>
+                  </div>
+                )}
               </>
             ) : (
               <p className="text-xs text-slate-500">Conexión anterior al Club de Sistemas: el interruptor del Club y las devoluciones no la tocan.</p>

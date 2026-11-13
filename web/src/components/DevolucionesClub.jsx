@@ -85,7 +85,7 @@ export default function DevolucionesClub() {
         <Input label="Máx. tareas del Brain" inputMode="numeric" value={form.max_brain_tareas} onChange={(e) => set('max_brain_tareas', e.target.value)} />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
-        <Input label="URL de uso del Brain (GET ?email=&desde=)" placeholder="https://… (vacía = el Brain va a revisión)" value={form.brain_uso_url} onChange={(e) => set('brain_uso_url', e.target.value)} hint={'Recibe la cabecera X-Club-Secret y responde { "tareas": N }.'} />
+        <Input label="URL de uso del Brain (POST { email, desde })" placeholder="https://… (vacía = el Brain va a revisión)" value={form.brain_uso_url} onChange={(e) => set('brain_uso_url', e.target.value)} hint={'Recibe un POST con el cuerpo JSON { email, desde } y la cabecera X-Club-Secret, y responde { "tareas": N }.'} />
         <Input label="URL del resultado en GHL (Webhook entrante)" placeholder="https://services.leadconnectorhq.com/hooks/… (vacía = solo se guarda)" value={form.ghl_resultado_url} onChange={(e) => set('ghl_resultado_url', e.target.value)} hint={'Recibe { email, contact_id, producto, decision, motivo, … }.'} />
       </div>
       {error && <Banner tone="error">{error}</Banner>}

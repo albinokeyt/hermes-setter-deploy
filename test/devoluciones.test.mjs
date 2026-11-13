@@ -388,13 +388,22 @@ test('cuenta: sin conexión, conexión anterior al Club o correo que no cuadra �
   await pg.close();
 });
 
-test('cuenta por correo: el responsable de UNA conexión nueva; varias o rastro en otra → revisión', async () => {
+test('cuenta por correo: el correo del Club CONFIRMADO de UNA conexión nueva; ser solo el responsable no basta; rastro en otra → revisión', async () => {
   const pg = await base();
   await nueva(pg, { id: 101, loc: 'locClub0001', owner: 'cliente@x.com' });
   await uso(pg, 101, 2, '2026-11-11T10:00:00Z');
-  let r = await evaluar(pg, fetchFalso(), { location_id: '' });
-  assert.equal(r.body.decision.cuenta, 'aprobada');
+  // solo de responsable (sin confirmar): revisión, con la pista para soporte
   let con = await resolverConexion({ location_id: '', email: 'cliente@x.com' }, pg);
+  assert.deepEqual(con, { estado: 'no_encontrada', via: 'correo', cuentas: [], sin_confirmar: [101] });
+  let r = await evaluar(pg, fetchFalso(), { location_id: '', contact_id: 'cont0030' });
+  assert.equal(r.body.decision.cuenta, 'revision');
+  assert.match(r.body.motivos.cuenta, /No se encuentra su cuenta de Hermes/);
+  assert.deepEqual((await pg.query(`SELECT medida FROM club_devoluciones WHERE contact_id = 'cont0030'`)).rows[0].medida.sin_confirmar, [101]);
+  // soporte confirma el correo del Club → ya se mide SU conexión
+  await pg.query(`UPDATE accounts SET club_email = 'cliente@x.com' WHERE id = 101`);
+  r = await evaluar(pg, fetchFalso(), { location_id: '' });
+  assert.equal(r.body.decision.cuenta, 'aprobada');
+  con = await resolverConexion({ location_id: '', email: 'cliente@x.com' }, pg);
   assert.deepEqual(con, { estado: 'ok', via: 'correo', cuentas: [101] });
   // Fase C · 4e) una location_id SIN conexión de Hermes → revisión: ya NO se busca por correo (podría medir OTRA
   // conexión de esa persona, de otra subcuenta)
@@ -408,12 +417,14 @@ test('cuenta por correo: el responsable de UNA conexión nueva; varias o rastro 
   await pg.query(`INSERT INTO portal_users (account_id, email) VALUES (102, 'cliente@x.com')`);
   con = await resolverConexion({ location_id: '', email: 'cliente@x.com' }, pg);
   assert.equal(con.estado, 'ambiguo');
-  // responsable de dos conexiones nuevas
+  // responsable de dos conexiones nuevas (p. ej. soporte): no se encuentra por correo (y nunca se aprueba)
   await nueva(pg, { id: 103, loc: 'locClub0003', owner: 'doble@x.com' });
   await nueva(pg, { id: 104, loc: 'locClub0004', owner: 'doble@x.com' });
   r = await evaluar(pg, fetchFalso(), { location_id: '', email: 'doble@x.com', contact_id: 'cont0009' });
   assert.equal(r.body.decision.cuenta, 'revision');
-  assert.match(r.body.motivos.cuenta, /varias cuentas/);
+  assert.match(r.body.motivos.cuenta, /No se encuentra su cuenta de Hermes/);
+  con = await resolverConexion({ location_id: '', email: 'doble@x.com' }, pg);
+  assert.deepEqual(con.sin_confirmar, [103, 104]);
   // el correo de la conexión ANTIGUA no resuelve por correo
   con = await resolverConexion({ location_id: '', email: 'jonathan@x.com' }, pg);
   assert.equal(con.estado, 'no_encontrada');
@@ -421,21 +432,21 @@ test('cuenta por correo: el responsable de UNA conexión nueva; varias o rastro 
 });
 
 // Fase C · 4) hoy 4ttZ solo manda el correo del comprador. Si soporte abre Hermes antes que el cliente, el responsable
-// (owner_email) es soporte y por correo no se encontraba nada: todas las devoluciones de la cuenta iban a revisión.
-test('cuenta por correo (sin location_id): vale el correo de la subcuenta en GHL o el club_email del admin; club_email manda', async () => {
+// (owner_email) es soporte. Repaso: el correo de la subcuenta en GHL lo elige el cliente, así que tampoco basta; lo que
+// cuenta es el correo del Club que CONFIRMA soporte (club_email).
+test('cuenta por correo (sin location_id): solo vale el club_email confirmado; el correo de la subcuenta en GHL es solo una pista', async () => {
   const pg = await base();
   await nueva(pg, { id: 101, loc: 'locClub0001', owner: 'soporte@departamentodisruptivo.com' }); // soporte abrió Hermes primero
   await pg.query(`UPDATE accounts SET ghl_location_email = 'cliente@x.com' WHERE id = 101`); // leído de GHL al conectar
   await uso(pg, 101, 7.5, '2026-11-11T10:00:00Z');
   let r = await evaluar(pg, fetchFalso(), { location_id: '' });
-  assert.equal(r.body.decision.cuenta, 'denegada', 'se mide SU conexión (antes: revisión «no se encuentra»)');
-  assert.equal(r.body.motivos.cuenta, 'Has usado 7,50 USD de IA (límite 5)');
+  assert.equal(r.body.decision.cuenta, 'revision', 'sin confirmar no se mide nada (podría ser la subcuenta de otro)');
   let con = await resolverConexion({ location_id: '', email: 'cliente@x.com' }, pg);
-  assert.deepEqual(con, { estado: 'ok', via: 'correo', cuentas: [101] });
-  // el admin pone el correo de la compra (club_email): desde ese momento manda ese y el de la subcuenta ya no cuenta
+  assert.deepEqual(con, { estado: 'no_encontrada', via: 'correo', cuentas: [], sin_confirmar: [101] });
+  // soporte confirma el correo de la compra (club_email): desde ese momento cuenta ese, y el de la subcuenta ni es pista
   await pg.query(`UPDATE accounts SET club_email = 'compra@gmail.com' WHERE id = 101`);
   con = await resolverConexion({ location_id: '', email: 'cliente@x.com' }, pg);
-  assert.equal(con.estado, 'no_encontrada');
+  assert.deepEqual(con, { estado: 'no_encontrada', via: 'correo', cuentas: [] });
   con = await resolverConexion({ location_id: '', email: 'compra@gmail.com' }, pg);
   assert.deepEqual(con, { estado: 'ok', via: 'correo', cuentas: [101] });
   r = await evaluar(pg, fetchFalso(), { location_id: '', email: 'compra@gmail.com', contact_id: 'cont0021' });
@@ -447,15 +458,17 @@ test('cuenta por correo (sin location_id): vale el correo de la subcuenta en GHL
   assert.equal(r.body.decision.cuenta, 'denegada');
   r = await evaluar(pg, fetchFalso(), { location_id: 'locClub0001', email: 'otro@x.com', contact_id: 'cont0024' });
   assert.equal(r.body.decision.cuenta, 'revision', 'un correo que no es de nadie de esa subcuenta sigue sin casar');
-  // el mismo correo en DOS conexiones del Club (en cualquiera de los campos) → revisión
+  // A1 · OTRA conexión con ese correo de responsable (sin confirmar) ya no empata: sigue siendo la 101
   await nueva(pg, { id: 102, loc: 'locClub0002', owner: 'compra@gmail.com' });
   r = await evaluar(pg, fetchFalso(), { location_id: '', email: 'compra@gmail.com', contact_id: 'cont0025' });
-  assert.equal(r.body.decision.cuenta, 'revision');
-  assert.match(r.body.motivos.cuenta, /varias cuentas/);
+  assert.equal(r.body.decision.cuenta, 'denegada', 'antes: revisión «varias cuentas»');
+  con = await resolverConexion({ location_id: '', email: 'compra@gmail.com' }, pg);
+  assert.deepEqual(con, { estado: 'ok', via: 'correo', cuentas: [101] });
+  // un correo que solo está de correo de subcuenta en dos conexiones: no se encuentra (con las dos de pista)
   await nueva(pg, { id: 103, loc: 'locClub0003', owner: '' });
   await pg.query(`UPDATE accounts SET ghl_location_email = 'doble@x.com' WHERE id IN (102, 103)`);
   con = await resolverConexion({ location_id: '', email: 'doble@x.com' }, pg);
-  assert.deepEqual(con, { estado: 'ambiguo', via: 'correo', cuentas: [102, 103] });
+  assert.deepEqual(con, { estado: 'no_encontrada', via: 'correo', cuentas: [], sin_confirmar: [102, 103] });
   // un correo de subcuenta igual al de una conexión ANTERIOR al Club no la encuentra
   await pg.query(`UPDATE accounts SET ghl_location_email = 'jonathan@x.com' WHERE id = 1`);
   con = await resolverConexion({ location_id: '', email: 'jonathan@x.com' }, pg);
@@ -483,15 +496,17 @@ test('cuenta: si la consulta del consumo falla o devuelve algo raro → revisió
 });
 
 // ── BRAIN ───────────────────────────────────────────────────────────────────────────────────
-test('brain: pregunta con el secreto, el correo y la fecha; ≤ límite aprueba, más deniega', async () => {
+test('brain: pregunta por POST con el secreto y el correo y la fecha en el CUERPO (no en la dirección); ≤ límite aprueba, más deniega', async () => {
   const pg = await base();
   let f = fetchFalso({ brain: () => ({ body: { tareas: 10 } }) });
   let r = await evaluar(pg, f, { producto: 'brain' });
   assert.equal(r.body.decision.brain, 'aprobada');
   const ll = f.aBrain()[0];
-  const u = new URL(ll.url);
-  assert.equal(u.searchParams.get('email'), 'cliente@x.com');
-  assert.equal(u.searchParams.get('desde'), '2026-11-09T23:00:00.000Z');
+  assert.equal(ll.init.method, 'POST');
+  assert.equal(ll.url, BRAIN, 'la dirección va limpia: ni correo ni fecha');
+  assert.doesNotMatch(ll.url, /cliente|%40|@/);
+  assert.deepEqual(JSON.parse(ll.init.body), { email: 'cliente@x.com', desde: '2026-11-09T23:00:00.000Z' });
+  assert.equal(ll.init.headers['content-type'], 'application/json');
   assert.equal(ll.init.headers['x-club-secret'], SECRETO);
   assert.equal(ll.init.redirect, 'error', 'el secreto no sigue redirecciones');
   f = fetchFalso({ brain: () => ({ body: { tareas: '11' } }) });

@@ -76,10 +76,10 @@ export default async function ghlOauthRoutes(app) {
       // un token de un solo uso en Redis que autoriza la vuelta a /ghl-app.
       if (selfserveKey) {
         await logEvent('oauth_selfserve_conectado', { locationId });
-        // 🏛️ reconexión de una conexión que ya existe: correo de la subcuenta (si es del Club y no lo tiene). Si no existe,
-        // la crea /ghl-app y lo lee allí.
+        // 🏛️ reconexión de una conexión que ya existe: se vuelve a leer el correo de la subcuenta (si es del Club), para
+        // guardarlo si aún no estaba o anotar si GHL tiene ahora otro. Si no existe, la crea /ghl-app y lo lee allí.
         const ya = await one(`SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [locationId]);
-        if (ya) await enlazarCorreoSubcuenta(ya, { origen: 'oauth_enlace_agencia' });
+        if (ya) await enlazarCorreoSubcuenta(ya, { origen: 'oauth_enlace_agencia', releer: true });
         const entry = crypto.randomBytes(16).toString('hex');
         await redis.setex(`appentry:${entry}`, 180, locationId);
         return reply.redirect(`/ghl-app?entry=${entry}`);
@@ -103,8 +103,9 @@ export default async function ghlOauthRoutes(app) {
             [locationId, account.id]
           );
           await logEvent('oauth_conectado', { locationId, account: account.id });
-          // 🏛️ correo de la subcuenta (si es una conexión del Club y aún no lo tiene); nunca rompe la conexión
-          await enlazarCorreoSubcuenta({ ...account, location_id: locationId, mode: 'oauth' }, { origen: 'oauth_ficha' });
+          // 🏛️ correo de la subcuenta (si es una conexión del Club): se guarda si no estaba y, si ya estaba, se anota si GHL
+          // tiene ahora otro; nunca rompe la conexión
+          await enlazarCorreoSubcuenta({ ...account, location_id: locationId, mode: 'oauth' }, { origen: 'oauth_ficha', releer: true });
           return reply.redirect(`/cuentas/${account.id}?conectada=1`);
         }
       }
@@ -119,8 +120,9 @@ export default async function ghlOauthRoutes(app) {
         // 🧪 nace en MODO PRUEBA con la plantilla de conexiones nuevas (services/club.js)
         ({ account } = await crearConexionNueva({ name, locationId, conPortalKey: false, origen: 'oauth' }));
       }
-      // 🏛️ correo de la subcuenta (al crear o al reconectar una conexión del Club que no lo tiene); nunca rompe la conexión
-      await enlazarCorreoSubcuenta(account, { origen: 'oauth', info });
+      // 🏛️ correo de la subcuenta (conexión del Club): al crearla, con la misma llamada del nombre; al reconectarla, se vuelve
+      // a leer (se guarda si no estaba o se anota si GHL tiene ahora otro). Nunca rompe la conexión
+      await enlazarCorreoSubcuenta(account, { origen: 'oauth', info, releer: !info });
       await logEvent('oauth_conectado', { locationId, account: account.id });
       return reply.redirect(`/cuentas/${account.id}?conectada=1`);
     } catch (err) {
