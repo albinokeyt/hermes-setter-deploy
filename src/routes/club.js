@@ -16,16 +16,19 @@
 //
 // /api/club/estado — Cuerpo JSON: { location_id?: string, email?: string, activo: boolean, motivo?: string }
 //   · location_id → ai_enabled = activo en TODAS las conexiones nuevas de esa subcuenta (si no hay, queda pendiente: 202).
-//   · solo email  → la ÚNICA conexión NUEVA cuyo RESPONSABLE (owner_email, certificado por el SSO de GHL) es ese correo.
-//                   Ninguna → pendiente (202, se aplica cuando ese responsable entra por SSO); varias → ambiguo, no se
-//                   toca nada (202). Los «correos autorizados» no cuentan (los edita el propio cliente).
+//   · solo email  → la ÚNICA conexión NUEVA con ese CORREO DEL CLUB: club_email (lo pone el admin; si está, manda) o, si
+//                   no lo tiene, el responsable (owner_email, certificado por el SSO de GHL) o el correo de la subcuenta
+//                   en GHL (ghl_location_email, leído al conectar). Ninguna → pendiente (202, se aplica cuando una
+//                   conexión quede enlazada a ese correo); varias → ambiguo, no se toca nada (202). Los «correos
+//                   autorizados» no cuentan (los edita el propio cliente).
 //   · Las conexiones ANTERIORES al Club (creadas antes de la migración 059) nunca se tocan desde aquí («protegida»).
 //   Respuestas: 200 aplicado/sin_cambios · 202 pendiente/ambiguo/protegida · 400 cuerpo no válido · 401 secreto ·
 //   429 freno · 503 sin configurar.
 //
-// /api/club/devolucion — Cuerpo JSON: { email, contact_id, producto: 'cuenta'|'brain'|'ambos', motivo, fecha_cobro?,
-//   location_id? }. Responde 200 con la decisión por producto (también si ya estaba evaluada: idempotente) y avisa a GHL
-//   en segundo plano. 400 solo si no llega ni contact_id ni email válidos; lo demás que falte → «revision».
+// /api/club/devolucion — Cuerpo JSON: { email, contact_id, producto: 'cuenta'|'brain'|'ambos' (o la opción del
+//   desplegable: «Cuenta del Club», «Disruptive Brain», «Las dos»), motivo, fecha_cobro?, location_id? }. Responde 200
+//   con la decisión por producto (también si ya estaba evaluada: idempotente) y avisa a GHL en segundo plano. 400 solo
+//   si no llega ni contact_id ni email válidos; lo demás que falte o no se entienda → «revision».
 
 import { aplicarEstadoClub, validarCuerpoClub, secretoValido } from '../services/club.js';
 import { procesarDevolucion, validarCuerpoDevolucion } from '../services/devoluciones.js';

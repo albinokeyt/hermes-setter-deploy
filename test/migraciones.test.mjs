@@ -17,6 +17,20 @@ test('las 59 migraciones aplican en Postgres real (PGlite) y la 059 deja plantil
   await pg.close();
 });
 
+test('la 061 añade club_email y el correo de la subcuenta SIN tocar las conexiones que ya existen (DEP, Rodrigo, Lorena…)', async () => {
+  const fs = await import('node:fs');
+  const pg = await baseDePruebas({ antesDe: '061' });
+  await pg.exec(`INSERT INTO accounts (id, name, location_id, webhook_token, owner_email, authorized_emails) VALUES (5, 'DEP', 'locDEP', 'tk5', 'dep@x.com', '["dep@x.com"]')`);
+  const antes = (await pg.query(`SELECT * FROM accounts WHERE id = 5`)).rows[0];
+  await pg.exec(fs.readFileSync(new URL('../src/migrations/061_club_correos.sql', import.meta.url), 'utf8'));
+  const despues = (await pg.query(`SELECT * FROM accounts WHERE id = 5`)).rows[0];
+  assert.equal(despues.club_email, null);
+  assert.equal(despues.ghl_location_email, null);
+  assert.equal(despues.ghl_location_email_at, null);
+  for (const k of Object.keys(antes)) assert.deepEqual(despues[k], antes[k], k);
+  await pg.close();
+});
+
 test('la 059 elige el proveedor de OpenRouter que usan los setters en producción con deepseek-v4-pro', async () => {
   const pg = await baseDePruebas({ antesDe: '059' });
   await pg.exec(`

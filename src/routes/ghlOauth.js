@@ -2,10 +2,11 @@ import crypto from 'node:crypto';
 import { q, one, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { config, scopesOAuth } from '../config.js';
-import { exchangeCodeForLocation, saveTokens, getLocationName } from '../services/ghl.js';
+import { exchangeCodeForLocation, saveTokens, getLocationInfo } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
 import { requireAdmin } from '../lib/session.js';
 import { crearConexionNueva } from '../services/club.js';
+import { enlazarCorreoSubcuenta } from '../services/correoSubcuenta.js';
 
 // OJO: las rutas públicas no pueden contener "ghl" — el validador del marketplace
 // de GHL rechaza redirect URLs con referencias a HighLevel.
@@ -75,6 +76,10 @@ export default async function ghlOauthRoutes(app) {
       // un token de un solo uso en Redis que autoriza la vuelta a /ghl-app.
       if (selfserveKey) {
         await logEvent('oauth_selfserve_conectado', { locationId });
+        // 🏛️ reconexión de una conexión que ya existe: correo de la subcuenta (si es del Club y no lo tiene). Si no existe,
+        // la crea /ghl-app y lo lee allí.
+        const ya = await one(`SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [locationId]);
+        if (ya) await enlazarCorreoSubcuenta(ya, { origen: 'oauth_enlace_agencia' });
         const entry = crypto.randomBytes(16).toString('hex');
         await redis.setex(`appentry:${entry}`, 180, locationId);
         return reply.redirect(`/ghl-app?entry=${entry}`);
@@ -89,19 +94,33 @@ export default async function ghlOauthRoutes(app) {
             await logEvent('oauth_location_en_uso', { locationId, cuenta: account.id, ocupada_por: clash.id });
             return reply.redirect(`/cuentas/${account.id}?error=${encodeURIComponent(`Esa subcuenta ya está conectada a la cuenta "${clash.name}"`)}`);
           }
-          await q(`UPDATE accounts SET location_id = $1, mode = 'oauth' WHERE id = $2`, [locationId, account.id]);
+          // si cambia de subcuenta, el correo de la subcuenta anterior ya no vale (se lee el de la nueva justo después)
+          await q(
+            `UPDATE accounts SET location_id = $1, mode = 'oauth',
+               ghl_location_email = CASE WHEN location_id IS DISTINCT FROM $1 THEN NULL ELSE ghl_location_email END,
+               ghl_location_email_at = CASE WHEN location_id IS DISTINCT FROM $1 THEN NULL ELSE ghl_location_email_at END
+             WHERE id = $2`,
+            [locationId, account.id]
+          );
           await logEvent('oauth_conectado', { locationId, account: account.id });
+          // 🏛️ correo de la subcuenta (si es una conexión del Club y aún no lo tiene); nunca rompe la conexión
+          await enlazarCorreoSubcuenta({ ...account, location_id: locationId, mode: 'oauth' }, { origen: 'oauth_ficha' });
           return reply.redirect(`/cuentas/${account.id}?conectada=1`);
         }
       }
 
       // instalación suelta → reutilizar o crear cuenta para esa subcuenta
       let account = await one(`SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [locationId]);
+      let info = null;
       if (!account) {
-        const name = (await getLocationName({ mode: 'oauth', location_id: locationId }, locationId)) || `Subcuenta ${locationId.slice(0, 6)}`;
+        // una sola llamada a GHL para el nombre y el correo de la subcuenta
+        info = await getLocationInfo({ mode: 'oauth', location_id: locationId }, locationId);
+        const name = (info.ok && info.name) || `Subcuenta ${locationId.slice(0, 6)}`;
         // 🧪 nace en MODO PRUEBA con la plantilla de conexiones nuevas (services/club.js)
         ({ account } = await crearConexionNueva({ name, locationId, conPortalKey: false, origen: 'oauth' }));
       }
+      // 🏛️ correo de la subcuenta (al crear o al reconectar una conexión del Club que no lo tiene); nunca rompe la conexión
+      await enlazarCorreoSubcuenta(account, { origen: 'oauth', info });
       await logEvent('oauth_conectado', { locationId, account: account.id });
       return reply.redirect(`/cuentas/${account.id}?conectada=1`);
     } catch (err) {

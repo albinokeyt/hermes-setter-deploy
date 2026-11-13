@@ -139,11 +139,114 @@ test('producto: canónicos, texto de un desplegable y lo que no se entiende', ()
   assert.equal(normalizarProducto('AMBOS'), 'ambos');
   assert.equal(normalizarProducto('Cuenta (Club de Sistemas)'), 'cuenta');
   assert.equal(normalizarProducto('Disruptive Brain'), 'brain');
-  assert.equal(normalizarProducto('Cuenta, Brain'), 'ambos');
+  assert.equal(normalizarProducto('Cuenta, Brain'), null, 'ya no se adivina: no es una opción del formulario');
   assert.equal(normalizarProducto('Los dos'), 'ambos');
   assert.equal(normalizarProducto(''), null);
   assert.equal(normalizarProducto('{{contact.producto}}'), null);
   assert.equal(normalizarProducto('el curso'), null);
+});
+
+// Fase C · [formulario] el verificador vio que «Solo el Brain, no la cuenta» se leía como «ambos» y podía aprobar una
+// devolución de la cuenta que nadie pidió. Ahora solo valen los canónicos y las opciones EXACTAS del desplegable.
+test('producto ESTRICTO: solo cuenta|brain|ambos y las opciones del desplegable real; cualquier otro texto → desconocido (revisión)', async () => {
+  const valen = {
+    cuenta: 'cuenta', ' Brain ': 'brain', AMBOS: 'ambos',
+    // opciones del campo iYMss3x5ZpMxQKBI5tYB («Club DD · Devolución · Qué devolver») del formulario 1Y7ZLul66R5Mk8hEx7y9
+    'Cuenta del Club': 'cuenta', 'Disruptive Brain': 'brain', 'Las dos': 'ambos',
+    // las de la fase B que también se aceptan
+    'Cuenta (Club de Sistemas)': 'cuenta', 'Los dos': 'ambos',
+    // sin distinguir mayúsculas ni tildes y quitando espacios
+    'CUENTA DEL CLUB': 'cuenta', 'cuénta  del   club': 'cuenta', ' disruptive brain ': 'brain', 'LAS DOS': 'ambos', 'lás dos': 'ambos',
+    'Cuenta(Club de Sistemas)': 'cuenta', 'Disruptive Brain': 'brain',
+  };
+  for (const [texto, esperado] of Object.entries(valen)) assert.equal(normalizarProducto(texto), esperado, texto);
+  for (const texto of [
+    // los ejemplos del verificador (faseB/hermes-devoluciones-verif/producto.txt)
+    'Disruptive Brain del Club de Sistemas', 'Solo el Brain, no la cuenta', 'Brain (sin Hermes)', 'La suscripción del Club', 'Cuenta, Brain',
+    // y otros parecidos que tampoco son opciones del formulario
+    'cuenta y brain', 'Hermes', 'club', 'ambos productos', 'las dos cosas', 'brain.', 'la cuenta', 'Cuenta del Club, Disruptive Brain',
+    '', '   ', '{{contact.club_dd__devolucin__qu_devolver}}', 'el curso',
+  ]) {
+    assert.equal(normalizarProducto(texto), null, texto);
+  }
+  // de punta a punta: un texto raro NUNCA mide (ni aprueba) la cuenta ni pregunta al Brain
+  const pg = await base();
+  await nueva(pg, { id: 101, loc: 'locClub0001', owner: 'cliente@x.com' }); // 0 USD de IA: se aprobaría si se midiese
+  const f = fetchFalso();
+  const raros = ['Solo el Brain, no la cuenta', 'Disruptive Brain del Club de Sistemas', 'Brain (sin Hermes)', 'La suscripción del Club'];
+  for (const [i, producto] of raros.entries()) {
+    const r = await evaluar(pg, f, { producto, contact_id: `contP${String(i).padStart(3, '0')}` });
+    assert.deepEqual(r.body.decision, { desconocido: 'revision' }, producto);
+    assert.match(r.body.motivos.desconocido, /No se entiende qué quiere devolver/);
+  }
+  assert.equal(f.aBrain().length, 0, 'tampoco se pregunta al Brain');
+  assert.deepEqual(f.aGhl().map((x) => `${x.producto}:${x.decision}`), raros.map(() => 'desconocido:revision'));
+  await pg.close();
+});
+
+// Fase C · [dinero] el verificador aprobó la CUENTA con 40 USD gastados mandando una fecha_cobro de HOY pero con una hora
+// POSTERIOR a ahora (faseB/hermes-devoluciones-verif/futura-mismo-dia.txt): se medía desde un instante futuro = 0 USD.
+test('plazo: un cobro POSTERIOR a ahora (más tarde hoy con hora, ISO con hora o marca Unix) → revisión, nunca aprobada', async () => {
+  const pg = await base();
+  await nueva(pg, { id: 101, loc: 'locClub0001', owner: 'cliente@x.com' });
+  await uso(pg, 101, 40, '2026-11-13T10:00:00Z'); // 40 USD hoy a las 11:00 de Madrid, ANTES de pedir la devolución
+  const casos = [
+    ['2026-11-13T20:00:00Z', 'revision'], // hoy a las 21:00 de Madrid (ahora son las 13:00)
+    [String(Math.floor(Date.parse('2026-11-13T21:30:00Z') / 1000)), 'revision'], // marca Unix de hoy, más tarde (1794605400)
+    [String(Date.parse('2026-11-13T12:00:01Z')), 'revision'], // en milisegundos, un segundo después de ahora
+    ['2026-11-13 14:30', 'revision'], // hora de Madrid sin zona, más tarde
+    ['13/11/2026 22:00', 'revision'],
+    ['November 13, 2026 9:30 pm', 'revision'],
+    ['2026-11-13', 'denegada'], // solo el día: la medianoche de Madrid ya pasó → se mide (40 USD > 5)
+    ['November 13, 2026', 'denegada'], // el formato en que GHL rellena los campos de fecha
+    ['2026-11-13T09:00:00Z', 'denegada'], // con hora, pero ya pasada → se mide desde ahí
+  ];
+  for (const [i, [fecha, esperada]] of casos.entries()) {
+    const r = await evaluar(pg, fetchFalso(), { fecha_cobro: fecha, contact_id: `contF${String(i).padStart(3, '0')}` });
+    assert.equal(r.body.decision.cuenta, esperada, fecha);
+    if (esperada === 'revision') assert.match(r.body.motivos.cuenta, /es posterior a ahora: lo revisa soporte/, fecha);
+    else assert.equal(r.body.motivos.cuenta, 'Has usado 40,00 USD de IA (límite 5)', fecha);
+  }
+  // en evaluarPlazo: el instante de ahora mismo aún vale; un milisegundo después ya no
+  const aj = { ...AJUSTES_POR_DEFECTO };
+  assert.equal(evaluarPlazo(interpretarFecha(String(AHORA.getTime())), '', aj, AHORA).decision, undefined);
+  assert.equal(evaluarPlazo(interpretarFecha(String(AHORA.getTime() + 1)), '', aj, AHORA).decision, 'revision');
+  // ambigua con una lectura futura y otra pasada: la futura se descarta (como antes)
+  assert.equal(evaluarPlazo(interpretarFecha('12/11/2026'), '12/11/2026', aj, AHORA).dia, '2026-11-12');
+  await pg.close();
+});
+
+// Fase C · 5) las fechas tal como las rellena GHL en los campos de fecha («November 13, 2026») se leen en hora de Madrid.
+test('fechas de GHL («November 13, 2026», «November 20, 2026»): medianoche de Madrid y días naturales de Madrid', () => {
+  const a = interpretarFecha('November 13, 2026');
+  assert.equal(a.estado, 'ok');
+  assert.equal(a.candidatos.length, 1);
+  assert.equal(a.candidatos[0].toISOString(), '2026-11-12T23:00:00.000Z', 'medianoche de Madrid (CET, UTC+1)');
+  assert.equal(diaEnZona(a.candidatos[0]), '2026-11-13');
+  const b = interpretarFecha('November 20, 2026');
+  assert.equal(b.estado, 'ok');
+  assert.equal(b.candidatos[0].toISOString(), '2026-11-19T23:00:00.000Z');
+  assert.equal(diaEnZona(b.candidatos[0]), '2026-11-20');
+  const aj = { ...AJUSTES_POR_DEFECTO };
+  const p = (s, ahora) => evaluarPlazo(interpretarFecha(s), s, aj, ahora);
+  // hoy, 13 de noviembre a las 13:00 de Madrid: el 13 es «hoy» (0 días) y el 20 aún no ha llegado
+  assert.equal(p('November 13, 2026', AHORA).dias, 0);
+  assert.equal(p('November 13, 2026', AHORA).decision, undefined);
+  assert.equal(p('November 13, 2026', AHORA).fecha_clave, '2026-11-13');
+  assert.equal(p('November 20, 2026', AHORA).decision, 'revision');
+  // a las 00:30 de Madrid del 13 (aún el 12 en UTC) ya es «el día 13»; a las 23:59 del 12 todavía no
+  assert.equal(p('November 13, 2026', new Date('2026-11-12T23:30:00Z')).dias, 0);
+  assert.equal(p('November 13, 2026', new Date('2026-11-12T22:59:59Z')).decision, 'revision');
+  // cobro del 20: el día 14 (4 de diciembre) entra hasta las 23:59:59 de Madrid; a las 00:00 del 5 ya son 15 → denegada
+  assert.equal(p('November 20, 2026', new Date('2026-12-04T22:59:59Z')).dias, 14);
+  assert.equal(p('November 20, 2026', new Date('2026-12-04T22:59:59Z')).decision, undefined);
+  const fuera = p('November 20, 2026', new Date('2026-12-04T23:00:00Z'));
+  assert.equal(fuera.decision, 'denegada');
+  assert.equal(fuera.motivo, 'Han pasado 15 días desde el cobro (plazo: 14 días)');
+  // variantes del mismo formato
+  assert.equal(diaEnZona(interpretarFecha('Friday, November 13, 2026').candidatos[0]), '2026-11-13');
+  assert.equal(diaEnZona(interpretarFecha('november 20, 2026').candidatos[0]), '2026-11-20');
+  assert.equal(diaEnZona(interpretarFecha('Nov 20, 2026').candidatos[0]), '2026-11-20');
 });
 
 test('cuerpo: solo se rechaza sin contact_id ni email; lo demás pasa (y acaba en revisión si falta)', () => {
@@ -252,10 +355,14 @@ test('cuenta: consumo SIN precio conocido → revisión (salvo que lo conocido y
 
 test('cuenta: sin conexión, conexión anterior al Club o correo que no cuadra → revisión (nunca aprueba)', async () => {
   const pg = await base();
-  // ninguna conexión
-  let r = await evaluar(pg, fetchFalso(), { location_id: 'locNoExiste1', email: 'nadie@x.com' });
+  // ninguna conexión con ese correo
+  let r = await evaluar(pg, fetchFalso(), { location_id: '', email: 'nadie@x.com' });
   assert.equal(r.body.decision.cuenta, 'revision');
   assert.match(r.body.motivos.cuenta, /No se encuentra su cuenta de Hermes/);
+  // una subcuenta sin conexión de Hermes
+  r = await evaluar(pg, fetchFalso(), { location_id: 'locNoExiste1', email: 'nadie@x.com', contact_id: 'cont0017' });
+  assert.equal(r.body.decision.cuenta, 'revision');
+  assert.match(r.body.motivos.cuenta, /La subcuenta indicada no tiene cuenta de Hermes/);
   // la subcuenta de la AGENCIA (conexión anterior al Club)
   r = await evaluar(pg, fetchFalso(), { location_id: 'locAgencia01', contact_id: 'cont0004' });
   assert.equal(r.body.decision.cuenta, 'revision');
@@ -289,9 +396,13 @@ test('cuenta por correo: el responsable de UNA conexión nueva; varias o rastro 
   assert.equal(r.body.decision.cuenta, 'aprobada');
   let con = await resolverConexion({ location_id: '', email: 'cliente@x.com' }, pg);
   assert.deepEqual(con, { estado: 'ok', via: 'correo', cuentas: [101] });
-  // una location_id que no existe cae al correo
+  // Fase C · 4e) una location_id SIN conexión de Hermes → revisión: ya NO se busca por correo (podría medir OTRA
+  // conexión de esa persona, de otra subcuenta)
   con = await resolverConexion({ location_id: 'locNoExiste1', email: 'cliente@x.com' }, pg);
-  assert.equal(con.estado, 'ok');
+  assert.deepEqual(con, { estado: 'sin_conexion', via: 'subcuenta', cuentas: [] });
+  r = await evaluar(pg, fetchFalso(), { location_id: 'locNoExiste1', contact_id: 'cont0016' });
+  assert.equal(r.body.decision.cuenta, 'revision', 'antes: aprobada midiendo la conexión 101 por el correo');
+  assert.match(r.body.motivos.cuenta, /La subcuenta indicada no tiene cuenta de Hermes/);
   // entró por SSO en OTRA conexión nueva → no se sabe cuál es la suya
   await nueva(pg, { id: 102, loc: 'locClub0002', owner: 'otro@x.com' });
   await pg.query(`INSERT INTO portal_users (account_id, email) VALUES (102, 'cliente@x.com')`);
@@ -304,6 +415,49 @@ test('cuenta por correo: el responsable de UNA conexión nueva; varias o rastro 
   assert.equal(r.body.decision.cuenta, 'revision');
   assert.match(r.body.motivos.cuenta, /varias cuentas/);
   // el correo de la conexión ANTIGUA no resuelve por correo
+  con = await resolverConexion({ location_id: '', email: 'jonathan@x.com' }, pg);
+  assert.equal(con.estado, 'no_encontrada');
+  await pg.close();
+});
+
+// Fase C · 4) hoy 4ttZ solo manda el correo del comprador. Si soporte abre Hermes antes que el cliente, el responsable
+// (owner_email) es soporte y por correo no se encontraba nada: todas las devoluciones de la cuenta iban a revisión.
+test('cuenta por correo (sin location_id): vale el correo de la subcuenta en GHL o el club_email del admin; club_email manda', async () => {
+  const pg = await base();
+  await nueva(pg, { id: 101, loc: 'locClub0001', owner: 'soporte@departamentodisruptivo.com' }); // soporte abrió Hermes primero
+  await pg.query(`UPDATE accounts SET ghl_location_email = 'cliente@x.com' WHERE id = 101`); // leído de GHL al conectar
+  await uso(pg, 101, 7.5, '2026-11-11T10:00:00Z');
+  let r = await evaluar(pg, fetchFalso(), { location_id: '' });
+  assert.equal(r.body.decision.cuenta, 'denegada', 'se mide SU conexión (antes: revisión «no se encuentra»)');
+  assert.equal(r.body.motivos.cuenta, 'Has usado 7,50 USD de IA (límite 5)');
+  let con = await resolverConexion({ location_id: '', email: 'cliente@x.com' }, pg);
+  assert.deepEqual(con, { estado: 'ok', via: 'correo', cuentas: [101] });
+  // el admin pone el correo de la compra (club_email): desde ese momento manda ese y el de la subcuenta ya no cuenta
+  await pg.query(`UPDATE accounts SET club_email = 'compra@gmail.com' WHERE id = 101`);
+  con = await resolverConexion({ location_id: '', email: 'cliente@x.com' }, pg);
+  assert.equal(con.estado, 'no_encontrada');
+  con = await resolverConexion({ location_id: '', email: 'compra@gmail.com' }, pg);
+  assert.deepEqual(con, { estado: 'ok', via: 'correo', cuentas: [101] });
+  r = await evaluar(pg, fetchFalso(), { location_id: '', email: 'compra@gmail.com', contact_id: 'cont0021' });
+  assert.equal(r.body.decision.cuenta, 'denegada');
+  // con location_id, el club_email y el correo de la subcuenta también «casan» con esa subcuenta (antes: no_casa)
+  r = await evaluar(pg, fetchFalso(), { location_id: 'locClub0001', email: 'compra@gmail.com', contact_id: 'cont0022' });
+  assert.equal(r.body.decision.cuenta, 'denegada');
+  r = await evaluar(pg, fetchFalso(), { location_id: 'locClub0001', email: 'cliente@x.com', contact_id: 'cont0023' });
+  assert.equal(r.body.decision.cuenta, 'denegada');
+  r = await evaluar(pg, fetchFalso(), { location_id: 'locClub0001', email: 'otro@x.com', contact_id: 'cont0024' });
+  assert.equal(r.body.decision.cuenta, 'revision', 'un correo que no es de nadie de esa subcuenta sigue sin casar');
+  // el mismo correo en DOS conexiones del Club (en cualquiera de los campos) → revisión
+  await nueva(pg, { id: 102, loc: 'locClub0002', owner: 'compra@gmail.com' });
+  r = await evaluar(pg, fetchFalso(), { location_id: '', email: 'compra@gmail.com', contact_id: 'cont0025' });
+  assert.equal(r.body.decision.cuenta, 'revision');
+  assert.match(r.body.motivos.cuenta, /varias cuentas/);
+  await nueva(pg, { id: 103, loc: 'locClub0003', owner: '' });
+  await pg.query(`UPDATE accounts SET ghl_location_email = 'doble@x.com' WHERE id IN (102, 103)`);
+  con = await resolverConexion({ location_id: '', email: 'doble@x.com' }, pg);
+  assert.deepEqual(con, { estado: 'ambiguo', via: 'correo', cuentas: [102, 103] });
+  // un correo de subcuenta igual al de una conexión ANTERIOR al Club no la encuentra
+  await pg.query(`UPDATE accounts SET ghl_location_email = 'jonathan@x.com' WHERE id = 1`);
   con = await resolverConexion({ location_id: '', email: 'jonathan@x.com' }, pg);
   assert.equal(con.estado, 'no_encontrada');
   await pg.close();

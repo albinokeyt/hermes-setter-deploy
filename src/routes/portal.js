@@ -3,10 +3,11 @@ import { one, q, getSetting, setSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { createSession, setSessionCookie } from '../lib/session.js';
 import { config, scopesOAuth } from '../config.js';
-import { getLocationName, listLocationUsers } from '../services/ghl.js';
+import { getLocationInfo, listLocationUsers } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
 import { decryptGhlSso } from '../lib/sso.js';
 import { crearConexionNueva, aplicarPendientePorEmail } from '../services/club.js';
+import { enlazarCorreoSubcuenta } from '../services/correoSubcuenta.js';
 
 // Clave global del link de agencia (se genera sola).
 export async function agencyKey() {
@@ -184,9 +185,12 @@ export default async function portalRoutes(app) {
     const token = await one(`SELECT location_id FROM ghl_tokens WHERE location_id = $1`, [loc]);
     if (token) {
       // Caso 2: conectada pero sin setter → crearlo y entrar (el instalador lo reclama)
-      const nm = (await getLocationName({ mode: 'oauth', location_id: loc }, loc)) || `Setter ${loc.slice(0, 6)}`;
+      const info = await getLocationInfo({ mode: 'oauth', location_id: loc }, loc); // nombre y correo de la subcuenta
+      const nm = (info.ok && info.name) || `Setter ${loc.slice(0, 6)}`;
       // 🧪 nace en MODO PRUEBA con la plantilla de conexiones nuevas (services/club.js)
       ({ account } = await crearConexionNueva({ name: nm, locationId: loc, conPortalKey: true, origen: 'enlace_agencia' }));
+      // 🏛️ correo de la subcuenta (conexión del Club): el interruptor y las devoluciones la encuentran por él
+      await enlazarCorreoSubcuenta(account, { origen: 'enlace_agencia', info });
       // Recién conectada → a la app embebida; el 1er usuario que entre por SSO queda como responsable.
       return reply.redirect('/');
     }
@@ -252,9 +256,12 @@ export default async function portalRoutes(app) {
     // Identidad certificada por GHL para ESTA subcuenta → buscar/crear su setter y entrar.
     let account = await one(`SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [locationId]);
     if (!account) {
-      const nm = (await getLocationName({ mode: 'oauth', location_id: locationId }, locationId)) || `Setter ${locationId.slice(0, 6)}`;
+      const info = await getLocationInfo({ mode: 'oauth', location_id: locationId }, locationId); // nombre y correo de la subcuenta
+      const nm = (info.ok && info.name) || `Setter ${locationId.slice(0, 6)}`;
       // 🧪 nace en MODO PRUEBA con la plantilla de conexiones nuevas (services/club.js)
       ({ account } = await crearConexionNueva({ name: nm, locationId, conPortalKey: true, origen: 'sso' }));
+      // 🏛️ correo de la subcuenta (conexión del Club): así no depende de quién abra Hermes primero (soporte o el cliente)
+      await enlazarCorreoSubcuenta(account, { origen: 'sso', info });
     }
     // GHL ya certifica que el usuario pertenece a esta subcuenta → acceso directo (sin roster ni lista).
     if (!normEmail(account.owner_email)) await claimOwner(account.id, email); // primer usuario = responsable

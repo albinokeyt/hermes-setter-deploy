@@ -5,17 +5,22 @@
 //    de la plantilla) y su «Setter principal» copia la plantilla global «plantilla_conexion» {provider_id, model,
 //    prompt_partida}. Las conexiones que YA existen no se tocan: aquí solo se INSERTA.
 // 2) aplicarEstadoClub(): lo que hace POST /api/club/estado (routes/club.js). Pone ai_enabled = activo en TODAS las
-//    conexiones NUEVAS de una subcuenta (o en la ÚNICA conexión nueva cuyo RESPONSABLE tiene ese correo). ai_enabled es
-//    el interruptor maestro que el cliente no puede tocar (solo admin). Si la conexión aún no existe, el estado queda
-//    PENDIENTE y se aplica al crearse (por subcuenta) o cuando su responsable entra por SSO (por correo). Si hay
+//    conexiones NUEVAS de una subcuenta (o en la ÚNICA conexión nueva con ese CORREO DEL CLUB). ai_enabled es el
+//    interruptor maestro que el cliente no puede tocar (solo admin). Si la conexión aún no existe, el estado queda
+//    PENDIENTE y se aplica al crearse (por subcuenta) o cuando la conexión quede ENLAZADA a ese correo (por correo: su
+//    responsable entra por SSO, Hermes lee el correo de la subcuenta en GHL o el admin pone el club_email). Si hay
 //    ambigüedad, no toca nada.
 //
 // SEGURIDAD
 //  · Conexiones ANTERIORES al Club (creadas antes de la migración 059: DEP, Jonathan, Rodrigo…) → nunca se tocan desde
 //    aquí («protegida»). La comparación con el corte se hace en SQL (microsegundos; en JS se truncaría a ms).
-//  · Por correo solo vale el RESPONSABLE (owner_email): lo fija GHL por SSO cifrado (primer usuario de la subcuenta) o el
-//    admin, y el cliente no puede cambiarlo. Los «correos autorizados» NO sirven: el propio cliente los edita en su
-//    pestaña Accesos, y con ellos podría quedarse con el estado del Club de otra persona.
+//  · CORREO DEL CLUB de una conexión (migración 061, correoDelClubSQL): club_email si el admin lo ha puesto (y entonces
+//    MANDA: los otros dos ya no cuentan); si no, el RESPONSABLE (owner_email: lo fija GHL por SSO cifrado, el primer
+//    usuario de la subcuenta) o el correo de la subcuenta en GHL (ghl_location_email: se lee al crear o reconectar y se
+//    guarda la PRIMERA vez; si el cliente lo cambia luego en GHL no se sigue, así no puede «apuntar» su conexión al
+//    correo de otra persona). Los «correos autorizados» NO sirven: el propio cliente los edita en su pestaña Accesos, y
+//    con ellos podría quedarse con el estado del Club de otra persona. Siempre UNA sola conexión: si el correo está en
+//    varias, «ambiguo» y no se toca nada (el admin lo deshace con club_email).
 //  · Candado por subcuenta y por correo (pg_advisory_xact_lock): un estado que llegue justo mientras se crea la
 //    conexión no se pierde ni se aplica dos veces.
 //  · Orden: accounts.club_estado_at guarda cuándo se DECIDIÓ el estado que tiene la conexión. Un pendiente solo se
@@ -74,6 +79,35 @@ const CANDADO = `SELECT pg_advisory_xact_lock(hashtextextended($1, 59))`;
 const VIGENTE = `(updated_at > now() - make_interval(days => ${PENDIENTE_DIAS}))`;
 const claveLoc = (loc) => `loc:${loc}`;
 const claveEmail = (mail) => `email:${mail}`;
+
+/**
+ * SQL: ¿el parámetro (un correo YA en minúsculas) es el CORREO DEL CLUB de la conexión? Con club_email puesto (lo pone
+ * solo el admin) manda ese; si no, el responsable (owner_email) o el correo de la subcuenta (ghl_location_email).
+ * @param {string} param marcador del parámetro, p. ej. '$1'   @param {string} t prefijo de la tabla, p. ej. 'a.'
+ */
+export const correoDelClubSQL = (param, t = '') =>
+  `(${param} <> '' AND CASE WHEN COALESCE(${t}club_email, '') <> '' THEN ${t}club_email = ${param}
+        ELSE (lower(COALESCE(${t}owner_email, '')) = ${param} OR COALESCE(${t}ghl_location_email, '') = ${param}) END)`;
+// por cuál de los tres ha casado (para el registro): 'club_email' | 'responsable' | 'correo_subcuenta'
+const PORQUE_SQL = (param, t = '') =>
+  `(CASE WHEN COALESCE(${t}club_email, '') <> '' THEN 'club_email'
+         WHEN lower(COALESCE(${t}owner_email, '')) = ${param} THEN 'responsable' ELSE 'correo_subcuenta' END)`;
+
+const RE_CORREO = /^[^\s@<>"']{1,64}@[^\s@<>"']{1,190}\.[^\s@<>"']{2,}$/;
+/** Correo en minúsculas y sin espacios alrededor, o '' si no es un correo válido. */
+export function normalizarCorreo(v) {
+  if (typeof v !== 'string') return '';
+  const s = v.trim().toLowerCase();
+  return s.length <= 254 && RE_CORREO.test(s) ? s : '';
+}
+
+/** club_email que llega del admin: { ok:true, valor: correo | null (vacío = quitarlo) } o { ok:false, error }. */
+export function sanearClubEmail(v) {
+  if (v === null || v === undefined || (typeof v === 'string' && v.trim() === '')) return { ok: true, valor: null };
+  const mail = normalizarCorreo(v);
+  if (!mail) return { ok: false, error: 'El correo del Club no es válido: escribe un correo (p. ej. el de la compra) o déjalo vacío.' };
+  return { ok: true, valor: mail };
+}
 
 async function enTransaccion(pg, fn) {
   const client = await pg.connect();
@@ -246,8 +280,8 @@ async function guardarPendiente(c, clave, activo, motivo) {
 const RESPUESTAS = {
   pendiente_subcuenta: { code: 202, nota: 'La subcuenta aún no tiene conexión en Hermes: el estado se aplicará cuando se cree.' },
   protegida: { code: 202, nota: 'Esa subcuenta tiene una conexión anterior al Club: no se ha tocado. Revisa que el workflow mande la subcuenta del CLIENTE.' },
-  pendiente_correo: { code: 202, nota: 'Aún no hay ninguna conexión nueva cuyo responsable tenga ese correo: el estado se aplicará cuando la cree y entre.' },
-  ambiguo: { code: 202, nota: 'Ese correo es el responsable de varias conexiones nuevas: no se ha tocado nada. Manda el location_id.' },
+  pendiente_correo: { code: 202, nota: 'Aún no hay ninguna conexión nueva con ese correo del Club (club_email, responsable o correo de la subcuenta): el estado se aplicará cuando una quede enlazada a ese correo.' },
+  ambiguo: { code: 202, nota: 'Ese correo es el correo del Club de varias conexiones nuevas: no se ha tocado nada. Manda el location_id o pon el club_email en la conexión correcta.' },
   sin_corte: { code: 202, nota: 'No se puede resolver por correo (falta el corte de la migración 059): no se ha tocado nada.' },
 };
 
@@ -294,8 +328,9 @@ export async function aplicarEstadoClub({ location_id, email, activo, motivo, ip
     return { code: 200, body: { ok: true, resultado: r.resultado, via: 'subcuenta', cuentas: r.cuentas, cambiadas: r.cambiadas, ai_enabled: activo } };
   }
 
-  // B) Solo CORREO: la ÚNICA conexión NUEVA cuyo RESPONSABLE (owner_email) es ese correo. Ninguna → pendiente (se aplica
-  //    cuando ese correo entra por SSO como responsable de una conexión nueva). Más de una → ambigüedad: no se toca nada.
+  // B) Solo CORREO: la ÚNICA conexión NUEVA con ese CORREO DEL CLUB (club_email; si no lo tiene, responsable o correo de la
+  //    subcuenta: correoDelClubSQL). Ninguna → pendiente (se aplica cuando una conexión nueva quede enlazada a ese correo).
+  //    Más de una → ambigüedad: no se toca nada.
   const base = { email, activo, motivo, ip };
   const r = await enTransaccion(pg, async (c) => {
     const corte = (await c.query(`SELECT ${DESDE_SQL} AS desde`)).rows[0]?.desde;
@@ -306,7 +341,7 @@ export async function aplicarEstadoClub({ location_id, email, activo, motivo, ip
     }
     await c.query(CANDADO, [`club:${claveEmail(email)}`]);
     const cands = (await c.query(
-      `SELECT id, location_id FROM accounts WHERE ${ES_NUEVA} AND lower(owner_email) = $1 ORDER BY id`, [email]
+      `SELECT id, location_id, ${PORQUE_SQL('$1')} AS por FROM accounts WHERE ${ES_NUEVA} AND ${correoDelClubSQL('$1')} ORDER BY id`, [email]
     )).rows;
     const antiguas = (await c.query(
       `SELECT count(*)::int AS n FROM accounts WHERE NOT ${ES_NUEVA} AND (lower(owner_email) = $1 OR authorized_emails @> $2::jsonb)`,
@@ -315,13 +350,13 @@ export async function aplicarEstadoClub({ location_id, email, activo, motivo, ip
     const notaAntiguas = antiguas ? `${antiguas} conexión(es) anteriores al Club con ese correo: no se tocan` : undefined;
     if (cands.length > 1) {
       const ids = cands.map((x) => x.id);
-      const detalle = { via: 'correo', nota: 'ese correo es el responsable de varias conexiones nuevas: no se toca ninguna (manda el location_id)', antiguas: notaAntiguas };
+      const detalle = { via: 'correo', nota: 'ese correo es el correo del Club de varias conexiones nuevas: no se toca ninguna (manda el location_id o pon el club_email en la buena)', antiguas: notaAntiguas };
       await insertarClubEvento(c, { ...base, resultado: 'ambiguo', cuentas: ids, detalle });
       return { resultado: 'ambiguo', clave: 'ambiguo', candidatas: ids.length, detalle };
     }
     if (!cands.length) {
       await guardarPendiente(c, claveEmail(email), activo, motivo);
-      const detalle = { via: 'correo', nota: 'ninguna conexión nueva con ese responsable: se aplicará cuando ese correo entre por SSO como responsable de una conexión nueva', antiguas: notaAntiguas };
+      const detalle = { via: 'correo', nota: 'ninguna conexión nueva con ese correo del Club: se aplicará cuando una quede enlazada a él (SSO del responsable, correo de la subcuenta al conectar o club_email del admin)', antiguas: notaAntiguas };
       await insertarClubEvento(c, { ...base, resultado: 'pendiente', detalle });
       return { resultado: 'pendiente', clave: 'pendiente_correo', detalle };
     }
@@ -329,7 +364,7 @@ export async function aplicarEstadoClub({ location_id, email, activo, motivo, ip
     const cambiadas = await fijarEstado(c, [cuenta.id], activo);
     await c.query(`DELETE FROM club_estado_pendiente WHERE clave = $1`, [claveEmail(email)]);
     const resultado = cambiadas.length ? 'aplicado' : 'sin_cambios';
-    const detalle = { via: 'correo', por: 'responsable', cambiadas, antiguas: notaAntiguas };
+    const detalle = { via: 'correo', por: cuenta.por, cambiadas, antiguas: notaAntiguas };
     await insertarClubEvento(c, { ...base, location_id: cuenta.location_id, resultado, cuentas: [cuenta.id], detalle });
     return { resultado, cuentas: [cuenta.id], cambiadas, location_id: cuenta.location_id, detalle };
   });
@@ -340,15 +375,70 @@ export async function aplicarEstadoClub({ location_id, email, activo, motivo, ip
   return { code: 200, body: { ok: true, resultado: r.resultado, via: 'correo', cuentas: r.cuentas, cambiadas: r.cambiadas, ai_enabled: activo } };
 }
 
+// ── Estados PENDIENTES por correo: se aplican cuando una conexión queda ENLAZADA a ese correo ──────────────────────
+// Un solo mecanismo para los tres enlaces: el responsable entra por SSO (portal.js), Hermes lee el correo de la
+// subcuenta en GHL al crear o reconectar (vincularCorreoSubcuenta) o el admin pone el club_email (routes/accounts.js →
+// aplicarPendientesDeConexion). Hay UN pendiente por correo (guardarPendiente lo pisa: siempre el ÚLTIMO estado que
+// llegó); se consume una vez (DELETE) y queda registrado como «pendiente_aplicado» en club_eventos (registro durable)
+// y en el registro de eventos del panel.
+
 /**
- * SSO certificado por GHL: si hay un estado del Club PENDIENTE para este correo, se aplica SOLO si este correo es el
- * RESPONSABLE de esta conexión, la conexión es NUEVA y es la única conexión nueva de ese responsable (si no, se
- * registra «ambiguo» y no se toca nada). El pendiente se consume una vez. Un miembro del equipo que entra en la
- * subcuenta de otro cliente no le aplica su estado. Si la conexión ya tiene un estado del Club POSTERIOR (club_estado_at:
- * aplicado por subcuenta o a mano por el admin), el pendiente viejo se descarta («pendiente_obsoleto»).
- * @returns {null | { activo: boolean } | { ambiguo: true } | { obsoleto: true }}
+ * Dentro de una transacción con el candado de ESE correo ya tomado. Se aplica SOLO si el correo es el correo del Club de
+ * esta conexión, la conexión es NUEVA y es la ÚNICA conexión nueva con ese correo (si no, «ambiguo»: no se toca nada).
+ * Si la conexión ya tiene un estado del Club POSTERIOR (club_estado_at: aplicado por subcuenta, por correo o a mano por
+ * el admin), el pendiente viejo se descarta («pendiente_obsoleto»).
  */
-export async function aplicarPendientePorEmail(accountId, email, pg = poolReal) {
+async function aplicarPendienteEnTx(c, accountId, mail, via) {
+  const acc = (await c.query(
+    `SELECT id, location_id, ${ES_NUEVA} AS nueva, ${correoDelClubSQL('$2')} AS suyo FROM accounts WHERE id = $1`, [accountId, mail]
+  )).rows[0];
+  if (!acc || !acc.nueva || !acc.suyo) return null; // no es SU conexión nueva: el pendiente sigue esperando
+  const fila = (await c.query(
+    `DELETE FROM club_estado_pendiente WHERE clave = $1 RETURNING activo, motivo, ${VIGENTE} AS vigente, updated_at::text AS cuando`, [claveEmail(mail)]
+  )).rows[0];
+  if (!fila || !fila.vigente) return null;
+  const base = { location_id: acc.location_id, email: mail, activo: Boolean(fila.activo), motivo: fila.motivo };
+  const suyas = (await c.query(
+    `SELECT id FROM accounts WHERE ${ES_NUEVA} AND ${correoDelClubSQL('$1')} ORDER BY id`, [mail]
+  )).rows.map((x) => x.id);
+  if (suyas.length > 1) {
+    const detalle = { via, nota: 'ese correo es el correo del Club de varias conexiones nuevas: no se toca ninguna (manda el location_id o pon el club_email en la buena)' };
+    await insertarClubEvento(c, { ...base, resultado: 'ambiguo', cuentas: suyas, detalle });
+    return { ambiguo: true, ...base, cuentas: suyas, detalle };
+  }
+  // solo si ese estado es POSTERIOR al último que ya tiene la conexión (comparado en SQL, con microsegundos)
+  const aplicada = (await c.query(
+    `UPDATE accounts SET ai_enabled = $1, club_estado_at = $3::timestamptz
+      WHERE id = $2 AND (club_estado_at IS NULL OR club_estado_at < $3::timestamptz) RETURNING id`,
+    [base.activo, acc.id, fila.cuando]
+  )).rows.length > 0;
+  if (!aplicada) {
+    const detalle = { via, nota: 'la conexión ya tiene un estado del Club más reciente: el pendiente viejo no se aplica' };
+    await insertarClubEvento(c, { ...base, resultado: 'pendiente_obsoleto', cuentas: [acc.id], detalle });
+    return { obsoleto: true, ...base, cuentas: [acc.id], detalle };
+  }
+  const detalle = { via };
+  await insertarClubEvento(c, { ...base, resultado: 'pendiente_aplicado', cuentas: [acc.id], detalle });
+  return { ...base, cuentas: [acc.id], detalle };
+}
+
+// Lo que se devuelve fuera, y su anotación en el registro de eventos del panel (siempre FUERA de la transacción).
+async function cerrarPendiente(pg, r) {
+  if (!r) return null;
+  const kind = r.ambiguo ? 'club_estado_ambiguo' : r.obsoleto ? 'club_estado_pendiente_obsoleto' : 'club_estado_pendiente_aplicado';
+  await eventoLog(pg, kind, { location_id: r.location_id, email: r.email, activo: r.activo, motivo: r.motivo, cuentas: r.cuentas, ...r.detalle });
+  if (r.ambiguo) return { ambiguo: true };
+  if (r.obsoleto) return { obsoleto: true };
+  return { activo: r.activo };
+}
+
+/**
+ * Si hay un estado del Club PENDIENTE para este correo, se aplica a esta conexión cuando ese correo es su correo del Club
+ * (aplicarPendienteEnTx). Lo llama el SSO de la Custom Page (via 'correo_sso': GHL certifica que el usuario es de esa
+ * subcuenta; un miembro del equipo que entra en la subcuenta de otro cliente no le aplica su estado) y los otros enlaces.
+ * @returns {Promise<null | { activo: boolean } | { ambiguo: true } | { obsoleto: true }>}
+ */
+export async function aplicarPendientePorEmail(accountId, email, pg = poolReal, { via = 'correo_sso' } = {}) {
   const mail = String(email || '').trim().toLowerCase();
   if (!mail || !accountId) return null;
   // camino rápido (cada entrada por SSO pasa por aquí): sin pendiente para ese correo no se abre transacción
@@ -356,41 +446,86 @@ export async function aplicarPendientePorEmail(accountId, email, pg = poolReal) 
   if (!hay.rows[0]) return null;
   const r = await enTransaccion(pg, async (c) => {
     await c.query(CANDADO, [`club:${claveEmail(mail)}`]);
-    const acc = (await c.query(
-      `SELECT id, location_id, lower(owner_email) AS responsable, ${ES_NUEVA} AS nueva FROM accounts WHERE id = $1`, [accountId]
-    )).rows[0];
-    if (!acc || !acc.nueva || acc.responsable !== mail) return null; // no es SU conexión nueva: el pendiente sigue
-    const fila = (await c.query(
-      `DELETE FROM club_estado_pendiente WHERE clave = $1 RETURNING activo, motivo, ${VIGENTE} AS vigente, updated_at::text AS cuando`, [claveEmail(mail)]
-    )).rows[0];
-    if (!fila || !fila.vigente) return null;
-    const suyas = (await c.query(
-      `SELECT id FROM accounts WHERE ${ES_NUEVA} AND lower(owner_email) = $1 ORDER BY id`, [mail]
-    )).rows.map((x) => x.id);
-    if (suyas.length > 1) {
-      const detalle = { via: 'correo_sso', nota: 'el responsable tiene varias conexiones nuevas: no se toca ninguna (manda el location_id)' };
-      await insertarClubEvento(c, { location_id: acc.location_id, email: mail, activo: Boolean(fila.activo), motivo: fila.motivo, resultado: 'ambiguo', cuentas: suyas, detalle });
-      return { ambiguo: true, activo: Boolean(fila.activo), motivo: fila.motivo, location_id: acc.location_id, cuentas: suyas, detalle };
-    }
-    // solo si ese estado es POSTERIOR al último que ya tiene la conexión (comparado en SQL, con microsegundos)
-    const aplicada = (await c.query(
-      `UPDATE accounts SET ai_enabled = $1, club_estado_at = $3::timestamptz
-        WHERE id = $2 AND (club_estado_at IS NULL OR club_estado_at < $3::timestamptz) RETURNING id`,
-      [Boolean(fila.activo), acc.id, fila.cuando]
-    )).rows.length > 0;
-    if (!aplicada) {
-      const detalle = { via: 'correo_sso', nota: 'la conexión ya tiene un estado del Club más reciente: el pendiente viejo no se aplica' };
-      await insertarClubEvento(c, { location_id: acc.location_id, email: mail, activo: Boolean(fila.activo), motivo: fila.motivo, resultado: 'pendiente_obsoleto', cuentas: [acc.id], detalle });
-      return { obsoleto: true, activo: Boolean(fila.activo), motivo: fila.motivo, location_id: acc.location_id, cuentas: [acc.id], detalle };
-    }
-    const detalle = { via: 'correo_sso' };
-    await insertarClubEvento(c, { location_id: acc.location_id, email: mail, activo: Boolean(fila.activo), motivo: fila.motivo, resultado: 'pendiente_aplicado', cuentas: [acc.id], detalle });
-    return { activo: Boolean(fila.activo), motivo: fila.motivo, location_id: acc.location_id, cuentas: [acc.id], detalle };
+    return aplicarPendienteEnTx(c, accountId, mail, via);
   });
-  if (!r) return null;
-  const kind = r.ambiguo ? 'club_estado_ambiguo' : r.obsoleto ? 'club_estado_pendiente_obsoleto' : 'club_estado_pendiente_aplicado';
-  await eventoLog(pg, kind, { location_id: r.location_id, email: mail, activo: r.activo, motivo: r.motivo, cuentas: r.cuentas, ...r.detalle });
-  if (r.ambiguo) return { ambiguo: true };
-  if (r.obsoleto) return { obsoleto: true };
-  return { activo: r.activo };
+  return cerrarPendiente(pg, r);
+}
+
+/**
+ * Tras cambiar el club_email (o cualquier enlace), aplica los pendientes de los correos del Club que la conexión tiene
+ * AHORA (club_email; o, si no lo hay, responsable y correo de la subcuenta), del más viejo al más nuevo: si hubiera
+ * varios, se queda el ÚLTIMO. Devuelve un resultado por pendiente que se ha tratado.
+ */
+export async function aplicarPendientesDeConexion(accountId, pg = poolReal, { via = 'club_email' } = {}) {
+  const acc = (await pg.query(`SELECT club_email, owner_email, ghl_location_email FROM accounts WHERE id = $1`, [accountId])).rows[0];
+  if (!acc) return [];
+  const correos = acc.club_email
+    ? [acc.club_email]
+    : [...new Set([String(acc.owner_email || '').trim().toLowerCase(), acc.ghl_location_email || ''].filter(Boolean))];
+  if (!correos.length) return [];
+  const pendientes = (await pg.query(
+    `SELECT clave FROM club_estado_pendiente WHERE clave = ANY($1::text[]) ORDER BY updated_at ASC, clave ASC`,
+    [correos.map(claveEmail)]
+  )).rows;
+  const res = [];
+  for (const p of pendientes) {
+    const r = await aplicarPendientePorEmail(accountId, p.clave.slice('email:'.length), pg, { via });
+    if (r) res.push(r);
+  }
+  return res;
+}
+
+// ── Correo de la SUBCUENTA en GHL (migración 061) ───────────────────────────────────────────────────────────────────
+// Se lee de GHL (GET /locations/{id}, con el permiso locations.readonly que Hermes ya pide) al crear o reconectar una
+// conexión del Club (services/correoSubcuenta.js). Solo en conexiones del Club y solo la PRIMERA vez: si ya lo tiene, no
+// se pide a GHL; si GHL dice otro, NO se pisa (el cliente puede cambiarlo en su subcuenta: si se siguiera, podría
+// apuntar su conexión al correo de otro comprador). El admin lo corrige con club_email.
+
+/** ¿Hay que pedir a GHL el correo de esta subcuenta? (conexión del Club que aún no lo tiene). Nunca lanza. */
+export async function quiereCorreoSubcuenta(accountId, pg = poolReal) {
+  try {
+    const r = await pg.query(`SELECT 1 FROM accounts WHERE id = $1 AND ${ES_NUEVA} AND COALESCE(ghl_location_email, '') = ''`, [accountId]);
+    return Boolean(r.rows[0]);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Guarda el correo de la subcuenta (si la conexión es del Club y aún no lo tenía) y aplica el estado del Club que
+ * estuviera PENDIENTE para ese correo. Nunca lanza: una instalación o un SSO no se rompen por esto.
+ * @returns {Promise<{ estado: 'guardado'|'ya_estaba'|'distinto'|'anterior_al_club'|'no_existe'|'sin_correo'|'error', pendiente?: object|null }>}
+ */
+export async function vincularCorreoSubcuenta({ accountId, correo, origen = '' }, pg = poolReal) {
+  const mail = normalizarCorreo(correo);
+  if (!mail) return { estado: 'sin_correo' };
+  let r;
+  try {
+    r = await enTransaccion(pg, async (c) => {
+      // mismo candado que el interruptor para ese correo: un estado que llegue a la vez no se pierde ni se aplica dos veces
+      await c.query(CANDADO, [`club:${claveEmail(mail)}`]);
+      const acc = (await c.query(
+        `SELECT id, ghl_location_email, ${ES_NUEVA} AS nueva FROM accounts WHERE id = $1 FOR UPDATE`, [accountId]
+      )).rows[0];
+      if (!acc) return { estado: 'no_existe' };
+      if (!acc.nueva) return { estado: 'anterior_al_club' };
+      if (acc.ghl_location_email) return { estado: acc.ghl_location_email === mail ? 'ya_estaba' : 'distinto', guardado: acc.ghl_location_email };
+      await c.query(`UPDATE accounts SET ghl_location_email = $2, ghl_location_email_at = now() WHERE id = $1`, [acc.id, mail]);
+      return { estado: 'guardado', pendiente: await aplicarPendienteEnTx(c, acc.id, mail, 'correo_subcuenta') };
+    });
+  } catch (err) {
+    await eventoLog(pg, 'club_correo_subcuenta_error', { account: accountId, origen, error: String(err?.message || err).slice(0, 200) });
+    return { estado: 'error' };
+  }
+  if (r.estado === 'guardado') {
+    await eventoLog(pg, 'club_correo_subcuenta_guardado', { account: accountId, email: mail, origen });
+    return { estado: 'guardado', pendiente: await cerrarPendiente(pg, r.pendiente) };
+  }
+  if (r.estado === 'distinto') {
+    await eventoLog(pg, 'club_correo_subcuenta_distinto', {
+      account: accountId, guardado: r.guardado, en_ghl: mail, origen,
+      nota: 'GHL tiene otro correo en la subcuenta: no se cambia solo (si el bueno es otro, ponlo en «Correo del Club» de la conexión)',
+    });
+  }
+  return { estado: r.estado };
 }

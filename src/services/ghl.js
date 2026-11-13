@@ -288,11 +288,23 @@ export async function listLocationUsers(account, locationId) {
     .filter((u) => u.email.includes('@'));
 }
 
-export async function getLocationName(account, locationId) {
+// 🏛️ Nombre y CORREO de la subcuenta (GET /locations/{id}, permiso locations.readonly, que Hermes ya pide). NUNCA lanza:
+// { ok: true, name, email } (email = '' si GHL no tiene uno) o { ok: false, status, error, sin_token }: sin_token = la
+// subcuenta aún no tiene token (app sin instalar) y no se llegó a preguntar a GHL; si no, GHL respondió con un error
+// (p. ej. 401/403 por falta de permiso).
+export async function getLocationInfo(account, locationId, { timeoutMs = 30_000 } = {}) {
   try {
-    const data = await ghlApi(account, 'GET', `/locations/${locationId}`, { version: V_CONTACTS });
-    return data?.location?.name || '';
-  } catch {
-    return '';
+    const data = await ghlApi(account, 'GET', `/locations/${encodeURIComponent(locationId)}`, { version: V_CONTACTS, timeoutMs });
+    const loc = data?.location || {};
+    return { ok: true, name: String(loc.name || ''), email: typeof loc.email === 'string' ? loc.email.trim().toLowerCase() : '' };
+  } catch (err) {
+    // los errores de tokenFor (sin token, sin refrescar) no traen cuerpo de GHL; los de la API, sí
+    const sinToken = err instanceof GhlError && err.body === undefined;
+    return { ok: false, status: Number(err?.status) || null, error: String(err?.message || err).slice(0, 300), sin_token: sinToken };
   }
+}
+
+export async function getLocationName(account, locationId) {
+  const info = await getLocationInfo(account, locationId);
+  return info.ok ? info.name : '';
 }

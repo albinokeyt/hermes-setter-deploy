@@ -8,9 +8,14 @@ import {
   promptSinRellenar, sanearPlantilla,
 } from '../src/services/club.js';
 import clubRoutes from '../src/routes/club.js';
+// las funciones nuevas de la fase C se leen del módulo en tiempo de ejecución (si faltan, solo fallan sus pruebas)
+import * as club from '../src/services/club.js';
 
 const SECRETO = 'x'.repeat(48);
-const SQL_059 = fs.readFileSync(new URL('../src/migrations/059_club_conexiones_seguras.sql', import.meta.url), 'utf8');
+// la 059 y TODAS las siguientes (060 devoluciones, 061 correos del Club…): el esquema real de producción
+const DIR_MIG = new URL('../src/migrations/', import.meta.url);
+const SQL_DESDE_059 = fs.readdirSync(DIR_MIG).filter((f) => f.endsWith('.sql') && f >= '059').sort()
+  .map((f) => fs.readFileSync(new URL(f, DIR_MIG), 'utf8'));
 
 // conexión «antigua» (anterior al Club) creada ANTES de aplicar la 059
 async function baseConAntigua() {
@@ -21,7 +26,7 @@ async function baseConAntigua() {
     INSERT INTO setters (account_id, name, is_default) VALUES (1, 'Setter principal', true);
     SELECT setval('accounts_id_seq', 100);
   `);
-  await pg.exec(SQL_059);
+  for (const sql of SQL_DESDE_059) await pg.exec(sql);
   return pg;
 }
 const ai = async (pg, id) => (await pg.query(`SELECT ai_enabled FROM accounts WHERE id = $1`, [id])).rows[0].ai_enabled;
@@ -295,6 +300,189 @@ test('club por location_id: una conexión ANTERIOR al Club está protegida (p. e
   await pg.close();
 });
 
+// ── Fase C · 4) cliente sin location_id: el correo del Club también es el de la subcuenta en GHL o el que pone el admin ──
+const SOPORTE = 'soporte@departamentodisruptivo.com';
+const pendientes = async (pg) => (await pg.query(`SELECT clave, activo FROM club_estado_pendiente ORDER BY clave`)).rows;
+const ultimoEvento = async (pg) => (await pg.query(`SELECT resultado, activo, cuentas, detalle FROM club_eventos ORDER BY id DESC LIMIT 1`)).rows[0];
+
+test('cliente sin location_id: soporte abrió Hermes primero y el comprador es el correo de la subcuenta → la baja y el alta por correo llegan', async () => {
+  const pg = await baseConAntigua();
+  const { account } = await crearConexionNueva({ name: 'N', locationId: 'locSoporte01' }, pg);
+  await reclamar(pg, account.id, SOPORTE); // el primer usuario que entró por SSO fue soporte
+  assert.equal(await ai(pg, account.id), true, 'nace encendida (migración 045)');
+  // antes de enlazar el correo de la subcuenta: la baja del comprador no encuentra nada (el fallo de la fase B)
+  let r = await aplicarEstadoClub({ email: 'comprador@x.com', activo: false, motivo: 'impago' }, pg);
+  assert.equal(r.code, 202);
+  assert.equal(r.body.resultado, 'pendiente');
+  // Hermes lee el correo de la subcuenta en GHL (al crear o reconectar) → se enlaza y se aplica ese pendiente
+  const v = await club.vincularCorreoSubcuenta({ accountId: account.id, correo: ' Comprador@X.com ', origen: 'oauth' }, pg);
+  assert.equal(v.estado, 'guardado');
+  assert.deepEqual(v.pendiente, { activo: false });
+  assert.equal(await ai(pg, account.id), false, 'la baja que esperaba se aplica al enlazar');
+  assert.equal((await pg.query(`SELECT ghl_location_email FROM accounts WHERE id = $1`, [account.id])).rows[0].ghl_location_email, 'comprador@x.com');
+  // a partir de ahí, el alta y la baja por correo van directas a SU conexión (200)
+  r = await aplicarEstadoClub({ email: 'comprador@x.com', activo: true, motivo: 'pago recuperado' }, pg);
+  assert.equal(r.code, 200);
+  assert.deepEqual(r.body.cuentas, [account.id]);
+  assert.equal(await ai(pg, account.id), true);
+  assert.deepEqual(await pendientes(pg), [], 'no queda nada colgado');
+  await pg.close();
+});
+
+test('pendientes: lo que llegó por correo ANTES de existir la conexión se aplica al enlazarla (el ÚLTIMO estado) y queda como aplicado', async () => {
+  const pg = await baseConAntigua();
+  await aplicarEstadoClub({ email: 'compra@x.com', activo: true, motivo: 'alta' }, pg); // 202 pendiente
+  await aplicarEstadoClub({ email: 'compra@x.com', activo: false, motivo: 'baja' }, pg); // 202: pisa al anterior
+  assert.deepEqual(await pendientes(pg), [{ clave: 'email:compra@x.com', activo: false }], 'se guarda solo el último');
+  const { account } = await crearConexionNueva({ name: 'N', locationId: 'locPend00001' }, pg);
+  await reclamar(pg, account.id, SOPORTE);
+  const v = await club.vincularCorreoSubcuenta({ accountId: account.id, correo: 'compra@x.com', origen: 'sso' }, pg);
+  assert.deepEqual(v.pendiente, { activo: false });
+  assert.equal(await ai(pg, account.id), false, 'manda la baja (la última)');
+  assert.deepEqual(await pendientes(pg), [], 'consumido');
+  const ev = await ultimoEvento(pg);
+  assert.equal(ev.resultado, 'pendiente_aplicado', 'marcado como aplicado en el registro durable (club_eventos)');
+  assert.equal(ev.activo, false);
+  assert.deepEqual(ev.cuentas, [account.id]);
+  assert.equal(ev.detalle.via, 'correo_subcuenta');
+  const log = (await pg.query(`SELECT payload FROM webhook_log WHERE kind = 'club_estado_pendiente_aplicado' ORDER BY id DESC LIMIT 1`)).rows[0];
+  assert.equal(log.payload.via, 'correo_subcuenta');
+  await pg.close();
+});
+
+test('pendientes: también al poner el admin el correo del Club (club_email); y club_email MANDA sobre el responsable y el de la subcuenta', async () => {
+  const pg = await baseConAntigua();
+  const { account: a } = await crearConexionNueva({ name: 'A', locationId: 'locClubE0001' }, pg);
+  await reclamar(pg, a.id, SOPORTE);
+  await club.vincularCorreoSubcuenta({ accountId: a.id, correo: 'info@empresa.com' }, pg); // la subcuenta tiene OTRO correo
+  let r = await aplicarEstadoClub({ email: 'personal@gmail.com', activo: false, motivo: 'baja' }, pg);
+  assert.equal(r.body.resultado, 'pendiente', 'el correo de la compra no es el de la subcuenta');
+  // lo que hace el PUT del admin (routes/accounts.js): guarda club_email y aplica los pendientes de la conexión
+  await pg.query(`UPDATE accounts SET club_email = 'personal@gmail.com' WHERE id = $1`, [a.id]);
+  assert.deepEqual(await club.aplicarPendientesDeConexion(a.id, pg, { via: 'club_email' }), [{ activo: false }]);
+  assert.equal(await ai(pg, a.id), false);
+  assert.equal((await ultimoEvento(pg)).detalle.via, 'club_email');
+  // club_email manda: ni el correo de la subcuenta ni el del responsable encuentran ya esta conexión
+  r = await aplicarEstadoClub({ email: 'info@empresa.com', activo: true, motivo: 'x' }, pg);
+  assert.equal(r.body.resultado, 'pendiente');
+  r = await aplicarEstadoClub({ email: SOPORTE, activo: true, motivo: 'x' }, pg);
+  assert.equal(r.body.resultado, 'pendiente');
+  assert.equal(await ai(pg, a.id), false);
+  r = await aplicarEstadoClub({ email: 'personal@gmail.com', activo: true, motivo: 'pago recuperado' }, pg);
+  assert.equal(r.code, 200);
+  assert.deepEqual(r.body.cuentas, [a.id]);
+  assert.equal(await ai(pg, a.id), true);
+  // un pendiente de un correo que ya no es suyo no se le aplica
+  assert.deepEqual(await club.aplicarPendientesDeConexion(a.id, pg), []);
+  assert.equal(await ai(pg, a.id), true);
+  await pg.close();
+});
+
+test('por correo: el mismo correo en DOS conexiones del Club (en cualquiera de los tres campos) → ambiguo, no se toca nada', async () => {
+  const pg = await baseConAntigua();
+  const a = (await crearConexionNueva({ name: 'A', locationId: 'locAmbig0001' }, pg)).account;
+  const b = (await crearConexionNueva({ name: 'B', locationId: 'locAmbig0002' }, pg)).account;
+  await club.vincularCorreoSubcuenta({ accountId: a.id, correo: 'x@x.com' }, pg);
+  await reclamar(pg, b.id, 'x@x.com');
+  let r = await aplicarEstadoClub({ email: 'x@x.com', activo: false, motivo: 'baja' }, pg);
+  assert.equal(r.code, 202);
+  assert.equal(r.body.resultado, 'ambiguo');
+  assert.equal(await ai(pg, a.id), true);
+  assert.equal(await ai(pg, b.id), true);
+  // el admin desambigua con club_email en A → ya solo queda B
+  await pg.query(`UPDATE accounts SET club_email = 'a@x.com' WHERE id = $1`, [a.id]);
+  r = await aplicarEstadoClub({ email: 'x@x.com', activo: false, motivo: 'baja' }, pg);
+  assert.equal(r.code, 200);
+  assert.deepEqual(r.body.cuentas, [b.id]);
+  assert.equal(await ai(pg, a.id), true);
+  assert.equal(await ai(pg, b.id), false);
+  // un pendiente cuyo correo está en dos conexiones al enlazar: ambiguo, no toca ninguna
+  const c = (await crearConexionNueva({ name: 'C', locationId: 'locAmbig0003' }, pg)).account;
+  const d = (await crearConexionNueva({ name: 'D', locationId: 'locAmbig0004' }, pg)).account;
+  await aplicarEstadoClub({ email: 'dos@x.com', activo: false, motivo: 'baja' }, pg); // pendiente
+  await reclamar(pg, c.id, 'dos@x.com');
+  const v = await club.vincularCorreoSubcuenta({ accountId: d.id, correo: 'dos@x.com' }, pg);
+  assert.deepEqual(v.pendiente, { ambiguo: true });
+  assert.equal(await ai(pg, c.id), true);
+  assert.equal(await ai(pg, d.id), true);
+  await pg.close();
+});
+
+test('correo de la subcuenta: solo en conexiones del Club, en minúsculas, NO se pisa (queda el primero) y nunca lanza', async () => {
+  const pg = await baseConAntigua();
+  // conexión ANTERIOR al Club: ni se pide ni se guarda
+  assert.equal(await club.quiereCorreoSubcuenta(1, pg), false);
+  assert.equal((await club.vincularCorreoSubcuenta({ accountId: 1, correo: 'cliente@x.com' }, pg)).estado, 'anterior_al_club');
+  assert.equal((await pg.query(`SELECT ghl_location_email FROM accounts WHERE id = 1`)).rows[0].ghl_location_email, null);
+  const { account } = await crearConexionNueva({ name: 'N', locationId: 'locCorreo001' }, pg);
+  assert.equal(await club.quiereCorreoSubcuenta(account.id, pg), true);
+  assert.equal((await club.vincularCorreoSubcuenta({ accountId: account.id, correo: 'no-es-un-correo' }, pg)).estado, 'sin_correo');
+  assert.equal((await club.vincularCorreoSubcuenta({ accountId: account.id, correo: '' }, pg)).estado, 'sin_correo');
+  assert.equal((await club.vincularCorreoSubcuenta({ accountId: account.id, correo: 'Primero@X.com' }, pg)).estado, 'guardado');
+  assert.equal(await club.quiereCorreoSubcuenta(account.id, pg), false, 'ya lo tiene: no se vuelve a pedir a GHL');
+  assert.equal((await club.vincularCorreoSubcuenta({ accountId: account.id, correo: 'primero@x.com' }, pg)).estado, 'ya_estaba');
+  // si luego el cliente cambia el correo de su subcuenta en GHL, NO se sigue solo (si no, podría quedarse con el estado
+  // del Club de otra persona): queda el primero y se anota para soporte
+  const dist = await club.vincularCorreoSubcuenta({ accountId: account.id, correo: 'otro@x.com' }, pg);
+  assert.equal(dist.estado, 'distinto');
+  const fila = (await pg.query(`SELECT ghl_location_email, ghl_location_email_at FROM accounts WHERE id = $1`, [account.id])).rows[0];
+  assert.equal(fila.ghl_location_email, 'primero@x.com');
+  assert.ok(fila.ghl_location_email_at);
+  assert.ok((await pg.query(`SELECT 1 FROM webhook_log WHERE kind = 'club_correo_subcuenta_distinto'`)).rows.length);
+  assert.equal((await club.vincularCorreoSubcuenta({ accountId: 999999, correo: 'a@b.com' }, pg)).estado, 'no_existe');
+  assert.equal(await club.quiereCorreoSubcuenta(999999, pg), false);
+  // la base rota no tumba la conexión: devuelve un estado de error
+  const rota = { ...pg, query: () => Promise.reject(new Error('caída')), connect: async () => { throw new Error('caída'); } };
+  assert.equal((await club.vincularCorreoSubcuenta({ accountId: account.id, correo: 'a@b.com' }, rota)).estado, 'error');
+  assert.equal(await club.quiereCorreoSubcuenta(account.id, rota), false);
+  await pg.close();
+});
+
+test('club_email: validación (minúsculas, correo válido o vacío) y la base no admite dos conexiones con el mismo', async () => {
+  const pg = await baseConAntigua();
+  assert.deepEqual(club.sanearClubEmail(' Compra@Gmail.COM '), { ok: true, valor: 'compra@gmail.com' });
+  assert.deepEqual(club.sanearClubEmail(''), { ok: true, valor: null });
+  assert.deepEqual(club.sanearClubEmail(null), { ok: true, valor: null });
+  for (const malo of ['no-es-correo', 'a@b', 'a b@c.com', `${'x'.repeat(250)}@x.com`, '{{contact.email}}', 42, ['a@b.com']]) {
+    assert.equal(club.sanearClubEmail(malo).ok, false, String(malo));
+  }
+  const a = (await crearConexionNueva({ name: 'A', locationId: 'locUnico0001' }, pg)).account;
+  const b = (await crearConexionNueva({ name: 'B', locationId: 'locUnico0002' }, pg)).account;
+  await pg.query(`UPDATE accounts SET club_email = 'uno@x.com' WHERE id = $1`, [a.id]);
+  await assert.rejects(pg.query(`UPDATE accounts SET club_email = 'uno@x.com' WHERE id = $1`, [b.id]), /duplicate|unique|único/i);
+  await assert.rejects(pg.query(`UPDATE accounts SET club_email = 'Mayus@x.com' WHERE id = $1`, [b.id]), /check|minusculas|violates/i);
+  await pg.query(`UPDATE accounts SET club_email = NULL WHERE id = $1`, [a.id]);
+  await pg.query(`UPDATE accounts SET club_email = 'uno@x.com' WHERE id = $1`, [b.id]);
+  await pg.close();
+});
+
+test('enlazar el correo y el interruptor a la vez (mismo correo): nunca se pierde el estado ni queda pendiente colgado', async () => {
+  for (const orden of ['enlace_primero', 'estado_primero']) {
+    const pg = await baseConAntigua();
+    const { account } = await crearConexionNueva({ name: 'N', locationId: `locVez${orden.slice(0, 6)}` }, pg);
+    const enlace = () => club.vincularCorreoSubcuenta({ accountId: account.id, correo: 'vez@x.com' }, pg);
+    const estado = () => aplicarEstadoClub({ email: 'vez@x.com', activo: false, motivo: 'baja' }, pg);
+    await Promise.all(orden === 'enlace_primero' ? [enlace(), estado()] : [estado(), enlace()]);
+    assert.equal(await ai(pg, account.id), false, orden);
+    assert.deepEqual(await pendientes(pg), [], orden);
+    await pg.close();
+  }
+});
+
+test('SSO: el pendiente del COMPRADOR se aplica cuando entra él aunque el responsable sea soporte (correo de la subcuenta)', async () => {
+  const pg = await baseConAntigua();
+  const { account } = await crearConexionNueva({ name: 'N', locationId: 'locSSO000001' }, pg);
+  await reclamar(pg, account.id, SOPORTE);
+  await club.vincularCorreoSubcuenta({ accountId: account.id, correo: 'comprador2@x.com' }, pg);
+  await aplicarEstadoClub({ location_id: 'locSSO000001', activo: false, motivo: 'impago' }, pg);
+  // un pendiente MÁS NUEVO del comprador que no pudo aplicarse directo (p. ej. llegó cuando había otra conexión con su correo)
+  await pg.query(`INSERT INTO club_estado_pendiente (clave, activo, motivo, updated_at) VALUES ('email:comprador2@x.com', true, 'pago recuperado', now() + interval '1 second')`);
+  assert.equal(await aplicarPendientePorEmail(account.id, 'alguien@equipo.com', pg), null, 'otro usuario del equipo: no es el correo del Club');
+  assert.deepEqual(await aplicarPendientePorEmail(account.id, 'comprador2@x.com', pg), { activo: true });
+  assert.equal(await ai(pg, account.id), true);
+  await pg.close();
+});
+
 test('validación del cuerpo', () => {
   assert.equal(validarCuerpoClub({ location_id: 'abc123def', activo: 'true' }).datos.activo, true);
   assert.equal(validarCuerpoClub({ email: 'A@B.com', activo: false }).datos.email, 'a@b.com');
@@ -380,8 +568,9 @@ test('endpoint: 503 sin secreto, 401 con secreto malo, 400 cuerpo malo, 200 bien
 
 test('la ruta pública exacta en la sesión: solo /api/club/estado (y /api/club/devolucion) se saltan el login', async () => {
   const src = fs.readFileSync(new URL('../src/lib/session.js', import.meta.url), 'utf8');
-  assert.match(src, /esRutaPublica\(url\)/, 'el authHook usa lib/rutas.js');
-  assert.match(src, /rutaDeUrl\(req\.url\)/, 'y mira la ruta, no el texto (forma absoluta)');
+  assert.match(src, /esRutaPublica\(ruta\)/, 'el authHook usa lib/rutas.js');
+  assert.match(src, /if \(!crudo\.startsWith\('\/'\)\)/, 'y corta con 400 lo que no empieza por «/» (forma absoluta)');
+  assert.match(src, /req\.routeOptions\?\.url/, 'y mira también la ruta que ha casado el router');
   assert.doesNotMatch(src, /'\/api\/club\//, 'ninguna ruta del Club por prefijo en la sesión');
   const { esRutaPublica } = await import('../src/lib/rutas.js');
   assert.equal(esRutaPublica('/api/club/estado'), true);

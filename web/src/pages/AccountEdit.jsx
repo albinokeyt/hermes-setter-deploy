@@ -573,6 +573,25 @@ export default function AccountEdit() {
           </Card>
 
           <Card className="space-y-3 p-6">
+            <h3 className="text-sm font-bold text-slate-700">🏛️ Club de Sistemas</h3>
+            {acc.es_club ? (
+              <>
+                <p className="text-xs text-slate-500">Los workflows del Club (alta, baja, impago y devoluciones) solo mandan el <b>correo de la compra</b>. Hermes reconoce esta conexión por ese correo si es el del <b>responsable</b> o el <b>correo de la subcuenta en GHL</b> (se lee solo al conectar). Si no coincide con ninguno (p. ej. soporte abrió Hermes primero y la subcuenta tiene otro correo), escríbelo aquí: entonces <b>manda este</b> y los otros dos dejan de contar.</p>
+                <Input label="Correo del Club (el de la compra)" type="email" className="max-w-md" placeholder="vacío = responsable o correo de la subcuenta"
+                  value={acc.club_email ?? ''}
+                  onChange={(e) => set({ club_email: e.target.value })}
+                  hint="Solo admin. Al guardarlo se aplica el alta o la baja que estuviera esperando por ese correo." />
+                <div className="space-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  <div>👤 Responsable (primer usuario que entró por SSO): <b>{acc.owner_email || '—'}</b>{acc.club_email ? ' · no cuenta: manda el correo del Club' : ''}</div>
+                  <div>🏢 Correo de la subcuenta en GHL: <b>{acc.ghl_location_email || 'sin leer'}</b>{acc.ghl_location_email_at ? ` (leído el ${new Date(acc.ghl_location_email_at).toLocaleDateString('es-ES')})` : ''}{acc.club_email && acc.ghl_location_email ? ' · no cuenta: manda el correo del Club' : ''}</div>
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-slate-500">Conexión anterior al Club de Sistemas: el interruptor del Club y las devoluciones no la tocan.</p>
+            )}
+          </Card>
+
+          <Card className="space-y-3 p-6">
             <h3 className="text-sm font-bold text-slate-700">🛒 Compras de GHL</h3>
             <p className="text-xs text-slate-500">Las compras llegan solas por el evento de pedidos de la app: el lead pasa a <b>Comprador</b> con el importe y los productos. Este botón trae el histórico de los últimos 90 días y completa los productos que falten; se puede repetir sin duplicar nada.</p>
             <Button variant="secondary" loading={sincCompras} onClick={sincronizarCompras}>🛒 Sincronizar compras (90 días)</Button>

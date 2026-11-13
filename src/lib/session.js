@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { redis } from './redis.js';
 import { one, q } from '../db.js';
 import { config } from '../config.js';
-import { esRutaPublica, rutaDeUrl } from './rutas.js';
+import { esRutaPublica, rutaSinQuery } from './rutas.js';
 
 const SESSION_TTL = 60 * 60 * 24 * 7;
 
@@ -55,10 +55,23 @@ export async function destroySession(token) {
 
 export function authHook() {
   return async (req, reply) => {
-    const url = rutaDeUrl(req.url); // «http://host/api/…» → «/api/…» (lib/rutas.js)
-    if (!url.startsWith('/api/')) return;
-    // rutas públicas (lib/rutas.js): las del Club, EXACTAS (sin la query); las demás, por prefijo
-    if (esRutaPublica(url)) return;
+    const crudo = String(req.url || '');
+    // 🛡️ Destino que no empieza por «/»: forma absoluta («GET http://host?/api/… HTTP/1.1», válida en HTTP/1.1) u
+    // «OPTIONS *». Fastify la enruta como si fuera la ruta de detrás del host (¡incluso pasada la «?»!), pero el texto
+    // no empieza por /api/ y el login se la saltaba. Detrás de Traefik nunca llega así: se corta (400) ANTES de decidir.
+    if (!crudo.startsWith('/')) {
+      reply.code(400).send({ error: 'ruta_no_valida' });
+      return reply;
+    }
+    const ruta = rutaSinQuery(crudo);
+    // La ruta que ha CASADO el router, ya decodificada: «/%61pi/accounts» casa con «/api/accounts» aunque el texto no
+    // empiece por /api/. Si cualquiera de las dos es de la API, manda la regla de la API (falla cerrado).
+    const patron = typeof req.routeOptions?.url === 'string' ? req.routeOptions.url : '';
+    const patronApi = patron.startsWith('/api/');
+    if (!ruta.startsWith('/api/') && !patronApi) return;
+    // rutas públicas (lib/rutas.js): las del Club EXACTAS; las demás, con límite de segmento; los webhooks, por prefijo.
+    // Tienen que serlo el texto Y la ruta casada (un «/%61pi/webhooks/…» pide sesión: GHL nunca codifica así).
+    if (esRutaPublica(ruta) && (!patronApi || esRutaPublica(patron))) return;
     const token = req.cookies?.hermes_session;
     const raw = token ? await redis.get(`sess:${token}`) : null;
     if (!raw) {

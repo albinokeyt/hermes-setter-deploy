@@ -9,6 +9,7 @@ import { redis } from '../lib/redis.js';
 import { WINDOWED_CHANNELS } from '../config.js';
 import { sanearPalabrasNombre } from '../lib/tags.js';
 import { sanearTope } from '../services/tope.js';
+import { DESDE_SQL, sanearClubEmail, aplicarPendientesDeConexion } from '../services/club.js';
 
 // URL de comentarios: FIJA y LIMPIA, la misma para todas las conexiones (enruta por location.id).
 const COMMENT_WEBHOOK_URL = `${config.appBaseUrl}/api/webhooks/comentarios`;
@@ -23,6 +24,7 @@ const ADMIN_EDITABLE = [
   'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode', 'ctas',
   'insertion_wait_seconds', 'insertion_idle_hours', 'lead_magnets', 'excluded_name_words',
   'tope_mensual_usd', // 💸 tope de gasto mensual (USD): SOLO admin (services/tope.js)
+  'club_email', // 🏛️ correo del Club (el de la compra): SOLO admin (services/club.js · correoDelClubSQL)
 ];
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
@@ -76,7 +78,9 @@ export function sanearLeadMagnets(valor) {
 function stripSecrets(row, req) {
   if (req.auth?.role === 'admin') return row;
   // el token crudo de comentarios no se expone; solo la URL ya montada (comment_webhook_url)
-  const { pit_token, webhook_token, webhook_url, portal_key, portal_url, comment_token, ...safe } = row;
+  // 🏛️ los correos del Club son cosa del admin y soporte: el panel del cliente no los enseña
+  const { pit_token, webhook_token, webhook_url, portal_key, portal_url, comment_token,
+    club_email, ghl_location_email, ghl_location_email_at, es_club, ...safe } = row;
   return safe;
 }
 
@@ -103,7 +107,8 @@ export default async function accountRoutes(app) {
     if (!(await canAccessAccount(req, req.params.id))) return reply.code(403).send({ error: 'Sin acceso a esta cuenta' });
     const row = await one(`
       SELECT a.*, p.name AS provider_name,
-        EXISTS(SELECT 1 FROM ghl_tokens t WHERE t.location_id = a.location_id) AS oauth_connected
+        EXISTS(SELECT 1 FROM ghl_tokens t WHERE t.location_id = a.location_id) AS oauth_connected,
+        COALESCE(a.created_at >= ${DESDE_SQL}, false) AS es_club
       FROM accounts a LEFT JOIN providers p ON p.id = a.provider_id WHERE a.id = $1`, [req.params.id]);
     if (!row) return reply.code(404).send({ error: 'No existe' });
     row.webhook_url = `${config.appBaseUrl}/api/webhooks/workflow/${row.webhook_token}`;
@@ -142,10 +147,28 @@ export default async function accountRoutes(app) {
       tope = sanearTope(b.tope_mensual_usd);
       if (!tope.ok) return reply.code(400).send({ error: tope.error });
     }
+    // 🏛️ correo del Club (solo admin): también se valida antes de escribir nada. Solo se escribe si CAMBIA (el panel
+    // manda la ficha entera en cada «Guardar»).
+    let clubEmail = null; // { antes, ahora } si cambia
+    if (editable.includes('club_email') && 'club_email' in b) {
+      const c = sanearClubEmail(b.club_email);
+      if (!c.ok) return reply.code(400).send({ error: c.error });
+      const actual = existing.club_email || null;
+      if (c.valor !== actual) {
+        if (c.valor) {
+          const club = await one(`SELECT COALESCE(created_at >= ${DESDE_SQL}, false) AS es_club FROM accounts WHERE id = $1`, [existing.id]);
+          if (!club?.es_club) return reply.code(400).send({ error: 'Esta conexión es anterior al Club de Sistemas: el correo del Club no se usa en ella.' });
+          const otra = await one(`SELECT id, name FROM accounts WHERE club_email = $1 AND id <> $2`, [c.valor, existing.id]);
+          if (otra) return reply.code(409).send({ error: `Ese correo del Club ya está en la conexión #${otra.id} (${otra.name}): quítalo de allí primero.` });
+        }
+        clubEmail = { antes: actual, ahora: c.valor };
+      }
+    }
     const sets = [];
     const vals = [];
     for (const field of editable) {
       if (!(field in b)) continue;
+      if (field === 'club_email' && !clubEmail) continue; // sin cambios: no se reescribe
       let value = JSON_FIELDS.has(field) ? JSON.stringify(b[field]) : b[field] === '' && field === 'location_id' ? null : b[field];
       if (field === 'ctas') value = JSON.stringify(sanearCtas(b[field]));
       if (field === 'lead_magnets') value = JSON.stringify(sanearLeadMagnets(b[field]));
@@ -153,8 +176,13 @@ export default async function accountRoutes(app) {
       if (field === 'insertion_wait_seconds') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 3600);
       if (field === 'insertion_idle_hours') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 720);
       if (field === 'tope_mensual_usd') value = tope.valor;
+      if (field === 'club_email') value = clubEmail.ahora;
       vals.push(value);
       sets.push(`${field} = $${vals.length}${JSON_FIELDS.has(field) ? '::jsonb' : ''}`);
+      // 🏛️ si la conexión cambia de subcuenta, el correo de la subcuenta anterior ya no vale (se leerá al reconectar)
+      if (field === 'location_id' && String(value ?? '') !== String(existing.location_id ?? '')) {
+        sets.push('ghl_location_email = NULL', 'ghl_location_email_at = NULL');
+      }
       // 🏛️ el admin enciende/apaga la IA a mano: esa decisión es «de ahora» para el interruptor del Club (un estado
       // pendiente más viejo ya no la pisará). En el SET, «ai_enabled» de la derecha es el valor ANTERIOR.
       if (field === 'ai_enabled') {
@@ -163,10 +191,27 @@ export default async function accountRoutes(app) {
     }
     if (!sets.length) return stripSecrets(existing, req);
     vals.push(existing.id);
-    const row = await one(`UPDATE accounts SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`, vals);
+    let row;
+    try {
+      row = await one(`UPDATE accounts SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`, vals);
+    } catch (err) {
+      // dos admins poniendo el mismo correo del Club a la vez: lo para el índice único (migración 061)
+      if (err?.code === '23505' && /club_email/.test(String(err.constraint || err.message))) {
+        return reply.code(409).send({ error: 'Ese correo del Club ya está en otra conexión: quítalo de allí primero.' });
+      }
+      throw err;
+    }
     const antes = existing.tope_mensual_usd === null || existing.tope_mensual_usd === undefined ? null : Number(existing.tope_mensual_usd);
     if (tope && antes !== tope.valor) {
       await logEvent('tope_mensual_cambiado', { account: existing.id, antes, ahora: tope.valor }).catch(() => {});
+    }
+    if (clubEmail) {
+      await logEvent('club_email_cambiado', { account: existing.id, ...clubEmail }).catch(() => {});
+      // 🏛️ la conexión queda enlazada a ese correo: si el interruptor del Club dejó un estado PENDIENTE para él (alta,
+      // baja, impago), se aplica ahora (el último). Best effort: el cambio ya está guardado.
+      const aplicados = await aplicarPendientesDeConexion(existing.id, undefined, { via: 'club_email' })
+        .catch((err) => { logEvent('club_pendiente_error', { account: existing.id, error: String(err?.message || err).slice(0, 160) }).catch(() => {}); return []; });
+      if (aplicados.length) row = (await one(`SELECT * FROM accounts WHERE id = $1`, [existing.id])) || row;
     }
     return stripSecrets(row, req);
   });

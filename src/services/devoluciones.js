@@ -19,7 +19,7 @@
 // probarlo con una base en memoria (test/devoluciones.test.mjs).
 
 import { pool as poolReal } from '../db.js';
-import { ES_NUEVA, DESDE_SQL } from './club.js';
+import { ES_NUEVA, DESDE_SQL, correoDelClubSQL } from './club.js';
 
 export const AJUSTES_POR_DEFECTO = Object.freeze({
   plazo_dias: 14,
@@ -133,18 +133,24 @@ const limpiarTexto = (v, n) =>
   String(v ?? '').slice(0, n * 2).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').trim().slice(0, n);
 const sinTildes = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 
-/** 'cuenta' | 'brain' | 'ambos' | null (no se entiende). Admite el texto de un desplegable de GHL. */
+// Lo que se acepta como producto, ESTRICTO (fase C): los tres canónicos y las opciones EXACTAS del desplegable del
+// formulario de devoluciones (campo iYMss3x5ZpMxQKBI5tYB «Club DD · Devolución · Qué devolver»: «Cuenta del Club»,
+// «Disruptive Brain», «Las dos»), más «Cuenta (Club de Sistemas)» y «Los dos» (las de la fase B). Se comparan sin
+// distinguir mayúsculas ni tildes y quitando los espacios. Antes se buscaban palabras sueltas y «Solo el Brain, no la
+// cuenta» o «Disruptive Brain del Club de Sistemas» se leían como «ambos»: se evaluaba (y podía aprobarse) una devolución
+// de la cuenta que nadie había pedido. Cualquier otro texto → null → «desconocido» → revisión.
+const compactar = (v) => sinTildes(String(v ?? '').slice(0, 200)).toLowerCase().replace(/\s+/g, '');
+const PRODUCTOS = new Map([
+  ['cuenta', 'cuenta'], ['brain', 'brain'], ['ambos', 'ambos'],
+  ['Cuenta del Club', 'cuenta'], ['Disruptive Brain', 'brain'], ['Las dos', 'ambos'],
+  ['Cuenta (Club de Sistemas)', 'cuenta'], ['Los dos', 'ambos'],
+].map(([texto, producto]) => [compactar(texto), producto]));
+
+/** 'cuenta' | 'brain' | 'ambos' | null (no se entiende). Solo los canónicos y las opciones del desplegable real. */
 export function normalizarProducto(v) {
-  const s = sinTildes(String(v ?? '').slice(0, 200)).toLowerCase().trim();
+  const s = compactar(v);
   if (!s || sinResolver(s)) return null;
-  if (s === 'cuenta' || s === 'brain' || s === 'ambos') return s;
-  if (/\bambos\b|\blos dos\b|\blas dos\b/.test(s)) return 'ambos';
-  const brain = /\bbrain\b/.test(s);
-  const cuenta = /\bcuenta\b|\bclub\b|\bhermes\b/.test(s);
-  if (brain && cuenta) return 'ambos';
-  if (brain) return 'brain';
-  if (cuenta) return 'cuenta';
-  return null;
+  return PRODUCTOS.get(s) || null;
 }
 
 /**
@@ -344,10 +350,16 @@ export function evaluarPlazo(fecha, fechaTexto, ajustes, ahora = new Date()) {
     return { decision: 'revision', motivo: `No se entiende la fecha del cobro («${texto}»): lo revisa soporte.`, fecha_clave: claveTexto, medida: { plazo_dias: plazo } };
   }
   const hoy = diaEnZona(ahora);
-  const posibles = fecha.candidatos.map((f) => { const dia = diaEnZona(f); return { fecha: f, dia, dias: diasEntre(dia, hoy) }; })
-    .filter((c) => c.dias >= 0); // un cobro no puede ser de un día posterior a hoy
+  const ahoraMs = ahora.getTime();
+  // 💸 Un cobro no puede ser POSTERIOR a ahora, tampoco más tarde HOY: el uso se mide desde el instante del cobro y,
+  // desde un instante futuro, sale 0 USD y se aprobaría aunque ya se haya gastado (lo encontró el verificador con
+  // «2026-11-13T20:00:00Z» y con una marca Unix de hoy). Una fecha sin hora es la medianoche de Madrid: hoy vale.
+  const posibles = fecha.candidatos
+    .filter((f) => f instanceof Date && Number.isFinite(f.getTime()) && f.getTime() <= ahoraMs)
+    .map((f) => { const dia = diaEnZona(f); return { fecha: f, dia, dias: diasEntre(dia, hoy) }; })
+    .filter((c) => c.dias >= 0);
   if (!posibles.length) {
-    return { decision: 'revision', motivo: `La fecha del cobro («${texto}») es posterior a hoy: lo revisa soporte.`, fecha_clave: claveTexto, medida: { plazo_dias: plazo } };
+    return { decision: 'revision', motivo: `La fecha del cobro («${texto}») es posterior a ahora: lo revisa soporte.`, fecha_clave: claveTexto, medida: { plazo_dias: plazo } };
   }
   const dentro = posibles.filter((c) => c.dias <= plazo);
   if (dentro.length && dentro.length < posibles.length) {
@@ -375,7 +387,8 @@ export function evaluarPlazo(fecha, fechaTexto, ajustes, ahora = new Date()) {
 
 // ── Cuenta: conexión de Hermes y consumo de IA ──────────────────────────────────────────────
 const MOTIVOS_CONEXION = {
-  no_encontrada: 'No se encuentra su cuenta de Hermes (ni por la subcuenta ni por el correo del responsable): lo revisa soporte.',
+  no_encontrada: 'No se encuentra su cuenta de Hermes por ese correo (ni de responsable, ni de correo del Club, ni de correo de la subcuenta): lo revisa soporte.',
+  sin_conexion: 'La subcuenta indicada no tiene cuenta de Hermes: lo revisa soporte.',
   protegida: 'La subcuenta indicada no es una cuenta del Club (su conexión de Hermes es anterior al Club): lo revisa soporte.',
   no_casa: 'El correo de la solicitud no es de ningún usuario conocido de esa subcuenta: lo revisa soporte.',
   ambiguo: 'Ese correo aparece en varias cuentas de Hermes: lo revisa soporte.',
@@ -385,39 +398,41 @@ const MOTIVOS_CONEXION = {
 /**
  * Conexión(es) de Hermes de quien pide la devolución (como /api/club/estado):
  *  1) por location_id → sus conexiones, que tienen que ser NUEVAS (posteriores al Club); si además llega el correo y la
- *     conexión ya tiene responsable, el correo tiene que ser de alguien de esa subcuenta (responsable, correo
- *     autorizado o usuario que entró por SSO) — si no, algo no cuadra (¿subcuenta equivocada?) → revisión;
- *  2) si no, por correo → la ÚNICA conexión nueva cuyo RESPONSABLE (owner_email, lo certifica el SSO de GHL) es ese
- *     correo, y siempre que ese correo no haya entrado por SSO en OTRA conexión nueva (si no, no se sabe cuál es).
+ *     conexión ya tiene algún correo conocido, el correo tiene que ser de alguien de esa subcuenta (responsable, correo
+ *     del Club, correo de la subcuenta, correo autorizado o usuario que entró por SSO) — si no, algo no cuadra
+ *     (¿subcuenta equivocada?) → revisión. Si esa subcuenta NO tiene conexión → revisión (fase C): ya no se busca por
+ *     correo, que podría medir OTRA conexión de esa persona (otra subcuenta suya);
+ *  2) sin location_id, por correo → la ÚNICA conexión nueva con ese correo del Club (club_email si el admin lo puso; si
+ *     no, el responsable o el correo de la subcuenta en GHL: club.js · correoDelClubSQL), y siempre que ese correo no
+ *     haya entrado por SSO en OTRA conexión nueva (si no, no se sabe cuál es).
  */
 export async function resolverConexion({ location_id, email }, pg = poolReal) {
   const correo = String(email || '');
   if (location_id) {
     const filas = (await pg.query(
       `SELECT a.id,
-              lower(COALESCE(a.owner_email, '')) AS responsable,
               COALESCE(a.created_at >= ${DESDE_SQL}, false) AS nueva,
-              CASE WHEN jsonb_typeof(a.authorized_emails) = 'array'
-                   THEN EXISTS (SELECT 1 FROM jsonb_array_elements_text(a.authorized_emails) e WHERE lower(e) = $2)
-                   ELSE false END AS autorizado,
-              EXISTS (SELECT 1 FROM portal_users p WHERE p.account_id = a.id AND lower(p.email) = $2) AS entro
+              (COALESCE(a.owner_email, '') <> '' OR COALESCE(a.club_email, '') <> '' OR COALESCE(a.ghl_location_email, '') <> '') AS con_correo,
+              ($2 <> '' AND (
+                 $2 IN (lower(COALESCE(a.owner_email, '')), COALESCE(a.club_email, ''), COALESCE(a.ghl_location_email, ''))
+                 OR CASE WHEN jsonb_typeof(a.authorized_emails) = 'array'
+                         THEN EXISTS (SELECT 1 FROM jsonb_array_elements_text(a.authorized_emails) e WHERE lower(e) = $2)
+                         ELSE false END
+                 OR EXISTS (SELECT 1 FROM portal_users p WHERE p.account_id = a.id AND lower(p.email) = $2))) AS casa
          FROM accounts a WHERE a.location_id = $1 ORDER BY a.id`,
       [location_id, correo]
     )).rows;
-    if (filas.length) {
-      const cuentas = filas.map((f) => f.id);
-      if (filas.some((f) => !f.nueva)) return { estado: 'protegida', via: 'subcuenta', cuentas };
-      if (correo && filas.some((f) => f.responsable && f.responsable !== correo && !f.autorizado && !f.entro)) {
-        return { estado: 'no_casa', via: 'subcuenta', cuentas };
-      }
-      return { estado: 'ok', via: 'subcuenta', cuentas };
-    }
+    if (!filas.length) return { estado: 'sin_conexion', via: 'subcuenta', cuentas: [] };
+    const cuentas = filas.map((f) => f.id);
+    if (filas.some((f) => !f.nueva)) return { estado: 'protegida', via: 'subcuenta', cuentas };
+    if (correo && filas.some((f) => f.con_correo && !f.casa)) return { estado: 'no_casa', via: 'subcuenta', cuentas };
+    return { estado: 'ok', via: 'subcuenta', cuentas };
   }
   if (correo) {
     const corte = (await pg.query(`SELECT ${DESDE_SQL} AS desde`)).rows[0]?.desde;
     if (!corte) return { estado: 'sin_corte', via: 'correo', cuentas: [] };
     const cands = (await pg.query(
-      `SELECT id FROM accounts WHERE ${ES_NUEVA} AND lower(owner_email) = $1 ORDER BY id`, [correo]
+      `SELECT id FROM accounts WHERE ${ES_NUEVA} AND ${correoDelClubSQL('$1')} ORDER BY id`, [correo]
     )).rows.map((r) => r.id);
     if (cands.length > 1) return { estado: 'ambiguo', via: 'correo', cuentas: cands };
     if (cands.length === 1) {
@@ -431,7 +446,7 @@ export async function resolverConexion({ location_id, email }, pg = poolReal) {
       return { estado: 'ok', via: 'correo', cuentas: cands };
     }
   }
-  return { estado: 'no_encontrada', via: location_id ? 'subcuenta' : 'correo', cuentas: [] };
+  return { estado: 'no_encontrada', via: 'correo', cuentas: [] };
 }
 
 // Fuentes que se cobran: las de siempre + las que el admin haya añadido en Marketplace → Facturación.
