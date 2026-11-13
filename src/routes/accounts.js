@@ -9,7 +9,9 @@ import { redis } from '../lib/redis.js';
 import { WINDOWED_CHANNELS } from '../config.js';
 import { sanearPalabrasNombre } from '../lib/tags.js';
 import { sanearTope } from '../services/tope.js';
-import { DESDE_SQL, sanearClubEmail, aplicarPendientesDeConexion, pendientesParaFicha } from '../services/club.js';
+import {
+  DESDE_SQL, sanearClubEmail, aplicarPendientesDeConexion, pendientesParaFicha, pistasParaFicha, leerCorreosNoClub, motivoNoClub,
+} from '../services/club.js';
 
 // URL de comentarios: FIJA y LIMPIA, la misma para todas las conexiones (enruta por location.id).
 const COMMENT_WEBHOOK_URL = `${config.appBaseUrl}/api/webhooks/comentarios`;
@@ -96,7 +98,7 @@ function stripSecrets(row, req) {
   // el token crudo de comentarios no se expone; solo la URL ya montada (comment_webhook_url)
   // 🏛️ los correos del Club son cosa del admin y soporte: el panel del cliente no los enseña
   const { pit_token, webhook_token, webhook_url, portal_key, portal_url, comment_token,
-    club_email, ghl_location_email, ghl_location_email_at, es_club, club_pendientes, ...safe } = row;
+    club_email, ghl_location_email, ghl_location_email_at, es_club, club_pendientes, club_pistas, ...safe } = row;
   return safe;
 }
 
@@ -132,8 +134,14 @@ export default async function accountRoutes(app) {
     if (req.auth?.role === 'admin') {
       row.portal_url = `${config.appBaseUrl}/ghl-portal?key=${row.portal_key}&location_id={{location.id}}&email={{user.email}}&name={{user.name}}`;
       // 🏛️ tarjeta «Club de Sistemas»: los estados del Club que esperan por algún correo de esta conexión, para que soporte
-      // los vea ANTES de confirmar el correo del Club (al confirmarlo se aplica el último). Nunca rompe la ficha.
-      if (row.es_club) row.club_pendientes = await pendientesParaFicha(row).catch(() => []);
+      // los vea ANTES de confirmar el correo del Club (al confirmarlo se aplica el último), y las pistas para el correo
+      // del Club con las MISMAS reglas que al guardarlo: «Usar» nunca ofrece un correo que el servidor rechazaría (de
+      // soporte, de la agencia, de un admin o con caracteres invisibles). Nunca rompe la ficha.
+      if (row.es_club) {
+        const noClub = await leerCorreosNoClub().catch(() => null);
+        row.club_pendientes = await pendientesParaFicha(row, undefined, noClub).catch(() => []);
+        row.club_pistas = pistasParaFicha(row, noClub);
+      }
     }
     return stripSecrets(row, req);
   });
@@ -185,7 +193,9 @@ export default async function accountRoutes(app) {
       }).catch(() => {})
       : null);
     // 🏛️ correo del Club (solo admin): también se valida antes de escribir nada. Solo se escribe si CAMBIA (una ficha
-    // entera trae el mismo valor que ya tiene).
+    // entera trae el mismo valor que ya tiene). Fase C3: se rechazan los caracteres invisibles, de control y los espacios
+    // (sanearClubEmail · analizarCorreo, la misma normalización que el interruptor, las devoluciones y el SSO) y los
+    // correos de soporte, de la agencia y de los admins de Hermes (motivoNoClub).
     let clubEmail = null; // { antes, ahora } si cambia
     if (editable.includes('club_email') && 'club_email' in b) {
       const c = sanearClubEmail(b.club_email);
@@ -195,6 +205,8 @@ export default async function accountRoutes(app) {
         if (c.valor) {
           const club = await one(`SELECT COALESCE(created_at >= ${DESDE_SQL}, false) AS es_club FROM accounts WHERE id = $1`, [existing.id]);
           if (!club?.es_club) return reply.code(400).send({ error: 'Esta conexión es anterior al Club de Sistemas: el correo del Club no se usa en ella.' });
+          const noEsDelCliente = motivoNoClub(c.valor, await leerCorreosNoClub());
+          if (noEsDelCliente) return reply.code(400).send({ error: noEsDelCliente });
           const otra = await one(`SELECT id, name FROM accounts WHERE club_email = $1 AND id <> $2`, [c.valor, existing.id]);
           if (otra) return reply.code(409).send({ error: `Ese correo del Club ya está en la conexión #${otra.id} (${otra.name}): quítalo de allí primero.` });
         }
@@ -239,6 +251,10 @@ export default async function accountRoutes(app) {
       // dos admins poniendo el mismo correo del Club a la vez: lo para el índice único (migración 061)
       if (err?.code === '23505' && /club_email/.test(String(err.constraint || err.message))) {
         return reply.code(409).send({ error: 'Ese correo del Club ya está en otra conexión: quítalo de allí primero.' });
+      }
+      // la base exige minúsculas y sin espacios alrededor (061): si algo se colara, un 400 claro en vez de un 500
+      if (err?.code === '23514' && /club_email/.test(String(err.constraint || err.message))) {
+        return reply.code(400).send({ error: 'El correo del Club no es válido: escríbelo a mano y vuelve a guardar.' });
       }
       throw err;
     }

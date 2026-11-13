@@ -22,6 +22,8 @@
 //                   tocan (son solo una pista). El responsable, el correo de la subcuenta y los «correos autorizados» no
 //                   enlazan (soporte puede ser el responsable; los otros dos los edita el cliente).
 //   · Las conexiones ANTERIORES al Club (creadas antes de la migración 059) nunca se tocan desde aquí («protegida»).
+//   · El correo pasa por la MISMA normalización que el correo del Club (services/club.js · analizarCorreo): con un
+//     carácter invisible, de control o un espacio raro → 400 «email no válido: …» (no podría casar con ningún club_email).
 //   Respuestas: 200 aplicado/sin_cambios · 202 pendiente/ambiguo/protegida · 400 cuerpo no válido · 401 secreto ·
 //   429 freno · 503 sin configurar.
 //

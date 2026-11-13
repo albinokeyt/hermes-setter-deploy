@@ -6,7 +6,7 @@
 // campos que la ficha recibe del servidor pero no se guardan desde ella (los calcula o los guarda otra ruta)
 export const SOLO_LECTURA = [
   'id', 'webhook_url', 'webhook_token', 'oauth_connected', 'provider_name', 'portal_url', 'comment_webhook_url',
-  'es_club', 'club_pendientes', 'club_estado_at', 'ghl_location_email', 'ghl_location_email_at', 'created_at', 'updated_at',
+  'es_club', 'club_pendientes', 'club_pistas', 'club_estado_at', 'ghl_location_email', 'ghl_location_email_at', 'created_at', 'updated_at',
 ];
 
 const igual = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);

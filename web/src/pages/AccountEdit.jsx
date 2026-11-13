@@ -593,22 +593,28 @@ export default function AccountEdit() {
                 <Input label="Correo del Club (el de la compra)" type="email" className="max-w-md" placeholder="el correo con el que compró en 4ttZ"
                   value={acc.club_email ?? ''}
                   onChange={(e) => set({ club_email: e.target.value })}
-                  hint="Solo admin. Antes de guardarlo, comprueba en 4ttZ que ese correo compró y que esta subcuenta es la suya. Al guardarlo se aplica el último estado que esperaba por ese correo." />
+                  hint="Solo admin. Antes de guardarlo, comprueba en 4ttZ que ese correo compró y que esta subcuenta es la suya. Al guardarlo se aplica el último estado que esperaba por ese correo. No se admiten los correos de soporte, de la agencia ni de los administradores de Hermes, ni caracteres invisibles (escríbelo a mano si lo pegas de otro sitio)." />
+                {error && (acc.club_email || '') !== (original?.club_email || '') && <Banner tone="error">{error}</Banner>}
                 <div className="space-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
                   <div className="font-medium text-slate-500">Pistas (no cuentan hasta que confirmes el correo del Club):</div>
-                  <div>
-                    👤 Responsable (primer usuario que entró por SSO; a menudo soporte): <b>{acc.owner_email || '—'}</b>
-                    {acc.owner_email && acc.owner_email !== acc.club_email && (
-                      <button type="button" className="ml-2 font-semibold text-violet-600 hover:underline" onClick={() => set({ club_email: acc.owner_email })}>Usar</button>
-                    )}
-                  </div>
-                  <div>
-                    🏢 Correo de la subcuenta en GHL (lo puede cambiar el cliente): <b>{acc.ghl_location_email || 'sin leer'}</b>
-                    {acc.ghl_location_email_at ? ` (leído el ${new Date(acc.ghl_location_email_at).toLocaleDateString('es-ES')})` : ''}
-                    {acc.ghl_location_email && acc.ghl_location_email !== acc.club_email && (
-                      <button type="button" className="ml-2 font-semibold text-violet-600 hover:underline" onClick={() => set({ club_email: acc.ghl_location_email })}>Usar</button>
-                    )}
-                  </div>
+                  {[
+                    { de: 'responsable', texto: '👤 Responsable (primer usuario que entró por SSO; a menudo soporte)', valor: acc.owner_email || '—' },
+                    { de: 'correo_subcuenta', texto: '🏢 Correo de la subcuenta en GHL (lo puede cambiar el cliente)', valor: acc.ghl_location_email || 'sin leer', leido: acc.ghl_location_email_at },
+                  ].map((f) => {
+                    // «Usar» solo con lo que el servidor deja guardar (club_pistas: misma normalización y mismas reglas)
+                    const p = Array.isArray(acc.club_pistas) ? acc.club_pistas.find((x) => x.de === f.de) : null;
+                    const yaPuesto = p && p.email === String(acc.club_email ?? '').trim().toLowerCase();
+                    return (
+                      <div key={f.de}>
+                        {f.texto}: <b>{f.valor}</b>
+                        {f.leido ? ` (leído el ${new Date(f.leido).toLocaleDateString('es-ES')})` : ''}
+                        {p?.usable && !yaPuesto && (
+                          <button type="button" className="ml-2 font-semibold text-violet-600 hover:underline" onClick={() => set({ club_email: p.email })}>Usar</button>
+                        )}
+                        {p && !p.usable && p.motivo && <span className="ml-2 text-amber-700">({p.motivo})</span>}
+                      </div>
+                    );
+                  })}
                 </div>
                 {Array.isArray(acc.club_pendientes) && acc.club_pendientes.length > 0 && (
                   <div className="space-y-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -618,9 +624,10 @@ export default function AccountEdit() {
                         <b>{p.email}</b> → {p.activo ? 'encender la IA' : 'apagar la IA'}{p.motivo ? ` («${p.motivo}»)` : ''}
                         {p.updated_at ? `, llegó el ${new Date(p.updated_at).toLocaleString('es-ES')}` : ''}
                         {p.vigente === false ? ' · caducado (más de 60 días): ya no se aplicará' : ''}
+                        {p.no_confirmable ? ` · ${p.no_confirmable} (una prueba: no se aplicará a ningún cliente)` : ''}
                       </div>
                     ))}
-                    <div>Si confirmas uno de esos correos como correo del Club, se aplica el último. Si alguno es una prueba (p. ej. con el correo de soporte), no lo confirmes en la conexión de un cliente.</div>
+                    <div>Si confirmas uno de esos correos como correo del Club, se aplica el último. Los de soporte, de la agencia y de los administradores de Hermes no se pueden confirmar en la conexión de un cliente.</div>
                   </div>
                 )}
               </>

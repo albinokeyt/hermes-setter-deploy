@@ -49,7 +49,9 @@ export async function enlazarCorreoSubcuenta(account, { origen = '', info = null
     const r = datos.email ? await vincularCorreoSubcuenta({ accountId: account.id, correo: datos.email, origen }) : { estado: 'sin_correo' };
     if (r.estado === 'sin_correo') {
       await anotar('club_correo_subcuenta_vacio', { ...base, en_ghl: String(datos.email || '').slice(0, 254),
-        nota: datos.email ? `el correo de la subcuenta en GHL no es válido: ${A_MANO}` : `la subcuenta no tiene correo en GHL: ${A_MANO}` });
+        nota: datos.email
+          ? `el correo de la subcuenta en GHL no es válido${r.motivo ? ` (${r.motivo})` : ''}: ${A_MANO}`
+          : `la subcuenta no tiene correo en GHL: ${A_MANO}` });
     }
     return r;
   } catch (err) {

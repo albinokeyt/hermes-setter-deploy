@@ -3,6 +3,7 @@ import { RefreshCw, ShieldCheck, ShieldAlert, ShieldHalf, Wand2, Wrench } from '
 import { api, timeAgo } from '../api.js';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Banner, CopyField } from '../components/ui.jsx';
 import DevolucionesClub from '../components/DevolucionesClub.jsx';
+import CorreosClub from '../components/CorreosClub.jsx';
 
 export default function SettingsPage() {
   const [cfg, setCfg] = useState(null);
@@ -149,6 +150,8 @@ export default function SettingsPage() {
           )}
         </Card>
       )}
+
+      <CorreosClub />
 
       <DevolucionesClub />
 

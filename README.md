@@ -132,6 +132,17 @@ prueba de que no se duplica).
   Conexiones anteriores a la 059 → 202 «protegida», nunca se tocan. Un pendiente más viejo que el último
   estado aplicado (`accounts.club_estado_at`) se descarta («pendiente_obsoleto»). Sin la variable → 503; secreto malo →
   401. Registro en la tabla `club_eventos` (Configuración → «Interruptor del Club»).
+- **Guardas del correo del Club** (fase C3): todos los correos del Club (la ficha, el interruptor, las devoluciones, el
+  SSO y las pistas «Usar») pasan por UNA normalización, `services/club.js · analizarCorreo`: quita los espacios ASCII de
+  alrededor, pasa a minúsculas y RECHAZA (nunca «arregla») los caracteres invisibles o de formato (`\p{Cf}`: U+200B,
+  U+FEFF, U+00AD…), los de control, los espacios que no son ASCII o están dentro, el signo kelvin (U+212A) y el texto
+  sin NFC. Guardar uno así en la ficha → 400 con el carácter («lleva un carácter invisible (U+200B, espacio de ancho
+  cero)…»); en el interruptor → 400 «email no válido: …»; en las devoluciones → aviso y revisión. Además el correo del
+  Club no puede ser el de soporte (`soporte@departamentodisruptivo.com`, `soporte@soyjonathanalef.com`, siempre), el de
+  un usuario admin de Hermes cuyo usuario es un correo ni los que se añadan en Configuración → «Correo del Club»
+  (setting `club_correos.no_club`: correos o `@dominio.com`, también sus subdominios; `GET/PUT /api/settings/club-correos`,
+  que avisa en `en_uso` si alguna conexión ya tiene uno confirmado) → 400. La ficha solo ofrece «Usar» con las pistas
+  que el servidor dejaría guardar (`club_pistas` en `GET /api/accounts/:id`, solo admin).
 - **Tope de gasto mensual** (`accounts.tope_mensual_usd`, solo admin, pestaña Ajustes de la conexión): al llegar al
   tope en el mes natural (zona horaria de la conexión, precio al cliente), la puerta no llama a la IA (como sin saldo),
   tampoco se leen imágenes ni audios con IA, y queda el evento `tope_mensual_alcanzado`. Las pruebas del panel (van a 0)

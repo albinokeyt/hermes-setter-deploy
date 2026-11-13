@@ -19,7 +19,7 @@
 // probarlo con una base en memoria (test/devoluciones.test.mjs).
 
 import { pool as poolReal } from '../db.js';
-import { ES_NUEVA, DESDE_SQL, correoDelClubSQL, SIN_CONFIRMAR_SQL } from './club.js';
+import { ES_NUEVA, DESDE_SQL, correoDelClubSQL, SIN_CONFIRMAR_SQL, analizarCorreo } from './club.js';
 
 export const AJUSTES_POR_DEFECTO = Object.freeze({
   plazo_dias: 14,
@@ -126,7 +126,6 @@ export async function guardarAjustes(valor, pg = poolReal) {
 // ── Cuerpo de la petición ───────────────────────────────────────────────────────────────────
 const RE_LOC = /^[A-Za-z0-9_-]{6,64}$/;
 const RE_CONTACTO = /^[A-Za-z0-9_-]{4,64}$/;
-const RE_EMAIL = /^[^\s@<>"']{1,64}@[^\s@<>"']{1,190}\.[^\s@<>"']{2,}$/;
 // un merge field de GHL vacío o sin resolver ({{contact.x}}) cuenta como «no viene»
 const sinResolver = (s) => !s || /\{\{.*\}\}/.test(s);
 const limpiarTexto = (v, n) =>
@@ -161,18 +160,22 @@ export function validarCuerpoDevolucion(body) {
   const b = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
   if (!b) return { ok: false, error: 'cuerpo no válido' };
   const contacto = String(b.contact_id ?? '').trim();
-  const correo = String(b.email ?? '').trim().toLowerCase();
+  const correoCrudo = String(b.email ?? '');
+  const correo = correoCrudo.trim();
   const loc = String(b.location_id ?? '').trim();
   // longitudes antes de cualquier expresión regular (un texto enorme no puede costar CPU)
   const contact_id = contacto.length <= 200 && !sinResolver(contacto) && RE_CONTACTO.test(contacto) ? contacto : '';
-  const email = correo.length <= 254 && !sinResolver(correo) && RE_EMAIL.test(correo) ? correo : '';
+  // 🏛️ la MISMA normalización que el correo del Club (club.js · analizarCorreo, sobre el texto CRUDO): uno con un
+  // carácter invisible no se «arregla» (para GHL puede ser el de otra persona): no vale, se avisa y la cuenta va a revisión
+  const analisis = correoCrudo.length <= 1000 && !sinResolver(correo) ? analizarCorreo(correoCrudo) : { correo: '', tipo: 'formato' };
+  const email = analisis.correo;
   if (!contact_id && !email) return { ok: false, error: 'falta contact_id o email (válidos)' };
   const location_id = loc.length <= 200 && !sinResolver(loc) && RE_LOC.test(loc) ? loc : '';
   const producto_texto = limpiarTexto(b.producto, 120);
   const fechaBruta = typeof b.fecha_cobro === 'number' ? String(b.fecha_cobro) : limpiarTexto(b.fecha_cobro, 100);
   const avisos = [];
   if (contacto && !sinResolver(contacto) && !contact_id) avisos.push('contact_id no válido: se identifica por el correo');
-  if (correo && !sinResolver(correo) && !email) avisos.push('email no válido');
+  if (correo && !sinResolver(correo) && !email) avisos.push(analisis.tipo === 'formato' ? 'email no válido' : `email no válido: ${analisis.motivo}`);
   if (loc && !sinResolver(loc) && !location_id) avisos.push('location_id no válido: se ignora');
   return {
     ok: true,

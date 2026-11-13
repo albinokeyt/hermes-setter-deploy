@@ -5,7 +5,9 @@ import { requireAdmin } from '../lib/session.js';
 import { DEFAULT_GUARDRAIL, invalidateGuardrailCache } from '../services/agent.js';
 import { DEFAULT_ARCHITECT, DEFAULT_CORRECTOR } from './promptEditor.js';
 import { agencyKey } from './portal.js';
-import { leerPlantilla, sanearPlantilla, TEST_TAG_POR_DEFECTO } from '../services/club.js';
+import {
+  leerPlantilla, sanearPlantilla, TEST_TAG_POR_DEFECTO, leerCorreosNoClub, validarNoClub, guardarCorreosNoClub, conexionesConCorreoNoClub,
+} from '../services/club.js';
 import {
   AJUSTES_POR_DEFECTO as AJUSTES_DEVOLUCIONES_POR_DEFECTO, leerAjustes as leerAjustesDevoluciones,
   validarAjustes as validarAjustesDevoluciones, guardarAjustes as guardarAjustesDevoluciones, listarSolicitudes, enviarAGhl,
@@ -106,6 +108,24 @@ export default async function settingsRoutes(app) {
     const eventos = await q(`SELECT * FROM club_eventos ORDER BY id DESC LIMIT $1`, [limit]);
     const pendientes = await q(`SELECT * FROM club_estado_pendiente ORDER BY updated_at DESC LIMIT 200`);
     return { configurado: String(process.env.CLUB_WEBHOOK_SECRET || '').trim().length >= 24, url: `${config.appBaseUrl}/api/club/estado`, eventos, pendientes };
+  });
+
+  // 🏛️ CORREOS QUE NUNCA PUEDEN SER EL «CORREO DEL CLUB» de un cliente (services/club.js · motivoNoClub): siempre los dos
+  // de soporte y los admins de Hermes cuyo usuario es un correo; además, los que se añadan aquí (setting club_correos:
+  // correos o «@dominio.com»). en_uso = conexiones que YA tienen confirmado uno de ellos (hay que cambiarlo en su ficha).
+  app.get('/api/settings/club-correos', async () => {
+    const noClub = await leerCorreosNoClub();
+    return { ...noClub, en_uso: await conexionesConCorreoNoClub(noClub) };
+  });
+
+  app.put('/api/settings/club-correos', async (req, reply) => {
+    const v = validarNoClub(req.body?.no_club);
+    if (!v.ok) return reply.code(400).send({ error: v.error });
+    const antes = (await leerCorreosNoClub()).no_club;
+    const despues = await guardarCorreosNoClub(v.valor);
+    await q(`INSERT INTO webhook_log (kind, payload) VALUES ('club_correos_cambiados', $1::jsonb)`, [JSON.stringify({ antes, despues, por: req.auth?.userId || null })]).catch(() => {});
+    const noClub = await leerCorreosNoClub();
+    return { ok: true, ...noClub, en_uso: await conexionesConCorreoNoClub(noClub) };
   });
 
   // 🏛️ DEVOLUCIONES del Club (POST /api/club/devolucion · services/devoluciones.js): ajustes editables por el admin

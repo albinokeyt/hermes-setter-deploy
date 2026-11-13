@@ -20,6 +20,9 @@
 //    quedarse con el alta o la baja de otro comprador, y una prueba del interruptor con el correo de soporte apagaba al
 //    primer cliente que soporte abría. Ahora solo son PISTAS para soporte («sin_confirmar» en el registro y en la ficha).
 //    Los «correos autorizados» tampoco sirven (el cliente los edita en su pestaña Accesos).
+//  · Fase C3: todos los correos del Club pasan por UNA normalización (analizarCorreo), que rechaza los caracteres
+//    invisibles, de control y los espacios; y el correo del Club no puede ser uno de soporte, de la agencia ni de un admin
+//    de Hermes (motivoNoClub; lista ampliable en Configuración → «Correo del Club»).
 //  · Candado por subcuenta y por correo (pg_advisory_xact_lock): un estado que llegue justo mientras se crea la
 //    conexión no se pierde ni se aplica dos veces.
 //  · Orden: accounts.club_estado_at guarda cuándo se DECIDIÓ el estado que tiene la conexión. Un pendiente solo se
@@ -97,20 +100,210 @@ export const SIN_CONFIRMAR_SQL = (param, t = '') =>
         AND (lower(COALESCE(${t}owner_email, '')) = ${param} OR COALESCE(${t}ghl_location_email, '') = ${param}))`;
 const MAX_PISTAS = 20;
 
+// ── Correos: UNA sola normalización para todo el Club (fase C3) ─────────────────────────────────────────────────────
+// La usan el «Correo del Club» de la ficha (sanearClubEmail), el interruptor (validarCuerpoClub), las devoluciones
+// (services/devoluciones.js · validarCuerpoDevolucion), el SSO (aplicarPendientePorEmail), la pista del correo de la
+// subcuenta (vincularCorreoSubcuenta) y las pistas «Usar» de la ficha (pistasParaFicha). Quita los espacios ASCII de
+// alrededor (lo mismo que hacen el navegador y GHL), pasa a minúsculas y RECHAZA —nunca «arregla»— lo que haría que un
+// correo no casara nunca con el de la compra o que dos correos distintos para GHL fueran el mismo para Hermes:
+// caracteres invisibles o de formato (en cualquier sitio, también al principio o al final), de control, espacios que no
+// son ASCII o dentro del correo, el signo kelvin (U+212A, que en minúsculas da una «k») y el texto sin la forma normal de
+// Unicode (NFC: p. ej. la tilde separada de la letra). Lo encontró el verificador de la fase C (ataque V3): un club_email
+// con U+200B se guardaba, la ficha decía «confirmado» y nunca casaba con el correo que manda el workflow.
 const RE_CORREO = /^[^\s@<>"']{1,64}@[^\s@<>"']{1,190}\.[^\s@<>"']{2,}$/;
-/** Correo en minúsculas y sin espacios alrededor, o '' si no es un correo válido. */
-export function normalizarCorreo(v) {
-  if (typeof v !== 'string') return '';
-  const s = v.trim().toLowerCase();
-  return s.length <= 254 && RE_CORREO.test(s) ? s : '';
+// invisibles: los de formato (\p{Cf}: U+00AD, U+200B–U+200F, U+202A–U+202E, U+2060–U+2064, U+FEFF…) y los rellenos
+// que Unicode no clasifica como formato pero no se ven (U+034F, U+115F, U+1160, U+17B4, U+17B5, U+180B–U+180F, U+2800,
+// U+3164, U+FE00–U+FE0F, U+FFA0, U+E0100–U+E01EF)
+const RE_INVISIBLE = /[\p{Cf}\u{34F}\u{115F}\u{1160}\u{17B4}\u{17B5}\u{180B}-\u{180F}\u{2800}\u{3164}\u{FE00}-\u{FE0F}\u{FFA0}\u{E0100}-\u{E01EF}]/u;
+const RE_ESPACIO = /[\s\p{Z}]/u;
+// de control (U+0000–U+001F, U+007F–U+009F), sin asignar, de uso privado y mitades sueltas de un par sustituto
+const RE_CONTROL = /[\p{Cc}\p{Cn}\p{Co}\p{Cs}]/u;
+const ESPACIO_ASCII = new Set([0x20, 0x09, 0x0a, 0x0b, 0x0c, 0x0d]);
+const NOMBRE_CARACTER = {
+  0x00a0: 'espacio duro', 0x00ad: 'guion suave', 0x200b: 'espacio de ancho cero', 0x200c: 'separador de ancho cero',
+  0x200d: 'unión de ancho cero', 0x200e: 'marca de izquierda a derecha', 0x200f: 'marca de derecha a izquierda',
+  0x202e: 'cambio de sentido del texto', 0x2060: 'unión de palabras', 0x3164: 'relleno invisible', 0xfeff: 'marca BOM',
+  0x212a: 'signo kelvin',
+};
+const codigoCaracter = (ch) => {
+  const cp = ch.codePointAt(0);
+  const u = `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`;
+  return NOMBRE_CARACTER[cp] ? `${u}, ${NOMBRE_CARACTER[cp]}` : u;
+};
+// recorte de los espacios ASCII de alrededor, en tiempo lineal (sin expresiones regulares)
+function recortarAscii(s) {
+  let i = 0;
+  let j = s.length;
+  while (i < j && ESPACIO_ASCII.has(s.charCodeAt(i))) i++;
+  while (j > i && ESPACIO_ASCII.has(s.charCodeAt(j - 1))) j--;
+  return s.slice(i, j);
 }
+
+/**
+ * Analiza un correo con LA normalización del Club.
+ * @returns {{ correo: string } | { correo: '', tipo: 'invisible'|'espacio'|'control'|'compuesto'|'confuso'|'formato', motivo: string }}
+ *   correo: en minúsculas y sin espacios alrededor. Si no vale, correo '' con el tipo y el motivo en español
+ *   («lleva un carácter invisible (U+200B, espacio de ancho cero)»).
+ */
+export function analizarCorreo(v) {
+  if (typeof v !== 'string') return { correo: '', tipo: 'formato', motivo: 'no es un correo' };
+  if (v.length > 1000) return { correo: '', tipo: 'formato', motivo: 'es demasiado largo' };
+  const s = recortarAscii(v);
+  if (!s) return { correo: '', tipo: 'formato', motivo: 'está vacío' };
+  if (s.length > 254) return { correo: '', tipo: 'formato', motivo: 'es demasiado largo' };
+  let m = s.match(RE_INVISIBLE);
+  if (m) return { correo: '', tipo: 'invisible', motivo: `lleva un carácter invisible (${codigoCaracter(m[0])})` };
+  m = s.match(RE_ESPACIO);
+  if (m) return { correo: '', tipo: 'espacio', motivo: m[0] === ' ' ? 'tiene espacios dentro' : `tiene un espacio raro (${codigoCaracter(m[0])})` };
+  m = s.match(RE_CONTROL);
+  if (m) return { correo: '', tipo: 'control', motivo: `lleva un carácter de control (${codigoCaracter(m[0])})` };
+  // (antes que la forma normal: el signo kelvin también cambia con NFC, y así el aviso dice qué carácter es)
+  const confuso = [...s].find((ch) => ch.codePointAt(0) > 0x7f && /^[\x00-\x7f]+$/.test(ch.toLowerCase()));
+  if (confuso) return { correo: '', tipo: 'confuso', motivo: `lleva un carácter que en minúsculas se convierte en otra letra (${codigoCaracter(confuso)})` };
+  if (s.normalize('NFC') !== s) return { correo: '', tipo: 'compuesto', motivo: 'lleva una letra escrita de forma rara (Unicode sin normalizar, p. ej. la tilde separada de la letra)' };
+  const correo = s.toLowerCase();
+  if (correo.length > 254 || !RE_CORREO.test(correo)) return { correo: '', tipo: 'formato', motivo: 'no tiene forma de correo' };
+  return { correo };
+}
+
+/** Correo con la normalización del Club (analizarCorreo), o '' si no vale. */
+export function normalizarCorreo(v) {
+  return analizarCorreo(v).correo;
+}
+
+const CONSEJO_CORREO = {
+  invisible: 'Suele colarse al copiar y pegar, y con él nunca casaría con el correo de la compra: escríbelo a mano y vuelve a guardar.',
+  espacio: 'Un correo no lleva espacios: quítalos (o escríbelo a mano) y vuelve a guardar.',
+  control: 'Escríbelo a mano y vuelve a guardar.',
+  compuesto: 'Suele pasar al copiar y pegar, y así nunca casaría con el correo de la compra: escríbelo a mano y vuelve a guardar.',
+  confuso: 'Así nunca casaría con el correo de la compra: escríbelo a mano y vuelve a guardar.',
+};
 
 /** club_email que llega del admin: { ok:true, valor: correo | null (vacío = quitarlo) } o { ok:false, error }. */
 export function sanearClubEmail(v) {
   if (v === null || v === undefined || (typeof v === 'string' && v.trim() === '')) return { ok: true, valor: null };
-  const mail = normalizarCorreo(v);
-  if (!mail) return { ok: false, error: 'El correo del Club no es válido: escribe un correo (p. ej. el de la compra) o déjalo vacío.' };
-  return { ok: true, valor: mail };
+  const a = analizarCorreo(v);
+  if (a.correo) return { ok: true, valor: a.correo };
+  if (CONSEJO_CORREO[a.tipo]) return { ok: false, error: `El correo del Club ${a.motivo}. ${CONSEJO_CORREO[a.tipo]}` };
+  return { ok: false, error: 'El correo del Club no es válido: escribe un correo (p. ej. el de la compra) o déjalo vacío.' };
+}
+
+// ── Correos que NUNCA pueden ser el correo del Club de un cliente (fase C3) ─────────────────────────────────────────
+// Los de soporte y de la agencia: con uno de ellos confirmado en la conexión de un cliente, una prueba del interruptor o
+// una devolución hecha con ese correo acabarían en ese cliente (y el botón «Usar» del responsable lo dejaba a un clic,
+// porque soporte suele ser el primero que abre Hermes). Siempre: los dos de soporte (aquí, fijos) y los usuarios ADMIN de
+// Hermes cuyo usuario es un correo. Además, los que el admin añada en Configuración → «Correo del Club» (setting
+// club_correos = { no_club: [correo | «@dominio.com» (ese dominio y sus subdominios)] }).
+export const CORREOS_SOPORTE = Object.freeze(['soporte@departamentodisruptivo.com', 'soporte@soyjonathanalef.com']);
+const MAX_NO_CLUB = 200;
+
+// una entrada de la lista: correo (normalizado) o «@dominio» en minúsculas; null si no vale
+function entradaNoClub(v) {
+  if (typeof v !== 'string') return null;
+  const s = recortarAscii(v);
+  if (s.startsWith('@')) {
+    const a = analizarCorreo(`x${s}`);
+    return a.correo ? a.correo.slice(1) : null;
+  }
+  return analizarCorreo(s).correo || null;
+}
+
+/** Lista guardada → siempre válida: sin lo que no vale, sin duplicados y sin los fijos (cuentan siempre). */
+export function sanearNoClub(v) {
+  const out = [];
+  for (const x of (Array.isArray(v) ? v : []).slice(0, MAX_NO_CLUB * 2)) {
+    const e = entradaNoClub(x);
+    if (e && !CORREOS_SOPORTE.includes(e) && !out.includes(e)) out.push(e);
+  }
+  return out.slice(0, MAX_NO_CLUB);
+}
+
+/** Cambio del admin: lista o texto (uno por línea, o separados por comas) → { ok:true, valor } | { ok:false, error }. */
+export function validarNoClub(entrada) {
+  const lineas = Array.isArray(entrada) ? entrada : typeof entrada === 'string' ? entrada.slice(0, 50_000).split(/[\n,;]+/) : null;
+  if (!lineas) return { ok: false, error: 'Manda la lista de correos (uno por línea).' };
+  const valor = [];
+  for (const bruto of lineas) {
+    if (typeof bruto !== 'string') return { ok: false, error: 'Cada línea tiene que ser un correo o un dominio (@dominio.com).' };
+    const t = recortarAscii(bruto);
+    if (!t) continue;
+    const e = entradaNoClub(t);
+    if (!e) {
+      const a = analizarCorreo(t.startsWith('@') ? `x${t}` : t);
+      return { ok: false, error: `«${t.slice(0, 80)}» no es un correo ni un dominio (@dominio.com)${a.tipo !== 'formato' ? `: ${a.motivo}` : ''}.` };
+    }
+    if (!CORREOS_SOPORTE.includes(e) && !valor.includes(e)) valor.push(e);
+  }
+  if (valor.length > MAX_NO_CLUB) return { ok: false, error: `Como mucho ${MAX_NO_CLUB} correos o dominios.` };
+  return { ok: true, valor };
+}
+
+/** { fijos, no_club, admins }: los de soporte, los de Configuración y los usuarios admin de Hermes que son un correo. */
+export async function leerCorreosNoClub(pg = poolReal) {
+  const ajuste = (await pg.query(`SELECT value FROM settings WHERE key = 'club_correos'`)).rows[0]?.value;
+  const admins = (await pg.query(`SELECT username FROM users WHERE role = 'admin' ORDER BY id`)).rows
+    .map((r) => normalizarCorreo(r.username)).filter(Boolean);
+  return { fijos: [...CORREOS_SOPORTE], no_club: sanearNoClub(ajuste?.no_club), admins: [...new Set(admins)] };
+}
+
+export async function guardarCorreosNoClub(lista, pg = poolReal) {
+  const no_club = sanearNoClub(lista);
+  await pg.query(
+    `INSERT INTO settings (key, value, updated_at) VALUES ('club_correos', $1::jsonb, now())
+     ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = now()`,
+    [JSON.stringify({ no_club })]
+  );
+  return no_club;
+}
+
+/**
+ * Si ese correo (YA normalizado) no puede ser el correo del Club de un cliente, el motivo en español; si puede, null.
+ * corto → para una pista de la ficha; si no, el mensaje del 400 al guardarlo.
+ */
+export function motivoNoClub(correo, noClub, { corto = false } = {}) {
+  if (!correo || !noClub) return null;
+  const arroba = correo.lastIndexOf('@');
+  const dominio = arroba >= 0 ? correo.slice(arroba + 1) : '';
+  const lista = noClub.no_club || [];
+  let de = null;
+  if ((noClub.admins || []).includes(correo)) de = 'es de un administrador de Hermes';
+  else if ((noClub.fijos || []).includes(correo) || lista.includes(correo)
+    || lista.some((e) => e.startsWith('@') && (dominio === e.slice(1) || dominio.endsWith(`.${e.slice(1)}`)))) {
+    de = 'es de soporte o de la agencia (Configuración → «Correo del Club»)';
+  }
+  if (!de) return null;
+  return corto
+    ? `${de}: no se puede usar como correo del Club`
+    : `Ese correo ${de}: no puede ser el correo del Club de un cliente. Escribe el correo con el que compró el cliente (compruébalo en 4ttZ).`;
+}
+
+/** Conexiones que YA tienen confirmado como correo del Club uno que no puede serlo (p. ej. se añadió luego a la lista). */
+export async function conexionesConCorreoNoClub(noClub, pg = poolReal) {
+  const filas = (await pg.query(`SELECT id, name, alias, club_email FROM accounts WHERE club_email IS NOT NULL ORDER BY id`)).rows;
+  return filas.filter((f) => motivoNoClub(f.club_email, noClub))
+    .map((f) => ({ id: f.id, nombre: f.alias || f.name, club_email: f.club_email }));
+}
+
+/**
+ * Pistas para el «Correo del Club» en la ficha (solo admin): el responsable y el correo de la subcuenta, con la MISMA
+ * normalización y las mismas reglas que aplica el servidor al guardarlo. «Usar» (usable) solo se ofrece con un correo
+ * que se podría guardar: válido, que no es de soporte, de la agencia ni de un admin de Hermes, y que no es ya el correo
+ * del Club de la conexión. Sin la lista (no se pudo leer) no se ofrece ninguno.
+ * @returns {Array<{ de: 'responsable'|'correo_subcuenta', email: string, usable: boolean, motivo?: string, confirmado?: true }>}
+ */
+export function pistasParaFicha(acc, noClub) {
+  const actual = acc?.club_email || '';
+  const out = [];
+  for (const [de, valor] of [['responsable', acc?.owner_email], ['correo_subcuenta', acc?.ghl_location_email]]) {
+    if (typeof valor !== 'string' || !valor.trim()) continue;
+    const a = analizarCorreo(valor);
+    if (!a.correo) { out.push({ de, email: valor.trim().slice(0, 254), usable: false, motivo: `no sirve como correo del Club: ${a.motivo}` }); continue; }
+    if (!noClub) { out.push({ de, email: a.correo, usable: false, motivo: 'no se ha podido comprobar la lista de correos de soporte: recarga la ficha' }); continue; }
+    const no = motivoNoClub(a.correo, noClub, { corto: true });
+    if (no) { out.push({ de, email: a.correo, usable: false, motivo: no }); continue; }
+    out.push({ de, email: a.correo, usable: a.correo !== actual, ...(a.correo === actual ? { confirmado: true } : {}) });
+  }
+  return out;
 }
 
 async function enTransaccion(pg, fn) {
@@ -229,7 +422,6 @@ export function secretoValido(recibido, secreto) {
 }
 
 const RE_LOC = /^[A-Za-z0-9_-]{6,64}$/;
-const RE_EMAIL = /^[^\s@<>"']{1,64}@[^\s@<>"']{1,190}\.[^\s@<>"']{2,}$/;
 
 // GHL (nodo «Webhook personalizado») puede mandar los valores como texto: se aceptan true/false y "true"/"false".
 function aBooleano(v) {
@@ -246,16 +438,24 @@ export function validarCuerpoClub(body) {
   const activo = aBooleano(b.activo);
   if (activo === null) return { ok: false, error: 'activo debe ser true o false' };
   const location_id = String(b.location_id ?? '').trim();
-  const email = String(b.email ?? '').trim().toLowerCase();
+  const emailCrudo = String(b.email ?? '');
   // longitudes antes de cualquier expresión regular (un texto enorme no puede costar CPU)
   if (location_id.length > 200) return { ok: false, error: 'location_id no válido' };
-  if (email.length > 254) return { ok: false, error: 'email no válido' };
+  if (emailCrudo.length > 1000) return { ok: false, error: 'email no válido' };
   // un merge field de GHL vacío o sin resolver ({{contact.x}}) cuenta como «no viene»
   const sinResolver = (s) => !s || /\{\{.*\}\}/.test(s);
   const loc = sinResolver(location_id) ? '' : location_id;
-  const mail = sinResolver(email) ? '' : email;
   if (loc && !RE_LOC.test(loc)) return { ok: false, error: 'location_id no válido' };
-  if (mail && !RE_EMAIL.test(mail)) return { ok: false, error: 'email no válido' };
+  // 🏛️ la MISMA normalización que el correo del Club (analizarCorreo, sobre el texto CRUDO: un trim() de JS quitaría un
+  // BOM o un espacio duro de los bordes y dos correos distintos para GHL serían el mismo para Hermes). Uno con un carácter
+  // invisible no podría casar nunca con un club_email: se rechaza (400, visible en GHL) en vez de quedar pendiente sin
+  // que nadie lo vea.
+  let mail = '';
+  if (!sinResolver(emailCrudo.trim())) {
+    const a = analizarCorreo(emailCrudo);
+    if (!a.correo) return { ok: false, error: a.tipo === 'formato' ? 'email no válido' : `email no válido: ${a.motivo}` };
+    mail = a.correo;
+  }
   if (!loc && !mail) return { ok: false, error: 'falta location_id o email' };
   const motivo = String(b.motivo ?? '').slice(0, 400).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 200);
   return { ok: true, datos: { location_id: loc || null, email: mail || null, activo, motivo } };
@@ -463,7 +663,7 @@ async function cerrarPendiente(pg, r) {
  * @returns {Promise<null | { activo: boolean } | { ambiguo: true } | { obsoleto: true }>}
  */
 export async function aplicarPendientePorEmail(accountId, email, pg = poolReal, { via = 'correo_sso' } = {}) {
-  const mail = String(email || '').trim().toLowerCase();
+  const mail = normalizarCorreo(email); // la misma normalización que el club_email (con un invisible no casaría nunca)
   if (!mail || !accountId) return null;
   // camino rápido (cada entrada por SSO pasa por aquí): sin pendiente para ese correo no se abre transacción
   const hay = await pg.query(`SELECT 1 FROM club_estado_pendiente WHERE clave = $1`, [claveEmail(mail)]);
@@ -497,10 +697,11 @@ export async function aplicarPendientesDeConexion(accountId, pg = poolReal, { vi
 /**
  * Para la ficha de la conexión (solo admin): los estados del Club que esperan por alguno de los correos de esta conexión
  * (correo del Club confirmado, responsable o correo de la subcuenta), para que soporte los vea ANTES de confirmar: si
- * confirma un correo, se aplica el último que espera por él (y uno hecho de prueba con el correo de soporte no se debe
- * confirmar nunca en la conexión de un cliente).
+ * confirma un correo, se aplica el último que espera por él. Con noClub (leerCorreosNoClub), los que esperan por un
+ * correo de soporte, de la agencia o de un admin (una prueba) llevan confirmable:false y el motivo: el servidor no deja
+ * confirmarlos en la conexión de un cliente.
  */
-export async function pendientesParaFicha(acc, pg = poolReal) {
+export async function pendientesParaFicha(acc, pg = poolReal, noClub = null) {
   const de = new Map(); // correo → de dónde sale en la ficha
   const meter = (valor, origen) => {
     const mail = normalizarCorreo(valor);
@@ -517,7 +718,11 @@ export async function pendientesParaFicha(acc, pg = poolReal) {
   );
   return r.rows.map((p) => {
     const email = p.clave.slice('email:'.length);
-    return { email, de: de.get(email) || [], activo: p.activo, motivo: p.motivo, updated_at: p.updated_at, vigente: p.vigente };
+    const no = motivoNoClub(email, noClub, { corto: true });
+    return {
+      email, de: de.get(email) || [], activo: p.activo, motivo: p.motivo, updated_at: p.updated_at, vigente: p.vigente,
+      ...(no ? { confirmable: false, no_confirmable: no } : {}),
+    };
   });
 }
 
@@ -548,11 +753,13 @@ export async function quiereCorreoSubcuenta(accountId, pg = poolReal, { releer =
  * Guarda el correo de la subcuenta (si la conexión es del Club y aún no lo tenía). NO aplica estados pendientes: el
  * correo de la subcuenta no enlaza nada (si hay uno esperando por ese correo, se anota para que soporte lo vea). Nunca
  * lanza: una instalación o un SSO no se rompen por esto.
- * @returns {Promise<{ estado: 'guardado'|'ya_estaba'|'distinto'|'anterior_al_club'|'no_existe'|'sin_correo'|'error' }>}
+ * @returns {Promise<{ estado: 'guardado'|'ya_estaba'|'distinto'|'anterior_al_club'|'no_existe'|'sin_correo'|'error', motivo?: string }>}
+ *   motivo (con sin_correo): por qué no vale el correo que tiene GHL (p. ej. «lleva un carácter invisible (U+200B…)»).
  */
 export async function vincularCorreoSubcuenta({ accountId, correo, origen = '' }, pg = poolReal) {
-  const mail = normalizarCorreo(correo);
-  if (!mail) return { estado: 'sin_correo' };
+  const analisis = analizarCorreo(correo);
+  const mail = analisis.correo;
+  if (!mail) return { estado: 'sin_correo', ...(typeof correo === 'string' && correo.trim() ? { motivo: analisis.motivo } : {}) };
   let r;
   try {
     r = await enTransaccion(pg, async (c) => {

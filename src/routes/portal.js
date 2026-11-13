@@ -268,7 +268,8 @@ export default async function portalRoutes(app) {
     // 🏛️ ¿quedó un estado del Club PENDIENTE para el correo de este usuario? Solo se aplica si ese correo es el correo del
     // Club CONFIRMADO de esta conexión (club_email, lo pone soporte); ser el responsable no basta (a menudo es soporte,
     // que abre muchas subcuentas). Normalmente ya se aplicó al confirmarlo: esto solo reintenta. Nunca bloquea la entrada.
-    await aplicarPendientePorEmail(account.id, email).catch((err) => logEvent('club_pendiente_error', { account: account.id, error: String(err.message).slice(0, 160) }).catch(() => {}));
+    // Va el correo TAL CUAL lo certifica GHL: aplicarPendientePorEmail le aplica la misma normalización que al club_email.
+    await aplicarPendientePorEmail(account.id, payload.email).catch((err) => logEvent('club_pendiente_error', { account: account.id, error: String(err.message).slice(0, 160) }).catch(() => {}));
     await startPortalSession(reply, account, name, email);
     return { ok: true };
   });
