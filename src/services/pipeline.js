@@ -11,6 +11,8 @@ import { generateReply, shouldFollowup } from './agent.js';
 import { ejecutarAcciones } from './skills.js';
 // 💳 Marketplace Disruptivo: puerta de acceso antes de atender y registro de consumo al entregar.
 import { puedeAtender, registrarConsumo, cobrosIaActivos } from './marketplace.js';
+import { promptSinRellenar } from './club.js';
+import { topeDe, comprobarTope } from './tope.js';
 import { getFacturacion, precioCliente } from './facturacion.js';
 import { describeImage, transcribeAudio } from './llm.js';
 import * as ghl from './ghl.js';
@@ -238,7 +240,8 @@ function classifyMedia(url) {
 
 // cobrable = false → la lectura con IA se registra como 'vision_sin_setter'/'audio_sin_setter' (no se cobra al cliente):
 // pasa cuando el setter está apagado o la conversación en pausa y el mensaje no lo va a atender la IA.
-async function processAttachments(account, attachments, context, cobrable = true) {
+// sinIa = true → no se llama a la IA (tope de gasto mensual alcanzado): queda el texto genérico del adjunto.
+async function processAttachments(account, attachments, context, cobrable = true, sinIa = false) {
   const sufijo = cobrable ? '' : '_sin_setter';
   const parts = [];
   for (const a of attachments.slice(0, 4)) {
@@ -246,7 +249,7 @@ async function processAttachments(account, attachments, context, cobrable = true
     if (!url) continue;
     const kind = classifyMedia(url);
     try {
-      if (kind === 'image' && account.vision_enabled && account.vision_provider_id) {
+      if (!sinIa && kind === 'image' && account.vision_enabled && account.vision_provider_id) {
         const provider = await one(`SELECT * FROM providers WHERE id = $1`, [account.vision_provider_id]);
         if (provider) {
           const r = await describeImage({ provider, model: account.vision_model || provider.default_model, imageUrl: url, context });
@@ -255,7 +258,7 @@ async function processAttachments(account, attachments, context, cobrable = true
           continue;
         }
       }
-      if (kind === 'audio' && account.audio_enabled && account.audio_provider_id) {
+      if (!sinIa && kind === 'audio' && account.audio_enabled && account.audio_provider_id) {
         const provider = await one(`SELECT * FROM providers WHERE id = $1`, [account.audio_provider_id]);
         if (provider) {
           const audioModel = account.audio_model || provider.default_model;
@@ -867,7 +870,10 @@ export async function handleInbound(account, evt) {
     }
     // solo se cobra la lectura si la IA va a atender este mensaje (setter asignado y activo, sin pausa y con saldo)
     const atiende = respond && !conv.bot_paused && Boolean(ma.bot_enabled) && Boolean(ma.ai_enabled) && !account.md_sin_fondos_at;
-    const mediaText = await processAttachments(ma, attachments, textBody, atiende);
+    // 💸 tope de gasto mensual alcanzado → ni visión ni transcripción (no se llama a la IA). Solo si la conexión tiene
+    // tope (sin tope no hay consulta) y, si la consulta falla, se lee como siempre.
+    const sinIaPorTope = topeDe(ma) !== null && Boolean((await comprobarTope(ma).catch(() => null))?.alcanzado);
+    const mediaText = await processAttachments(ma, attachments, textBody, atiende, sinIaPorTope);
     body = [textBody, mediaText].filter(Boolean).join('\n');
   }
   if (!body) body = '[adjunto]';
@@ -2124,6 +2130,16 @@ async function processDebounceInner(job) {
     await descartarActivacion('sin_proveedor');
     return;
   }
+  // 🏛️ prompt de partida con huecos [[RELLENAR: …]] (plantilla de conexiones nuevas): nunca en vivo. Solo atiende en
+  // 🧪 modo prueba (donde la etiqueta de test es la llave) o en el simulador; una activación por etiqueta se salta el
+  // modo test de la conexión, así que con huecos se descarta siempre.
+  if (promptSinRellenar(account) && !esSim(conv.ghl_contact_id) && (activacion || !account.test_mode)) {
+    if (await redis.set(`sinrellenar:${account.id}`, '1', 'EX', 3600, 'NX').catch(() => 'OK')) {
+      await logEvent('prompt_sin_rellenar', { conv: conv.id, account: account.id, setter: setterId, nota: 'el prompt del setter aún tiene huecos [[RELLENAR: …]]: solo responde en modo prueba hasta que se rellenen' });
+    }
+    await descartarActivacion('prompt_sin_rellenar');
+    return;
+  }
   // 📣 RESCATE con goteo de horas: si ALGUIEN (humano o automatización) ya respondió al lead
   // durante la espera, el rescate sobra — sin este corte el setter escribiría encima con el
   // contexto «nunca te respondimos». Solo aplica a rescates: una activación normal por etiqueta
@@ -2268,12 +2284,14 @@ async function processDebounceInner(job) {
   // Fail-open por diseño: con la integración apagada o el marketplace mudo, se atiende igual.
   {
     const puerta = await puedeAtender(account).catch(() => ({ atender: true }));
+    // 💸 tope de gasto mensual: mismo trato que «sin saldo», con su propio estado para distinguirlo en el panel
+    const estadoPuerta = puerta.motivo === 'tope_mensual' ? 'tope_mensual' : 'sin_saldo';
     if (!puerta.atender && esSim(conv.ghl_contact_id)) {
       // 🧪 una simulación usa IA y se cobra como una conversación real: sin saldo no se atiende. Pero no
       // se queda 6 h reintentando en silencio: se descarta ya, con traza, para que el laboratorio lo enseñe.
-      await q(`UPDATE conversations SET followup_state = 'sin_saldo', updated_at = now() WHERE id = $1`, [conv.id]);
-      await logEvent('sim_sin_saldo_marketplace', { conv: conv.id, nota: 'sin saldo en el marketplace: la simulación no puede usar la IA (recarga y repite)' });
-      await descartarActivacion('sin_saldo_marketplace');
+      await q(`UPDATE conversations SET followup_state = $2, updated_at = now() WHERE id = $1`, [conv.id, estadoPuerta]);
+      await logEvent('sim_sin_saldo_marketplace', { conv: conv.id, motivo: puerta.motivo || '', nota: estadoPuerta === 'tope_mensual' ? 'la conexión ha llegado a su tope de gasto mensual: la simulación no puede usar la IA' : 'sin saldo en el marketplace: la simulación no puede usar la IA (recarga y repite)' });
+      await descartarActivacion(estadoPuerta === 'tope_mensual' ? 'tope_mensual' : 'sin_saldo_marketplace');
       return;
     }
     if (!puerta.atender) {
@@ -2284,14 +2302,14 @@ async function processDebounceInner(job) {
       const reintentos = await redis.incr(`mdwait:${conversationId}`);
       await redis.expire(`mdwait:${conversationId}`, 12 * 3600);
       if (reintentos <= 36) {
-        await q(`UPDATE conversations SET followup_state = 'sin_saldo', updated_at = now() WHERE id = $1`, [conv.id]);
+        await q(`UPDATE conversations SET followup_state = $2, updated_at = now() WHERE id = $1`, [conv.id, estadoPuerta]);
         if (activacion) await redis.expire(activarKey(conversationId), 12 * 3600); // que no caduque esperando
         await scheduleDebounce(account, conversationId, 10 * 60_000);
         return;
       }
       await redis.del(`mdwait:${conversationId}`);
-      await logEvent('marketplace_lead_sin_atender', { conv: conv.id, account: account.id, nota: '6 h sin saldo en el marketplace: se deja de reintentar esta respuesta' });
-      await descartarActivacion('sin_saldo_marketplace');
+      await logEvent('marketplace_lead_sin_atender', { conv: conv.id, account: account.id, motivo: puerta.motivo || '', nota: estadoPuerta === 'tope_mensual' ? '6 h con el tope de gasto mensual alcanzado: se deja de reintentar esta respuesta' : '6 h sin saldo en el marketplace: se deja de reintentar esta respuesta' });
+      await descartarActivacion(estadoPuerta === 'tope_mensual' ? 'tope_mensual' : 'sin_saldo_marketplace');
       return;
     }
     await redis.del(`mdwait:${conversationId}`).catch(() => {});
@@ -2876,6 +2894,8 @@ async function processFollowupInner(job) {
   if (!conv || !account || !provider) return;
   if (!account.ai_enabled || !account.bot_enabled || conv.bot_paused) return;
   if (conv.stage === 'atencion_humana') return; // requiere atención humana → sin seguimientos
+  // 🏛️ prompt con huecos [[RELLENAR: …]]: ningún seguimiento en vivo (solo en modo prueba o simulador)
+  if (promptSinRellenar(account) && !account.test_mode && !esSim(conv.ghl_contact_id)) return;
 
   // Gate duro por estado (sin coste): descartado (fuera) o agendado (objetivo cumplido) → nunca.
   // El resto (en_conversion, calificado, etc.) lo decide el chequeo IA leyendo los mensajes,
@@ -2899,24 +2919,25 @@ async function processFollowupInner(job) {
   // de seguimientos girando indefinidamente. Al agotarlo se corta la cadena con traza.
   {
     const puerta = await puedeAtender(account).catch(() => ({ atender: true }));
+    const estadoPuerta = puerta.motivo === 'tope_mensual' ? 'tope_mensual' : 'sin_saldo'; // 💸 tope = mismo trato que sin saldo
     if (!puerta.atender && esSim(conv.ghl_contact_id)) {
       // 🧪 simulación sin saldo: se corta ya con traza (no 6 h de aplazamientos mudos)
-      await q(`UPDATE conversations SET followup_state = 'sin_saldo', updated_at = now() WHERE id = $1`, [conv.id]);
+      await q(`UPDATE conversations SET followup_state = $2, updated_at = now() WHERE id = $1`, [conv.id, estadoPuerta]);
       await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
-      await logEvent('sim_sin_saldo_marketplace', { conv: conv.id, nota: 'sin saldo en el marketplace: el seguimiento simulado no puede usar la IA' });
+      await logEvent('sim_sin_saldo_marketplace', { conv: conv.id, motivo: puerta.motivo || '', nota: estadoPuerta === 'tope_mensual' ? 'la conexión ha llegado a su tope de gasto mensual: el seguimiento simulado no puede usar la IA' : 'sin saldo en el marketplace: el seguimiento simulado no puede usar la IA' });
       return;
     }
     if (!puerta.atender) {
       const esperas = await redis.incr(`mdfuwait:${conversationId}`);
       await redis.expire(`mdfuwait:${conversationId}`, 24 * 3600);
-      await q(`UPDATE conversations SET followup_state = 'sin_saldo', updated_at = now() WHERE id = $1`, [conv.id]);
+      await q(`UPDATE conversations SET followup_state = $2, updated_at = now() WHERE id = $1`, [conv.id, estadoPuerta]);
       if (esperas <= 12) {
         await rearmFollowup(conversationId, 30 * 60_000);
         return;
       }
       await redis.del(`mdfuwait:${conversationId}`);
       await redis.del(fuKey(conv.id)); await olvidarAjuste(conv.id);
-      await logEvent('marketplace_seguimiento_detenido', { conv: conv.id, account: account.id, nota: '6 h sin saldo en el marketplace: se corta la cadena de seguimientos (se reanuda si el lead escribe)' });
+      await logEvent('marketplace_seguimiento_detenido', { conv: conv.id, account: account.id, motivo: puerta.motivo || '', nota: estadoPuerta === 'tope_mensual' ? '6 h con el tope de gasto mensual alcanzado: se corta la cadena de seguimientos (se reanuda si el lead escribe)' : '6 h sin saldo en el marketplace: se corta la cadena de seguimientos (se reanuda si el lead escribe)' });
       return;
     }
     await redis.del(`mdfuwait:${conversationId}`).catch(() => {});

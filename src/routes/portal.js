@@ -6,6 +6,7 @@ import { config, scopesOAuth } from '../config.js';
 import { getLocationName, listLocationUsers } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
 import { decryptGhlSso } from '../lib/sso.js';
+import { crearConexionNueva, aplicarPendientePorEmail } from '../services/club.js';
 
 // Clave global del link de agencia (se genera sola).
 export async function agencyKey() {
@@ -184,11 +185,8 @@ export default async function portalRoutes(app) {
     if (token) {
       // Caso 2: conectada pero sin setter → crearlo y entrar (el instalador lo reclama)
       const nm = (await getLocationName({ mode: 'oauth', location_id: loc }, loc)) || `Setter ${loc.slice(0, 6)}`;
-      account = await one(
-        `INSERT INTO accounts (name, location_id, mode, webhook_token, portal_key) VALUES ($1, $2, 'oauth', $3, $4) RETURNING *`,
-        [nm, loc, crypto.randomBytes(16).toString('hex'), crypto.randomBytes(24).toString('hex')]
-      );
-      await q(`INSERT INTO setters (account_id, name, is_default) VALUES ($1, 'Setter principal', true)`, [account.id]);
+      // 🧪 nace en MODO PRUEBA con la plantilla de conexiones nuevas (services/club.js)
+      ({ account } = await crearConexionNueva({ name: nm, locationId: loc, conPortalKey: true, origen: 'enlace_agencia' }));
       // Recién conectada → a la app embebida; el 1er usuario que entre por SSO queda como responsable.
       return reply.redirect('/');
     }
@@ -255,14 +253,14 @@ export default async function portalRoutes(app) {
     let account = await one(`SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [locationId]);
     if (!account) {
       const nm = (await getLocationName({ mode: 'oauth', location_id: locationId }, locationId)) || `Setter ${locationId.slice(0, 6)}`;
-      account = await one(
-        `INSERT INTO accounts (name, location_id, mode, webhook_token, portal_key) VALUES ($1, $2, 'oauth', $3, $4) RETURNING *`,
-        [nm, locationId, crypto.randomBytes(16).toString('hex'), crypto.randomBytes(24).toString('hex')]
-      );
-      await q(`INSERT INTO setters (account_id, name, is_default) VALUES ($1, 'Setter principal', true)`, [account.id]);
+      // 🧪 nace en MODO PRUEBA con la plantilla de conexiones nuevas (services/club.js)
+      ({ account } = await crearConexionNueva({ name: nm, locationId, conPortalKey: true, origen: 'sso' }));
     }
     // GHL ya certifica que el usuario pertenece a esta subcuenta → acceso directo (sin roster ni lista).
     if (!normEmail(account.owner_email)) await claimOwner(account.id, email); // primer usuario = responsable
+    // 🏛️ ¿el interruptor del Club llegó por CORREO antes de existir la conexión? GHL certifica que este usuario es de
+    // esta subcuenta: se aplica aquí (solo a conexiones nuevas, una vez). Nunca bloquea la entrada.
+    await aplicarPendientePorEmail(account.id, email).catch((err) => logEvent('club_pendiente_error', { account: account.id, error: String(err.message).slice(0, 160) }).catch(() => {}));
     await startPortalSession(reply, account, name, email);
     return { ok: true };
   });

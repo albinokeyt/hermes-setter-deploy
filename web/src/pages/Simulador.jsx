@@ -69,7 +69,9 @@ function textoEvento(e) {
     error_config: () => `✖ ${p.msg}`,
     respuesta_repetida_filtrada: () => `Se filtraron ${p.filtradas} burbujas repetidas`,
     error_contexto_cta: () => `Error guardando el contexto del CTA: ${p.error}`,
-    sim_sin_saldo_marketplace: () => `✖ Sin saldo en el marketplace: ${p.nota || 'la simulación no puede usar la IA (recarga y repite)'}`,
+    sim_sin_saldo_marketplace: () => (p.motivo === 'tope_mensual'
+      ? `✖ Tope de gasto mensual alcanzado: ${p.nota || 'la simulación no puede usar la IA'}`
+      : `✖ Sin saldo en el marketplace: ${p.nota || 'la simulación no puede usar la IA (recarga y repite)'}`),
     sim_respuesta_no_generada: () => `✖ Ciclo terminado sin respuesta: ${p.nota || ''}`,
     sim_seguimiento_omitido: () => `✖ Seguimiento cortado por el motor: ${p.nota || ''}`,
     error_llm_followup_reintentando: () => `Error del modelo en el seguimiento (intento ${p.intento}), se reintenta: ${p.error}`,

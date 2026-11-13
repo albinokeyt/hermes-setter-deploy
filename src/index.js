@@ -30,6 +30,7 @@ import promptEditorRoutes from './routes/promptEditor.js';
 import bugRoutes from './routes/bugs.js';
 import tourRoutes from './routes/tour.js';
 import marketplaceRoutes from './routes/marketplace.js';
+import clubRoutes from './routes/club.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,6 +83,7 @@ async function main() {
   await app.register(bugRoutes);
   await app.register(tourRoutes);
   await app.register(marketplaceRoutes);
+  await app.register(clubRoutes); // 🏛️ interruptor del Club (protegido por CLUB_WEBHOOK_SECRET)
 
   // frontend compilado (SPA)
   const webDist = path.join(__dirname, '..', 'web', 'dist');

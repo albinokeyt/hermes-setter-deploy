@@ -266,6 +266,16 @@ export default function AccountEdit() {
           {isAdmin && (
             <Input label="Nombre de la conexión (técnico)" value={acc.name} onChange={(e) => set({ name: e.target.value })} hint="Nombre base. Si pones un alias abajo, se muestra el alias en todo el panel." />
           )}
+          {isAdmin && (
+            <div className="space-y-2 rounded-xl border border-rose-200 bg-rose-50/40 p-4">
+              <span className="block text-sm font-bold text-slate-800">💸 Tope de gasto mensual (solo admin)</span>
+              <p className="-mt-1 text-xs text-slate-500">Máximo de consumo de IA al mes natural (precio al cliente, en USD), en la zona horaria de la conexión. Al llegar, el setter deja de llamar a la IA igual que si no tuviera saldo, hasta el mes siguiente o hasta que subas el tope. Vacío = sin tope.</p>
+              <Input type="number" min="0.01" step="0.01" className="!w-44" placeholder="sin tope"
+                value={acc.tope_mensual_usd ?? ''}
+                onChange={(e) => set({ tope_mensual_usd: e.target.value === '' ? null : e.target.value })}
+                hint="Ej.: 20 = como mucho 20 USD de IA al mes." />
+            </div>
+          )}
           <div className="space-y-2">
             <span className="block text-sm font-medium text-slate-700">🏷️ Nombre visible (alias)</span>
             <p className="-mt-1 text-xs text-slate-400">Es el nombre que se ve en tu panel. Ponle uno que reconozcas (por ejemplo el nombre real de la subcuenta). Déjalo vacío para usar el nombre técnico.</p>

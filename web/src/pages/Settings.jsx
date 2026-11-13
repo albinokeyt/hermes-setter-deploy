@@ -15,9 +15,13 @@ export default function SettingsPage() {
   const [pSaved, setPSaved] = useState(false);
 
   const [providers, setProviders] = useState([]);
+  const [plantilla, setPlantilla] = useState(null);
+  const [plSaved, setPlSaved] = useState(false);
+  const [plError, setPlError] = useState('');
+  const [club, setClub] = useState(null);
   const load = () => api.get('/api/settings/ghl').then((c) => { setCfg(c); setClientId(c.client_id); }).catch(() => {});
   const loadLog = () => api.get('/api/settings/webhook-log?limit=60').then(setLog).catch(() => {});
-  useEffect(() => { load(); loadLog(); api.get('/api/settings/prompts').then(setPrompts).catch(() => {}); api.get('/api/providers').then(setProviders).catch(() => {}); }, []);
+  useEffect(() => { load(); loadLog(); api.get('/api/settings/prompts').then(setPrompts).catch(() => {}); api.get('/api/providers').then(setProviders).catch(() => {}); api.get('/api/settings/plantilla-conexion').then(setPlantilla).catch(() => {}); api.get('/api/settings/club-eventos?limit=20').then(setClub).catch(() => {}); }, []);
 
   if (!cfg) return <div className="py-24 text-center text-sm text-slate-400">Cargando…</div>;
 
@@ -39,6 +43,20 @@ export default function SettingsPage() {
     setPSaved(true);
     setTimeout(() => setPSaved(false), 2000);
   };
+
+  const savePlantilla = async () => {
+    setPlError('');
+    try {
+      const r = await api.put('/api/settings/plantilla-conexion', {
+        provider_id: plantilla.provider_id || null, model: plantilla.model || '', test_tag: plantilla.test_tag || '',
+        prompt_partida: plantilla.prompt_partida,
+      });
+      setPlantilla({ ...plantilla, ...r });
+      setPlSaved(true);
+      setTimeout(() => setPlSaved(false), 2000);
+    } catch (err) { setPlError(err.message); }
+  };
+  const setPP = (k, v) => setPlantilla({ ...plantilla, prompt_partida: { ...(plantilla.prompt_partida || {}), [k]: v } });
 
   return (
     <div>
@@ -98,6 +116,37 @@ export default function SettingsPage() {
             <Button onClick={savePrompts}>{pSaved ? '✓ Guardado' : 'Guardar modelos'}</Button>
           </Card>
         </div>
+      )}
+
+      {plantilla && (
+        <Card className="mb-4 space-y-4 p-6">
+          <h3 className="text-sm font-bold text-slate-800">🏛️ Plantilla de conexiones nuevas</h3>
+          <p className="text-xs text-slate-500">Toda conexión que se crea sola (instalación desde GHL, enlace de agencia o Custom Page) nace en <b>🧪 modo prueba</b> con la etiqueta de abajo, y su «Setter principal» copia esta API, este modelo y este prompt de partida. Las conexiones que ya existen no cambian. Mientras el prompt tenga huecos <code>[[RELLENAR: …]]</code>, el setter solo responde en modo prueba.</p>
+          {plantilla.origen && <p className="text-[11px] text-slate-400">Origen: {plantilla.origen}</p>}
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Select label="API de IA" value={plantilla.provider_id || ''} onChange={(e) => setPlantilla({ ...plantilla, provider_id: e.target.value ? Number(e.target.value) : null })}>
+              <option value="">— ninguna (asignar a mano) —</option>
+              {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </Select>
+            <Input label="Modelo" placeholder="vacío = el por defecto de la API" value={plantilla.model || ''} onChange={(e) => setPlantilla({ ...plantilla, model: e.target.value })} />
+            <Input label="Etiqueta de prueba" placeholder={plantilla.test_tag_defecto || 'test-setter'} value={plantilla.test_tag || ''} onChange={(e) => setPlantilla({ ...plantilla, test_tag: e.target.value })} />
+          </div>
+          {plantilla.provider_id && plantilla.provider_existe === false && <Banner tone="warn">La API guardada en la plantilla ya no existe: las conexiones nuevas nacerán sin proveedor.</Banner>}
+          <div className="grid gap-4 lg:grid-cols-3">
+            <Textarea label="1 · Identidad y personalidad" rows={9} value={plantilla.prompt_partida?.identity || ''} onChange={(e) => setPP('identity', e.target.value)} />
+            <Textarea label="2 · Negocio y oferta" rows={9} value={plantilla.prompt_partida?.business || ''} onChange={(e) => setPP('business', e.target.value)} />
+            <Textarea label="3 · Flujo y objetivo" rows={9} value={plantilla.prompt_partida?.flow || ''} onChange={(e) => setPP('flow', e.target.value)} />
+          </div>
+          {plError && <Banner tone="error">{plError}</Banner>}
+          <Button onClick={savePlantilla}>{plSaved ? '✓ Guardado' : 'Guardar plantilla'}</Button>
+          {club && (
+            <details className="rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2 text-xs">
+              <summary className="cursor-pointer font-semibold text-slate-700">Interruptor del Club · {club.configurado ? 'configurado' : 'SIN secreto (responde 503)'} · {club.eventos?.length || 0} llamadas recientes · {club.pendientes?.length || 0} pendientes</summary>
+              <p className="mt-2 text-slate-500">POST <code>{club.url}</code> con la cabecera <code>X-Club-Secret</code>.</p>
+              <pre className="scroll-thin mt-2 max-h-56 overflow-auto rounded-lg bg-white p-2 text-[10px] leading-relaxed text-slate-600">{JSON.stringify({ eventos: club.eventos, pendientes: club.pendientes }, null, 2)}</pre>
+            </details>
+          )}
+        </Card>
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">

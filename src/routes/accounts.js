@@ -8,6 +8,7 @@ import { cerrarLotesConsumo } from '../services/marketplace.js';
 import { redis } from '../lib/redis.js';
 import { WINDOWED_CHANNELS } from '../config.js';
 import { sanearPalabrasNombre } from '../lib/tags.js';
+import { sanearTope } from '../services/tope.js';
 
 // URL de comentarios: FIJA y LIMPIA, la misma para todas las conexiones (enruta por location.id).
 const COMMENT_WEBHOOK_URL = `${config.appBaseUrl}/api/webhooks/comentarios`;
@@ -21,6 +22,7 @@ const ADMIN_EDITABLE = [
   'vision_enabled', 'vision_provider_id', 'vision_model', 'audio_enabled', 'audio_provider_id', 'audio_model',
   'calendar_id', 'calendar_ids', 'auto_handoff_minutes', 'required_tags', 'required_tags_mode', 'ctas',
   'insertion_wait_seconds', 'insertion_idle_hours', 'lead_magnets', 'excluded_name_words',
+  'tope_mensual_usd', // 💸 tope de gasto mensual (USD): SOLO admin (services/tope.js)
 ];
 
 // Un usuario normal solo toca su agente: prompt, comportamiento y seguimientos.
@@ -134,6 +136,12 @@ export default async function accountRoutes(app) {
     if (!existing) return reply.code(404).send({ error: 'No existe' });
     const editable = req.auth?.role === 'admin' ? ADMIN_EDITABLE : USER_EDITABLE;
     const b = req.body || {};
+    // 💸 tope de gasto: se valida antes de escribir nada (un importe raro no puede quedar a medias ni en silencio)
+    let tope = null;
+    if (editable.includes('tope_mensual_usd') && 'tope_mensual_usd' in b) {
+      tope = sanearTope(b.tope_mensual_usd);
+      if (!tope.ok) return reply.code(400).send({ error: tope.error });
+    }
     const sets = [];
     const vals = [];
     for (const field of editable) {
@@ -144,12 +152,22 @@ export default async function accountRoutes(app) {
       if (field === 'excluded_name_words') value = JSON.stringify(sanearPalabrasNombre(b[field]));
       if (field === 'insertion_wait_seconds') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 3600);
       if (field === 'insertion_idle_hours') value = Math.min(Math.max(0, Math.round(Number(b[field]) || 0)), 720);
+      if (field === 'tope_mensual_usd') value = tope.valor;
       vals.push(value);
       sets.push(`${field} = $${vals.length}${JSON_FIELDS.has(field) ? '::jsonb' : ''}`);
+      // 🏛️ el admin enciende/apaga la IA a mano: esa decisión es «de ahora» para el interruptor del Club (un estado
+      // pendiente más viejo ya no la pisará). En el SET, «ai_enabled» de la derecha es el valor ANTERIOR.
+      if (field === 'ai_enabled') {
+        sets.push(`club_estado_at = CASE WHEN ai_enabled IS DISTINCT FROM $${vals.length}::boolean THEN now() ELSE club_estado_at END`);
+      }
     }
     if (!sets.length) return stripSecrets(existing, req);
     vals.push(existing.id);
     const row = await one(`UPDATE accounts SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`, vals);
+    const antes = existing.tope_mensual_usd === null || existing.tope_mensual_usd === undefined ? null : Number(existing.tope_mensual_usd);
+    if (tope && antes !== tope.valor) {
+      await logEvent('tope_mensual_cambiado', { account: existing.id, antes, ahora: tope.valor }).catch(() => {});
+    }
     return stripSecrets(row, req);
   });
 

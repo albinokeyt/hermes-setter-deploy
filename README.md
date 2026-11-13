@@ -84,8 +84,8 @@ Para conectar una subcuenta sin crear la app:
 
 Hermes **no gestiona pagos propios**. Antes de atender pregunta al [Marketplace
 Disruptivo](https://marketplace.escaladoacelerado.es) si esa subcuenta tiene el uso **incluido**
-(plan o prueba gratuita) y, si no lo tiene, cobra su consumo del saldo que el cliente tenga allí
-(primero su crédito interno, luego el wallet de GoHighLevel de su subcuenta).
+(plan o prueba gratuita) y, si no lo tiene, cobra su consumo de IA **solo del saldo prepago** que el
+cliente recarga allí (crédito en USD, `pay_with: 'credit'`). Nunca se cobra del wallet de GoHighLevel.
 
 - **Unidad facturable:** una **conversación por día natural**. Da igual que ese día se crucen 30
   mensajes con el lead: cuenta 1. Al día siguiente, ese mismo lead vuelve a contar 1.
@@ -112,6 +112,29 @@ Para integrar o probar sin gastar dinero, pide al administrador del marketplace 
 crédito. Desde el panel, **Marketplace → Comprobar** diagnostica sin mover nada y **Cobro de
 prueba** ejecuta el ciclo completo (repetirlo el mismo día debe responder «idempotente»: esa es la
 prueba de que no se duplica).
+
+## Club de Sistemas (migración 059)
+
+- **Conexiones nuevas seguras**: toda conexión que nace sola (instalación OAuth, enlace de agencia `/ghl-app`, SSO
+  de la Custom Page) se crea en `src/services/club.js · crearConexionNueva()` con **🧪 modo prueba** (`test_mode=true`,
+  etiqueta `test-setter`) y su «Setter principal» copia la **plantilla de conexiones nuevas** (Configuración →
+  «Plantilla de conexiones nuevas»: API, modelo y prompt de partida). Las conexiones que ya existían no cambian.
+  Mientras el prompt tenga huecos `[[RELLENAR: …]]`, el setter solo responde en modo prueba (o en el simulador).
+- **Interruptor del Club**: `POST /api/club/estado` con la cabecera `X-Club-Secret: <CLUB_WEBHOOK_SECRET>` (o
+  `Authorization: Bearer <secreto>`), `Content-Type: application/json` y el cuerpo
+  `{ "location_id"?: "…", "email"?: "…", "activo": true|false, "motivo": "…" }`. Pone `ai_enabled` en todas las
+  conexiones NUEVAS de la subcuenta. Solo correo: la única conexión nueva cuyo **responsable** (`owner_email`, lo fija
+  el SSO de GHL) es ese correo; los «correos autorizados» no cuentan (los edita el cliente). Sin conexión → pendiente
+  (202) que se aplica al crearse (subcuenta) o cuando ese responsable entra por SSO (correo); varias → 202 «ambiguo» sin
+  tocar nada. Conexiones anteriores a la 059 → 202 «protegida», nunca se tocan. Un pendiente más viejo que el último
+  estado aplicado (`accounts.club_estado_at`) se descarta («pendiente_obsoleto»). Sin la variable → 503; secreto malo →
+  401. Registro en la tabla `club_eventos` (Configuración → «Interruptor del Club»).
+- **Tope de gasto mensual** (`accounts.tope_mensual_usd`, solo admin, pestaña Ajustes de la conexión): al llegar al
+  tope en el mes natural (zona horaria de la conexión, precio al cliente), la puerta no llama a la IA (como sin saldo),
+  tampoco se leen imágenes ni audios con IA, y queda el evento `tope_mensual_alcanzado`. Las pruebas del panel (van a 0)
+  no las corta el tope. Es un tope «blando»: la llamada que lo cruza se termina.
+- Pruebas: `npm test` (Postgres real en memoria con PGlite y las migraciones de verdad; la puerta del marketplace con
+  dobles de módulo).
 
 ## Desarrollo local
 

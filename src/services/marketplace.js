@@ -1,8 +1,8 @@
 // 💳 Marketplace Disruptivo — pasarela de accesos y cobros del Departamento Disruptivo.
 //
 // Hermes NO gestiona pagos propios: pregunta si la subcuenta tiene el uso INCLUIDO (plan o prueba)
-// y, si no lo tiene, cobra su consumo del saldo del cliente en el marketplace (crédito interno
-// primero, wallet de GHL después).
+// y, si no lo tiene, cobra su consumo SOLO del saldo prepago que el cliente recarga en el marketplace
+// (crédito interno en USD, pay_with: 'credit'). Nunca se cobra del monedero (wallet) de GHL.
 //
 // Dos piezas:
 //   1) ANTES de atender → puedeAtender() (access + has-funds)
@@ -25,6 +25,7 @@ import { q, one, pool, getSetting } from '../db.js';
 import { redis } from '../lib/redis.js';
 import { chargeQueue } from '../queues.js';
 import { getFacturacion } from './facturacion.js';
+import { comprobarTope } from './tope.js';
 
 const texto = (v) => String(v ?? '').trim();
 
@@ -246,6 +247,26 @@ export async function hayFondos(locationId, { timeoutMs = TIMEOUT_COBRO_MS } = {
  * - access false + sin fondos → NO se atiende ahora y queda constancia para el administrador.
  */
 export async function puedeAtender(account) {
+  // 💸 TOPE DE GASTO MENSUAL (services/tope.js): va PRIMERO y no depende del marketplace (también con la integración
+  // apagada o el uso incluido). Llegado el tope, no se llama a la IA: el pipeline lo trata igual que «sin saldo».
+  // Si la consulta falla, se atiende (mismo principio fail-open que el resto de la puerta).
+  const tope = await comprobarTope(account).catch(() => null);
+  if (tope?.alcanzado) {
+    if (await unaVezCada(`tope:${account.id}`, 3600)) {
+      await evento('tope_mensual_alcanzado', {
+        account: account.id, location: account.location_id || null, tope: tope.tope, consumo: tope.consumo,
+        desde: tope.desde?.toISOString?.() || null,
+        nota: 'La conexión ha llegado a su tope de gasto mensual: el setter no llama a la IA hasta el mes que viene o hasta que el admin suba el tope.',
+      });
+    }
+    return { atender: false, acceso: null, motivo: 'tope_mensual', tope: tope.tope, consumo: tope.consumo };
+  }
+  return puertaSaldo(account);
+}
+
+// La puerta de SALDO del marketplace, sin el tope de gasto. La usan puedeAtender (después del tope) y puedeProbar (las
+// pruebas van a 0 y no cuentan para el tope, así que no las corta: solo exigen saldo, como antes).
+async function puertaSaldo(account) {
   if (!mdActivo()) return { atender: true, acceso: null, motivo: 'integracion_apagada' };
   const loc = texto(account?.location_id);
   if (!loc) return { atender: true, acceso: null, motivo: 'sin_location_id' };
@@ -290,7 +311,8 @@ export async function puedeAtender(account) {
 export const SIN_SALDO_PRUEBAS = 'Sin saldo en Marketplace Disruptivo: recarga tu saldo para usar la IA en las pruebas.';
 export async function puedeProbar(req, account) {
   if (req?.auth?.role === 'admin' || !account) return true;
-  const puerta = await puedeAtender(account).catch(() => ({ atender: true }));
+  // 💸 sin el tope de gasto mensual: las pruebas se apuntan a 0 (no cuentan para el tope) y su aviso es el de saldo
+  const puerta = await puertaSaldo(account).catch(() => ({ atender: true }));
   return puerta.atender !== false;
 }
 

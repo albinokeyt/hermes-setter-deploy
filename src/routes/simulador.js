@@ -307,7 +307,11 @@ export default async function simuladorRoutes(app) {
     // 💳 Puerta de saldo ANTES de gastar IA, y cobro como «una conversación por día»: la tanda de preguntas
     // se apunta a una conversación de laboratorio (simulada, una por setter) que se cobra una vez al día.
     const puerta = await puedeAtender(account).catch(() => ({ atender: true }));
-    if (!puerta.atender) return reply.code(402).send({ error: 'Sin saldo en el marketplace: recarga para usar la IA en el laboratorio.' });
+    if (!puerta.atender) {
+      // 💸 el laboratorio se cobra como una conversación: con el tope de gasto mensual alcanzado tampoco usa la IA
+      if (puerta.motivo === 'tope_mensual') return reply.code(402).send({ error: 'Esta conexión ha llegado a su tope de gasto mensual de IA: el laboratorio no puede usar la IA hasta el mes que viene o hasta que la agencia suba el tope.' });
+      return reply.code(402).send({ error: 'Sin saldo en el marketplace: recarga para usar la IA en el laboratorio.' });
+    }
     const labContact = `sim:lab-preguntas-${setter.id}`;
     const labConv = await one(
       `INSERT INTO conversations (account_id, ghl_contact_id, channel, lead_name, setter_id, simulada, updated_at)

@@ -157,6 +157,9 @@ export default function SetterEdit() {
             <Banner tone="info">El prompt se divide en 3 partes. El agente las combina con la memoria del lead y las reglas de humanización automáticamente.</Banner>
             <Button variant="secondary" className="shrink-0" onClick={openHistory}>🕘 Historial</Button>
           </div>
+          {[s.prompt_identity, s.prompt_business, s.prompt_flow].some((t) => /\[\[\s*RELLENAR/i.test(String(t || ''))) && (
+            <Banner tone="warn">✍️ Este prompt aún tiene huecos <b>[[RELLENAR: …]]</b>. Mientras quede alguno, el asistente <b>solo responde en 🧪 modo prueba</b> (a los contactos con la etiqueta de prueba). Sustituye cada hueco por tus datos y guarda.</Banner>
+          )}
           <Card data-tour="setter-prompt-identidad" className="p-5">
             <Textarea label="1 · Identidad y personalidad" rows={8} value={s.prompt_identity} onChange={(e) => set({ prompt_identity: e.target.value })} placeholder="Eres Sofía, setter del centro..." hint="Quién es el setter: nombre, tono, forma de escribir, qué haría y qué jamás diría." />
           </Card>

@@ -5,6 +5,7 @@ import { requireAdmin } from '../lib/session.js';
 import { DEFAULT_GUARDRAIL, invalidateGuardrailCache } from '../services/agent.js';
 import { DEFAULT_ARCHITECT, DEFAULT_CORRECTOR } from './promptEditor.js';
 import { agencyKey } from './portal.js';
+import { leerPlantilla, sanearPlantilla, TEST_TAG_POR_DEFECTO } from '../services/club.js';
 
 // md5 de las generaciones VIEJAS de los prompts por defecto (los mismos de la migración 046, ver
 // scripts/hashes-defaults.mjs). Guardar uno de estos textos también almacena '' — cubre la pestaña
@@ -66,6 +67,41 @@ export default async function settingsRoutes(app) {
       await setSetting('corrector_model', { provider_id: b.corrector_provider_id || null, model: b.corrector_model || '' });
     }
     return { ok: true };
+  });
+
+  // 🏛️ Plantilla de CONEXIONES NUEVAS (services/club.js): lo que copia el «Setter principal» de cada conexión que se
+  // crea sola. Las conexiones nuevas nacen SIEMPRE en modo prueba con test_tag; esto no toca las que ya existen.
+  app.get('/api/settings/plantilla-conexion', async () => {
+    const p = await leerPlantilla();
+    const prov = p.provider_id ? await q(`SELECT id, name FROM providers WHERE id = $1`, [p.provider_id]) : [];
+    return { ...p, provider_name: prov[0]?.name || null, provider_existe: p.provider_id ? Boolean(prov[0]) : null, test_tag_defecto: TEST_TAG_POR_DEFECTO };
+  });
+
+  app.put('/api/settings/plantilla-conexion', async (req, reply) => {
+    const actual = await leerPlantilla();
+    const b = req.body && typeof req.body === 'object' ? req.body : {};
+    const nueva = sanearPlantilla({
+      ...actual,
+      ...('provider_id' in b ? { provider_id: b.provider_id } : {}),
+      ...('model' in b ? { model: b.model } : {}),
+      ...('test_tag' in b ? { test_tag: b.test_tag } : {}),
+      ...(b.prompt_partida && typeof b.prompt_partida === 'object' ? { prompt_partida: { ...actual.prompt_partida, ...b.prompt_partida } } : {}),
+      origen: 'editada en Configuración',
+    });
+    if (nueva.provider_id) {
+      const p = await q(`SELECT id FROM providers WHERE id = $1`, [nueva.provider_id]);
+      if (!p.length) return reply.code(400).send({ error: 'Esa API de IA no existe.' });
+    }
+    await setSetting('plantilla_conexion', nueva);
+    return { ok: true, ...nueva };
+  });
+
+  // 🏛️ Registro DURABLE del interruptor del Club (POST /api/club/estado): últimas llamadas y estados pendientes.
+  app.get('/api/settings/club-eventos', async (req) => {
+    const limit = Math.min(Math.max(Number(req.query?.limit) || 50, 1), 500);
+    const eventos = await q(`SELECT * FROM club_eventos ORDER BY id DESC LIMIT $1`, [limit]);
+    const pendientes = await q(`SELECT * FROM club_estado_pendiente ORDER BY updated_at DESC LIMIT 200`);
+    return { configurado: String(process.env.CLUB_WEBHOOK_SECRET || '').trim().length >= 24, url: `${config.appBaseUrl}/api/club/estado`, eventos, pendientes };
   });
 
   app.get('/api/settings/ghl', async () => {

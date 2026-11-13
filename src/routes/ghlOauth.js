@@ -5,6 +5,7 @@ import { config, scopesOAuth } from '../config.js';
 import { exchangeCodeForLocation, saveTokens, getLocationName } from '../services/ghl.js';
 import { logEvent } from '../services/pipeline.js';
 import { requireAdmin } from '../lib/session.js';
+import { crearConexionNueva } from '../services/club.js';
 
 // OJO: las rutas públicas no pueden contener "ghl" — el validador del marketplace
 // de GHL rechaza redirect URLs con referencias a HighLevel.
@@ -98,11 +99,8 @@ export default async function ghlOauthRoutes(app) {
       let account = await one(`SELECT * FROM accounts WHERE location_id = $1 ORDER BY ai_enabled DESC, bot_enabled DESC, id ASC LIMIT 1`, [locationId]);
       if (!account) {
         const name = (await getLocationName({ mode: 'oauth', location_id: locationId }, locationId)) || `Subcuenta ${locationId.slice(0, 6)}`;
-        account = await one(
-          `INSERT INTO accounts (name, location_id, mode, webhook_token) VALUES ($1, $2, 'oauth', $3) RETURNING *`,
-          [name, locationId, crypto.randomBytes(16).toString('hex')]
-        );
-        await q(`INSERT INTO setters (account_id, name, is_default) VALUES ($1, 'Setter principal', true)`, [account.id]);
+        // 🧪 nace en MODO PRUEBA con la plantilla de conexiones nuevas (services/club.js)
+        ({ account } = await crearConexionNueva({ name, locationId, conPortalKey: false, origen: 'oauth' }));
       }
       await logEvent('oauth_conectado', { locationId, account: account.id });
       return reply.redirect(`/cuentas/${account.id}?conectada=1`);
