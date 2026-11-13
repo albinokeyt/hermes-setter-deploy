@@ -351,7 +351,7 @@ test('endpoint: 503 sin secreto, 401 con secreto malo, 400 cuerpo malo, 200 bien
     req.rawBody = payload;
     try { done(null, payload ? JSON.parse(payload) : {}); } catch { done(null, {}); }
   });
-  await app.register(clubRoutes, { pool: pg, redis: fakeRedis(), secreto: SECRETO });
+  await app.register(clubRoutes, { pool: pg, redis: fakeRedis(), secreto: SECRETO, reloj: () => 1_800_000_000_000 });
   r = await app.inject({ method: 'POST', url: '/api/club/estado', payload: cuerpo });
   assert.equal(r.statusCode, 401);
   r = await app.inject({ method: 'POST', url: '/api/club/estado', headers: { 'x-club-secret': 'malo' }, payload: cuerpo });
@@ -378,8 +378,12 @@ test('endpoint: 503 sin secreto, 401 con secreto malo, 400 cuerpo malo, 200 bien
   await pg.close();
 });
 
-test('la ruta pública exacta en la sesión: solo /api/club/estado se salta el login', async () => {
+test('la ruta pública exacta en la sesión: solo /api/club/estado (y /api/club/devolucion) se saltan el login', async () => {
   const src = fs.readFileSync(new URL('../src/lib/session.js', import.meta.url), 'utf8');
-  assert.match(src, /'\/api\/club\/estado'/);
-  assert.doesNotMatch(src, /'\/api\/club\/'/);
+  assert.match(src, /esRutaPublica\(url\)/, 'el authHook usa lib/rutas.js');
+  assert.match(src, /rutaDeUrl\(req\.url\)/, 'y mira la ruta, no el texto (forma absoluta)');
+  assert.doesNotMatch(src, /'\/api\/club\//, 'ninguna ruta del Club por prefijo en la sesión');
+  const { esRutaPublica } = await import('../src/lib/rutas.js');
+  assert.equal(esRutaPublica('/api/club/estado'), true);
+  assert.equal(esRutaPublica('/api/club/estadoX'), false);
 });

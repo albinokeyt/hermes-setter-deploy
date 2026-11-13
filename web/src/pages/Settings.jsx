@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { RefreshCw, ShieldCheck, ShieldAlert, ShieldHalf, Wand2, Wrench } from 'lucide-react';
 import { api, timeAgo } from '../api.js';
 import { Card, SectionTitle, Button, Input, Textarea, Select, Banner, CopyField } from '../components/ui.jsx';
+import DevolucionesClub from '../components/DevolucionesClub.jsx';
 
 export default function SettingsPage() {
   const [cfg, setCfg] = useState(null);
@@ -148,6 +149,8 @@ export default function SettingsPage() {
           )}
         </Card>
       )}
+
+      <DevolucionesClub />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="space-y-4">

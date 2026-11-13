@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { redis } from './redis.js';
 import { one, q } from '../db.js';
 import { config } from '../config.js';
+import { esRutaPublica, rutaDeUrl } from './rutas.js';
 
 const SESSION_TTL = 60 * 60 * 24 * 7;
 
@@ -52,12 +53,12 @@ export async function destroySession(token) {
   if (token) await redis.del(`sess:${token}`);
 }
 
-const PUBLIC_PREFIXES = ['/api/auth/login', '/api/webhooks/', '/api/oauth/callback', '/api/health', '/api/portal/register', '/api/portal/sso', '/api/club/estado'];
-
 export function authHook() {
   return async (req, reply) => {
-    if (!req.url.startsWith('/api/')) return;
-    if (PUBLIC_PREFIXES.some((p) => req.url.startsWith(p))) return;
+    const url = rutaDeUrl(req.url); // «http://host/api/…» → «/api/…» (lib/rutas.js)
+    if (!url.startsWith('/api/')) return;
+    // rutas públicas (lib/rutas.js): las del Club, EXACTAS (sin la query); las demás, por prefijo
+    if (esRutaPublica(url)) return;
     const token = req.cookies?.hermes_session;
     const raw = token ? await redis.get(`sess:${token}`) : null;
     if (!raw) {

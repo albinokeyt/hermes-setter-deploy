@@ -6,6 +6,10 @@ import { DEFAULT_GUARDRAIL, invalidateGuardrailCache } from '../services/agent.j
 import { DEFAULT_ARCHITECT, DEFAULT_CORRECTOR } from './promptEditor.js';
 import { agencyKey } from './portal.js';
 import { leerPlantilla, sanearPlantilla, TEST_TAG_POR_DEFECTO } from '../services/club.js';
+import {
+  AJUSTES_POR_DEFECTO as AJUSTES_DEVOLUCIONES_POR_DEFECTO, leerAjustes as leerAjustesDevoluciones,
+  validarAjustes as validarAjustesDevoluciones, guardarAjustes as guardarAjustesDevoluciones, listarSolicitudes, enviarAGhl,
+} from '../services/devoluciones.js';
 
 // md5 de las generaciones VIEJAS de los prompts por defecto (los mismos de la migración 046, ver
 // scripts/hashes-defaults.mjs). Guardar uno de estos textos también almacena '' — cubre la pestaña
@@ -102,6 +106,40 @@ export default async function settingsRoutes(app) {
     const eventos = await q(`SELECT * FROM club_eventos ORDER BY id DESC LIMIT $1`, [limit]);
     const pendientes = await q(`SELECT * FROM club_estado_pendiente ORDER BY updated_at DESC LIMIT 200`);
     return { configurado: String(process.env.CLUB_WEBHOOK_SECRET || '').trim().length >= 24, url: `${config.appBaseUrl}/api/club/estado`, eventos, pendientes };
+  });
+
+  // 🏛️ DEVOLUCIONES del Club (POST /api/club/devolucion · services/devoluciones.js): ajustes editables por el admin
+  // (plazo, límites, URL de uso del Brain y URL del resultado en GHL), solicitudes con su decisión y reenvío a GHL.
+  app.get('/api/settings/devoluciones', async (req) => {
+    const ajustes = await leerAjustesDevoluciones();
+    const { solicitudes, totales } = await listarSolicitudes({ decision: req.query?.decision || null, limit: req.query?.limit });
+    return {
+      ajustes,
+      por_defecto: AJUSTES_DEVOLUCIONES_POR_DEFECTO,
+      configurado: String(process.env.CLUB_WEBHOOK_SECRET || '').trim().length >= 24,
+      url: `${config.appBaseUrl}/api/club/devolucion`,
+      solicitudes,
+      totales,
+    };
+  });
+
+  app.put('/api/settings/devoluciones', async (req, reply) => {
+    const antes = await leerAjustesDevoluciones();
+    const v = validarAjustesDevoluciones(req.body, antes);
+    if (!v.ok) return reply.code(400).send({ error: v.error });
+    const ajustes = await guardarAjustesDevoluciones(v.valor);
+    await q(`INSERT INTO webhook_log (kind, payload) VALUES ('devoluciones_ajustes_cambiados', $1::jsonb)`, [JSON.stringify({ antes, despues: ajustes, por: req.auth?.userId || null })]).catch(() => {});
+    return { ok: true, ajustes };
+  });
+
+  // Reenvío manual del resultado a GHL (también las «sin URL» y, con confirmación en el panel, las ya enviadas).
+  app.post('/api/settings/devoluciones/:id/enviar', async (req, reply) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return reply.code(400).send({ error: 'Solicitud no válida.' });
+    const r = await enviarAGhl(id, { forzar: true });
+    if (r.estado === 'sin_url') return reply.code(400).send({ error: 'Falta la URL del resultado en GHL (disparador «Webhook entrante»).' });
+    if (r.estado === 'ocupado') return reply.code(409).send({ error: 'Esa solicitud no existe o se está enviando ahora mismo.' });
+    return { ok: r.estado === 'enviado', ...r };
   });
 
   app.get('/api/settings/ghl', async () => {

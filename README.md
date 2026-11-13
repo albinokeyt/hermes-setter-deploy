@@ -133,6 +133,21 @@ prueba de que no se duplica).
   tope en el mes natural (zona horaria de la conexión, precio al cliente), la puerta no llama a la IA (como sin saldo),
   tampoco se leen imágenes ni audios con IA, y queda el evento `tope_mensual_alcanzado`. Las pruebas del panel (van a 0)
   no las corta el tope. Es un tope «blando»: la llamada que lo cruza se termina.
+- **Devoluciones que se evalúan solas** (migración 060): `POST /api/club/devolucion`, misma cabecera `X-Club-Secret`
+  (sin la variable → 503). Cuerpo `{ "email", "contact_id", "producto": "cuenta"|"brain"|"ambos", "motivo",
+  "fecha_cobro"?, "location_id"? }`. Por producto: fuera de plazo (días naturales en Madrid desde `fecha_cobro`) →
+  `denegada`; **cuenta** → consumo de IA (precio al cliente, `llm_usage.billed_usd`) de su conexión desde el cobro
+  ≤ `max_ia_usd` → `aprobada`, más → `denegada` («Has usado X USD de IA (límite 5)»); **brain** → `GET brain_uso_url
+  ?email=&desde=` con `X-Club-Secret` y respuesta `{ "tareas": N }` ≤ `max_brain_tareas` → `aprobada`, más →
+  `denegada`. Falta un dato, no se puede medir o algo no cuadra → `revision` (nunca se aprueba por un fallo). Se guarda
+  en `club_devoluciones` (idempotente por contacto + producto + día del cobro) y el resultado va a GHL
+  (`POST ghl_resultado_url` con `{ email, contact_id, producto, decision, motivo, solicitud_id, fecha_cobro, … }`) en
+  segundo plano, con reintentos cada 5 min (`workers.js`) y reenvío manual. Ajustes y solicitudes en Configuración →
+  «Devoluciones del Club» (setting `devoluciones`: `plazo_dias`, `max_ia_usd`, `max_brain_tareas`, `brain_uso_url`,
+  `ghl_resultado_url`).
+- Las rutas del Club son públicas **exactas** (`src/lib/rutas.js`; cualquier variante pide sesión) y su freno de
+  secretos fallidos cuenta por la IP real (último tramo de `X-Forwarded-For`, el que añade Traefik) y además en una
+  ventana global por minuto.
 - Pruebas: `npm test` (Postgres real en memoria con PGlite y las migraciones de verdad; la puerta del marketplace con
   dobles de módulo).
 

@@ -2,6 +2,7 @@ import { Worker } from 'bullmq';
 import { bullConnection } from './lib/redis.js';
 import { processDebounce, processSend, processFollowup, processReactivate, logEvent, markActivationFailed } from './services/pipeline.js';
 import { procesarCobro, barrerPendientes, mdActivo } from './services/marketplace.js';
+import { reintentarEnvios as reintentarEnviosDevoluciones } from './services/devoluciones.js';
 
 // Cada cuánto se repasan los cobros que quedaron colgados (proceso muerto entre el INSERT y el job,
 // o reintentos agotados). Es la red de seguridad del outbox, no la vía normal.
@@ -21,6 +22,11 @@ export function startWorkers() {
     const barrido = setInterval(() => { barrerPendientes().catch(() => {}); }, BARRIDO_MS);
     barrido.unref?.(); // no debe impedir que el proceso termine
   }
+  // 🏛️ Avisos a GHL de las devoluciones del Club que fallaron o quedaron a medias (sin URL configurada no hace nada)
+  const barridoDevoluciones = setInterval(() => {
+    reintentarEnviosDevoluciones().catch((err) => console.error('[devoluciones] barrido de avisos a GHL:', err.message));
+  }, BARRIDO_MS);
+  barridoDevoluciones.unref?.();
 
   for (const w of [debounceWorker, sendWorker, followupWorker, reactivateWorker, chargeWorker]) {
     w.on('failed', (job, err) => {

@@ -67,8 +67,9 @@ export async function leerPlantilla(pg = poolReal) {
 
 // ── Utilidades SQL ───────────────────────────────────────────────────────────────────────────
 // Corte de «conexión nueva» (migración 059), leído y comparado SIEMPRE en SQL. Sin corte → NULL → «no es nueva».
-const DESDE_SQL = `(SELECT (value->>'desde')::timestamptz FROM settings WHERE key = 'club_desde')`;
-const ES_NUEVA = `COALESCE(created_at >= ${DESDE_SQL}, false)`;
+// (También los usa services/devoluciones.js para resolver la conexión de quien pide una devolución.)
+export const DESDE_SQL = `(SELECT (value->>'desde')::timestamptz FROM settings WHERE key = 'club_desde')`;
+export const ES_NUEVA = `COALESCE(created_at >= ${DESDE_SQL}, false)`;
 const CANDADO = `SELECT pg_advisory_xact_lock(hashtextextended($1, 59))`;
 const VIGENTE = `(updated_at > now() - make_interval(days => ${PENDIENTE_DIAS}))`;
 const claveLoc = (loc) => `loc:${loc}`;
