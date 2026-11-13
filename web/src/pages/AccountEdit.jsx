@@ -593,7 +593,7 @@ export default function AccountEdit() {
                 <Input label="Correo del Club (el de la compra)" type="email" className="max-w-md" placeholder="el correo con el que compró en 4ttZ"
                   value={acc.club_email ?? ''}
                   onChange={(e) => set({ club_email: e.target.value })}
-                  hint="Solo admin. Antes de guardarlo, comprueba en 4ttZ que ese correo compró y que esta subcuenta es la suya. Al guardarlo se aplica el último estado que esperaba por ese correo. No se admiten los correos de soporte, de la agencia ni de los administradores de Hermes, ni caracteres invisibles (escríbelo a mano si lo pegas de otro sitio)." />
+                  hint="Solo admin. Antes de guardarlo, comprueba en 4ttZ que ese correo compró y que esta subcuenta es la suya. Al guardarlo se aplica el último estado que esperaba por ese correo. No se admiten los correos de soporte, de la agencia ni de los administradores de Hermes (tampoco con «+etiqueta»), ni caracteres invisibles o letras de otros alfabetos que se parecen a las normales (escríbelo a mano si lo pegas de otro sitio)." />
                 {error && (acc.club_email || '') !== (original?.club_email || '') && <Banner tone="error">{error}</Banner>}
                 <div className="space-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
                   <div className="font-medium text-slate-500">Pistas (no cuentan hasta que confirmes el correo del Club):</div>
@@ -611,6 +611,7 @@ export default function AccountEdit() {
                         {p?.usable && !yaPuesto && (
                           <button type="button" className="ml-2 font-semibold text-violet-600 hover:underline" onClick={() => set({ club_email: p.email })}>Usar</button>
                         )}
+                        {p?.usable && !yaPuesto && p.aviso && <span className="ml-2 text-amber-700">({p.aviso})</span>}
                         {p && !p.usable && p.motivo && <span className="ml-2 text-amber-700">({p.motivo})</span>}
                       </div>
                     );

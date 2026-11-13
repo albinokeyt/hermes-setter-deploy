@@ -172,8 +172,11 @@ test('1 · una sola normalización: rechaza invisibles, controles y espacios (ta
   assert.deepEqual(club.sanearClubEmail('  V3@X.COM '), { ok: true, valor: 'v3@x.com' });
   assert.deepEqual(club.sanearClubEmail('\tv3@x.com\r\n'), { ok: true, valor: 'v3@x.com' });
   assert.deepEqual(club.sanearClubEmail('José@X.com'), { ok: true, valor: 'josé@x.com' });
-  // vacío (también solo espacios) = quitarlo; un invisible solo NO es «vacío»: se avisa
-  assert.deepEqual(club.sanearClubEmail(' \u{A0} '), { ok: true, valor: null });
+  // vacío (nada o solo espacios ASCII) = quitarlo; un invisible o un espacio duro solos NO son «vacío»: se avisa
+  // (repaso C3: antes ' \u{A0} ' y '\u{FEFF}' contaban como vacío y quitaban el correo del Club confirmado)
+  assert.deepEqual(club.sanearClubEmail(' \t '), { ok: true, valor: null });
+  assert.equal(club.sanearClubEmail(' \u{A0} ').ok, false);
+  assert.equal(club.sanearClubEmail('\u{FEFF}').ok, false);
   assert.equal(club.sanearClubEmail('\u{200B}').ok, false);
   assert.equal(club.analizarCorreo('x'.repeat(5000)).tipo, 'formato');
 });
@@ -431,4 +434,204 @@ test('panel: «Usar» sale de club_pistas (lo que el servidor deja guardar), la 
   assert.ok(SOLO_LECTURA.includes('club_pistas'));
   assert.match(fs.readFileSync(new URL('../web/src/pages/Settings.jsx', import.meta.url), 'utf8'), /<CorreosClub \/>/);
   assert.match(fs.readFileSync(new URL('../web/src/components/CorreosClub.jsx', import.meta.url), 'utf8'), /\/api\/settings\/club-correos/);
+  assert.match(src, /p\?\.usable && !yaPuesto && p\.aviso/, 'repaso C3: el aviso de las pistas con tilde se enseña junto a «Usar»');
+});
+
+// ── 3 · repaso de la C3 (hallazgos del verificador independiente) ────────────────────────────────────────────────────
+
+test('3 · letras de otros alfabetos, puntos mal puestos y signos que un correo no admite: se rechazan y se dice cuál; las letras con tilde valen', () => {
+  const malos = [
+    ['\u{455}oporte@departamentodisruptivo.com', 'alfabeto', 'una letra cirílica («\u{455}», U+0455)'],
+    ['\u{FF53}oporte@departamentodisruptivo.com', 'alfabeto', 'de ancho completo («\u{FF53}», U+FF53)'],
+    ['soporte@departamentod\u{130}sruptivo.com', 'alfabeto', 'U+0130, I turca con punto'],
+    ['soporte@departamentod\u{131}sruptivo.com', 'alfabeto', 'U+0131, i turca sin punto'],
+    ['p\u{3BF}pe@x.com', 'alfabeto', 'una letra griega'],
+    ['ana\u{2013}x@x.com', 'alfabeto', 'U+2013, guion largo'],
+    ['ana\u{FF11}@x.com', 'alfabeto', 'U+FF11'],
+    ['stra\u{DF}e@x.com', 'alfabeto', 'U+00DF'],
+    ['q\u{307}@x.com', 'alfabeto', 'un acento o signo suelto (U+0307)'],
+    ['ana@x.com.', 'punto', 'acaba en punto'],
+    ['soporte@departamentodisruptivo.com.', 'punto', 'acaba en punto'],
+    ['.ana@x.com', 'punto', 'empieza por punto'],
+    ['ana.@x.com', 'punto', 'justo antes de la @'],
+    ['ana@.x.com', 'punto', 'justo después de la @'],
+    ['ana..b@x.com', 'punto', 'dos puntos seguidos'],
+    ['ana@x..com', 'punto', 'dos puntos seguidos'],
+    ['soporte(x)@departamentodisruptivo.com', 'signo', '«(»'],
+    ['ana,b@x.com', 'signo', '«,»'],
+    ['ana@-x.com', 'formato', 'no tiene forma de correo'],
+    ['ana@x_y.com', 'formato', 'no tiene forma de correo'],
+    ['ana@10.0.0.10', 'formato', 'no tiene forma de correo'],
+  ];
+  for (const [v, tipo, trozo] of malos) {
+    const a = club.analizarCorreo(v);
+    assert.equal(a.correo, '', JSON.stringify(v));
+    assert.equal(a.tipo, tipo, `${JSON.stringify(v)} → ${a.tipo}`);
+    assert.ok(a.motivo.includes(trozo), `${JSON.stringify(v)} → ${a.motivo}`);
+    const s = club.sanearClubEmail(v);
+    assert.equal(s.ok, false, JSON.stringify(v));
+    if (tipo !== 'formato') assert.ok(s.error.startsWith(`El correo del Club ${a.motivo}. `), s.error);
+  }
+  for (const [v, bueno] of [['José@X.com', 'josé@x.com'], ['ÑANDÚ@Correo.es', 'ñandú@correo.es'], ['pepe@españa.es', 'pepe@españa.es'],
+    ['a.b+c@x-y.co', 'a.b+c@x-y.co'], ['ana@xn--espaa-rta.es', 'ana@xn--espaa-rta.es'], ['o.k@sub.dominio.com.es', 'o.k@sub.dominio.com.es']]) {
+    assert.equal(club.analizarCorreo(v).correo, bueno, v);
+  }
+});
+
+test('3 · soporte «escrito de cualquier forma» (ataque G4): +etiqueta, punto final, otro alfabeto y signos → 400; el subdominio solo con «@dominio» en la lista', async () => {
+  const a = await app();
+  const antes = (await club.leerCorreosNoClub(pg)).no_club;
+  const { account } = await club.crearConexionNueva({ name: 'Cliente G4', locationId: 'locRepasoG401' }, pg);
+  for (const [v, trozo] of [
+    ['soporte+prueba@departamentodisruptivo.com', 'es de soporte o de la agencia'],
+    ['Soporte+Club@SoyJonathanAlef.com', 'es de soporte o de la agencia'],
+    ['soporte@departamentodisruptivo.com.', 'acaba en punto'],
+    ['\u{455}oporte@departamentodisruptivo.com', 'letra cirílica'],
+    ['\u{FF53}oporte@departamentodisruptivo.com', 'ancho completo'],
+    ['soporte@departamentod\u{130}sruptivo.com', 'I turca con punto'],
+    ['soporte(x)@departamentodisruptivo.com', 'no admite'],
+  ]) {
+    const r = await put(a, account.id, { club_email: v });
+    assert.equal(r.statusCode, 400, `${JSON.stringify(v)} → ${r.body}`);
+    assert.ok(r.json().error.includes(trozo), r.json().error);
+  }
+  assert.equal((await cuenta('locRepasoG401')).club_email, null);
+  // LÍMITE (decide la persona): un subdominio no es «soporte@» … hasta que se añade «@departamentodisruptivo.com»
+  const sub = 'soporte@mail.departamentodisruptivo.com';
+  const { account: otra } = await club.crearConexionNueva({ name: 'Cliente G4b', locationId: 'locRepasoG402' }, pg);
+  assert.equal(club.motivoNoClub(sub, await club.leerCorreosNoClub(pg)), null);
+  assert.equal((await putLista(a, [...antes, '@departamentodisruptivo.com'])).statusCode, 200);
+  let r = await put(a, otra.id, { club_email: sub });
+  assert.equal(r.statusCode, 400);
+  assert.match(r.json().error, /es de soporte o de la agencia/);
+  r = await put(a, otra.id, { club_email: 'equipo+club@departamentodisruptivo.com' });
+  assert.equal(r.statusCode, 400, 'con el dominio en la lista, todo el dominio');
+  // la lista también compara por buzón: un Gmail con puntos y +etiqueta es el mismo buzón
+  assert.equal((await putLista(a, [...antes, 'elena.soporte@gmail.com'])).statusCode, 200);
+  r = await put(a, otra.id, { club_email: 'E.lena.Soporte+club@googlemail.com' });
+  assert.equal(r.statusCode, 400);
+  r = await put(a, otra.id, { club_email: 'jefa+club@agencia.com' });
+  assert.equal(r.statusCode, 400, 'el admin jefa@agencia.com con +etiqueta');
+  assert.match(r.json().error, /administrador de Hermes/);
+  r = await put(a, otra.id, { club_email: 'jefa.x@agencia.com' });
+  assert.equal(r.statusCode, 200, 'fuera de Gmail los puntos sí cuentan: otro buzón');
+  // un «@dominio.» con punto final no se acepta en la lista (antes se guardaba y no bloqueaba nada)
+  r = await putLista(a, '@miagencia.com.');
+  assert.equal(r.statusCode, 400);
+  assert.equal(r.json().error, '«@miagencia.com.» no es un correo ni un dominio (@dominio.com): acaba en punto.');
+  assert.equal((await putLista(a, antes)).statusCode, 200);
+});
+
+test('3 · un BOM o un espacio duro solos ya no QUITAN el correo del Club confirmado: 400 y se queda como estaba', async () => {
+  const a = await app();
+  const { account } = await club.crearConexionNueva({ name: 'Cliente BOM', locationId: 'locRepasoB01' }, pg);
+  assert.equal((await put(a, account.id, { club_email: 'comprador.bom@x.com' })).statusCode, 200);
+  for (const [v, trozo] of [['\u{FEFF}', 'U+FEFF, marca BOM'], [' \u{A0} ', 'U+00A0, espacio duro']]) {
+    const r = await put(a, account.id, { club_email: v });
+    assert.equal(r.statusCode, 400, JSON.stringify(v));
+    assert.ok(r.json().error.includes(trozo), r.json().error);
+    assert.equal((await cuenta('locRepasoB01')).club_email, 'comprador.bom@x.com', 'antes: 200 y club_email quedaba vacío');
+  }
+  assert.equal((await put(a, account.id, { club_email: '  ' })).statusCode, 200, 'vaciarlo de verdad se puede');
+  assert.equal((await cuenta('locRepasoB01')).club_email, null);
+});
+
+test('3 · «Usar» no ofrece el correo del Club de OTRA conexión (antes salía y daba 409), ni uno con letras de otro alfabeto; con tilde, avisa', async () => {
+  const a = await app();
+  const { account: duena } = await club.crearConexionNueva({ name: 'La de verdad', locationId: 'locRepasoU01' }, pg);
+  assert.equal((await put(a, duena.id, { club_email: 'ocupado.u@x.com' })).statusCode, 200);
+  const { account } = await club.crearConexionNueva({ name: 'Otra', locationId: 'locRepasoU02' }, pg);
+  await pg.query(`UPDATE accounts SET owner_email = 'Ocupado.U@x.com', ghl_location_email = 'josé.u@x.com' WHERE id = $1`, [account.id]);
+  // un pendiente viejo para ese correo (no se pudo aplicar): tampoco se puede confirmar aquí
+  await pg.query(`INSERT INTO club_estado_pendiente (clave, activo, motivo, updated_at) VALUES ('email:ocupado.u@x.com', false, 'baja', now())`);
+  let f = await ficha(a, account.id);
+  const [resp, sub] = f.club_pistas;
+  assert.equal(resp.usable, false);
+  assert.equal(resp.motivo, `ya es el correo del Club de la conexión #${duena.id} (La de verdad): quítalo de allí primero si de verdad es de este cliente`);
+  const r = await put(a, account.id, { club_email: resp.email });
+  assert.equal(r.statusCode, 409, 'lo que la ficha no ofrece es justo lo que el servidor rechaza');
+  assert.deepEqual(sub, { de: 'correo_subcuenta', email: 'josé.u@x.com', usable: true, aviso: 'lleva letras con tilde, ñ o ç: compruébalo letra a letra con el de la compra en 4ttZ' });
+  const p = f.club_pendientes.find((x) => x.email === 'ocupado.u@x.com');
+  assert.equal(p.confirmable, false);
+  assert.match(p.no_confirmable, new RegExp(`^ya es el correo del Club de la conexión #${duena.id} `));
+  // letras de otro alfabeto en una pista: no se ofrece y se dice cuál
+  await pg.query(`UPDATE accounts SET owner_email = '\u{455}oporte@departamentodisruptivo.com' WHERE id = $1`, [account.id]);
+  f = await ficha(a, account.id);
+  assert.equal(f.club_pistas[0].usable, false);
+  assert.match(f.club_pistas[0].motivo, /^no sirve como correo del Club: lleva una letra cirílica \(«\u{455}», U\+0455\)/u);
+  // sin poder mirar las otras conexiones (null) no se ofrece ninguna
+  assert.deepEqual(club.pistasParaFicha({ id: 1, owner_email: 'comprador@x.com' }, { fijos: [], no_club: [], admins: [] }, null).map((x) => x.usable), [false]);
+  await pg.query(`DELETE FROM club_estado_pendiente WHERE clave = 'email:ocupado.u@x.com'`);
+});
+
+test('3 · interruptor: los 400 quedan en club_eventos («rechazado») con lo recibido visible; una lista no pasa por texto; con location_id válido se aplica por la subcuenta', async () => {
+  const a = await app();
+  const rechazados = async () => filas(`SELECT location_id, email, activo, motivo, detalle, ip FROM club_eventos WHERE resultado = 'rechazado' ORDER BY id`);
+  const n0 = (await rechazados()).length;
+  let r = await estado(a, { email: 'v5r@x.com\u{200B}', activo: false, motivo: 'baja' });
+  assert.equal(r.statusCode, 400);
+  let ev = (await rechazados()).at(-1);
+  assert.equal(ev.email, null);
+  assert.equal(ev.activo, false);
+  assert.equal(ev.motivo, 'baja');
+  assert.equal(ev.detalle.recibido.email, 'v5r@x.com<U+200B>');
+  assert.match(ev.detalle.error, /^email no válido: lleva un carácter invisible \(U\+200B/);
+  assert.ok((await eventos('club_estado_rechazado')).some((e) => e.recibido?.email === 'v5r@x.com<U+200B>'));
+  // listas: antes String(['ana@x.com']) era 'ana@x.com' y String(['true']) era 'true'
+  r = await estado(a, { email: ['v5r@x.com'], activo: false });
+  assert.equal(r.statusCode, 400);
+  assert.equal(r.json().error, 'email no válido: tiene que ser texto');
+  assert.equal((await rechazados()).at(-1).detalle.recibido.email, '(lista)');
+  r = await estado(a, { email: 'v5r@x.com', activo: ['true'] });
+  assert.equal(r.statusCode, 400);
+  assert.equal(r.json().error, 'activo debe ser true o false');
+  ev = (await rechazados()).at(-1);
+  assert.equal(ev.email, 'v5r@x.com', 'el correo bueno sí se anota');
+  assert.equal(ev.detalle.recibido.activo, '(lista)');
+  r = await estado(a, { location_id: ['locRepasoI01'], activo: true });
+  assert.equal(r.statusCode, 400);
+  assert.equal(r.json().error, 'location_id no válido: tiene que ser texto');
+  assert.equal((await rechazados()).length, n0 + 4);
+  // con el secreto MALO no se anota nada (solo cuentan las llamadas de GHL)
+  r = await a.inject({ method: 'POST', url: '/api/club/estado', headers: { 'x-club-secret': 'otro'.repeat(10) }, payload: { email: 'x\u{200B}@x.com', activo: false } });
+  assert.equal(r.statusCode, 401);
+  assert.equal((await rechazados()).length, n0 + 4);
+  // CON location_id válido, un correo que no vale ya no tumba la orden: se aplica por la subcuenta y se avisa
+  const { account } = await club.crearConexionNueva({ name: 'Por subcuenta', locationId: 'locRepasoI02' }, pg);
+  r = await estado(a, { location_id: 'locRepasoI02', email: 'cliente.i@x.com\u{200B}', activo: false, motivo: 'impago' });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().resultado, 'aplicado');
+  assert.equal(r.json().aviso, 'email no válido: lleva un carácter invisible (U+200B, espacio de ancho cero). Se ha usado solo la subcuenta (location_id); ese correo no se ha guardado.');
+  assert.equal((await cuenta('locRepasoI02')).ai_enabled, false, 'antes: 400 y la IA seguía encendida tras el impago');
+  ev = (await filas(`SELECT email, resultado, cuentas, detalle FROM club_eventos WHERE location_id = 'locRepasoI02' ORDER BY id`)).at(-1);
+  assert.equal(ev.email, null);
+  assert.deepEqual(ev.cuentas, [account.id]);
+  assert.match(ev.detalle.email_descartado, /^email no válido: lleva un carácter invisible/);
+  r = await estado(a, { location_id: 'locRepasoI02', email: ['cliente.i@x.com'], activo: true });
+  assert.equal(r.statusCode, 200);
+  assert.match(r.json().aviso, /^email no válido: tiene que ser texto\. /);
+});
+
+test('3 · devoluciones: un correo que llega como lista no se lee como correo (aviso y, sin contact_id, 400)', () => {
+  let v = validarCuerpoDevolucion({ email: ['kdevo@x.com'], contact_id: 'contRepaso01', producto: 'cuenta', motivo: 'x' });
+  assert.equal(v.ok, true);
+  assert.equal(v.datos.email, '');
+  assert.ok(v.datos.avisos.includes('email no válido: tiene que ser texto'));
+  v = validarCuerpoDevolucion({ email: ['kdevo@x.com'], producto: 'cuenta' });
+  assert.equal(v.ok, false);
+});
+
+test('3 · si la base rechaza el correo del Club por su CHECK (23514), la ficha da un 400 claro y no un 500', async () => {
+  const a = await app();
+  const { account } = await club.crearConexionNueva({ name: 'Cliente CHECK', locationId: 'locRepasoC01' }, pg);
+  // una restricción de prueba con «club_email» en el nombre (en PGlite no hay valor que pase la app y no la 061)
+  await pg.exec(`ALTER TABLE accounts ADD CONSTRAINT accounts_club_email_prueba_23514 CHECK (club_email IS NULL OR club_email NOT LIKE 'prueba23514%')`);
+  try {
+    const r = await put(a, account.id, { club_email: 'prueba23514@x.com' });
+    assert.equal(r.statusCode, 400, r.body);
+    assert.equal(r.json().error, 'El correo del Club no es válido: escríbelo a mano y vuelve a guardar.');
+    assert.equal((await cuenta('locRepasoC01')).club_email, null);
+  } finally {
+    await pg.exec(`ALTER TABLE accounts DROP CONSTRAINT accounts_club_email_prueba_23514`);
+  }
 });

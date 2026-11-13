@@ -11,6 +11,7 @@ import { sanearPalabrasNombre } from '../lib/tags.js';
 import { sanearTope } from '../services/tope.js';
 import {
   DESDE_SQL, sanearClubEmail, aplicarPendientesDeConexion, pendientesParaFicha, pistasParaFicha, leerCorreosNoClub, motivoNoClub,
+  correosDelClubEnOtras,
 } from '../services/club.js';
 
 // URL de comentarios: FIJA y LIMPIA, la misma para todas las conexiones (enruta por location.id).
@@ -136,11 +137,13 @@ export default async function accountRoutes(app) {
       // 🏛️ tarjeta «Club de Sistemas»: los estados del Club que esperan por algún correo de esta conexión, para que soporte
       // los vea ANTES de confirmar el correo del Club (al confirmarlo se aplica el último), y las pistas para el correo
       // del Club con las MISMAS reglas que al guardarlo: «Usar» nunca ofrece un correo que el servidor rechazaría (de
-      // soporte, de la agencia, de un admin o con caracteres invisibles). Nunca rompe la ficha.
+      // soporte, de la agencia, de un admin, con caracteres invisibles o letras de otro alfabeto, ni el que ya es el
+      // correo del Club de OTRA conexión: daría 409). Nunca rompe la ficha.
       if (row.es_club) {
         const noClub = await leerCorreosNoClub().catch(() => null);
-        row.club_pendientes = await pendientesParaFicha(row, undefined, noClub).catch(() => []);
-        row.club_pistas = pistasParaFicha(row, noClub);
+        const ocupados = await correosDelClubEnOtras(row).catch(() => null);
+        row.club_pendientes = await pendientesParaFicha(row, undefined, noClub, ocupados).catch(() => []);
+        row.club_pistas = pistasParaFicha(row, noClub, ocupados);
       }
     }
     return stripSecrets(row, req);
@@ -193,9 +196,10 @@ export default async function accountRoutes(app) {
       }).catch(() => {})
       : null);
     // 🏛️ correo del Club (solo admin): también se valida antes de escribir nada. Solo se escribe si CAMBIA (una ficha
-    // entera trae el mismo valor que ya tiene). Fase C3: se rechazan los caracteres invisibles, de control y los espacios
-    // (sanearClubEmail · analizarCorreo, la misma normalización que el interruptor, las devoluciones y el SSO) y los
-    // correos de soporte, de la agencia y de los admins de Hermes (motivoNoClub).
+    // entera trae el mismo valor que ya tiene). Fase C3: se rechazan los caracteres invisibles, de control, los espacios,
+    // las letras de otros alfabetos que se parecen a las latinas y los puntos o signos mal puestos (sanearClubEmail ·
+    // analizarCorreo, la misma normalización que el interruptor, las devoluciones y el SSO) y los correos de soporte, de
+    // la agencia y de los admins de Hermes, comparados por buzón (motivoNoClub: soporte+prueba@… es soporte@…).
     let clubEmail = null; // { antes, ahora } si cambia
     if (editable.includes('club_email') && 'club_email' in b) {
       const c = sanearClubEmail(b.club_email);

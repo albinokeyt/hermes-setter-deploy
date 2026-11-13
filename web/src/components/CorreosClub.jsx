@@ -33,7 +33,8 @@ export default function CorreosClub() {
       </p>
       <div className="space-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
         <div><b>Siempre:</b> {(data.fijos || []).join(' · ')}</div>
-        <div><b>Administradores de Hermes:</b> {data.admins?.length ? data.admins.join(' · ') : 'ninguno tiene un correo como usuario'}</div>
+        <div><b>Administradores de Hermes:</b> {data.admins?.length ? data.admins.join(' · ') : 'ninguno tiene un correo como usuario: añade abajo el correo de cada administrador'}</div>
+        <div>Se comparan por buzón: «soporte+prueba@…» cuenta como «soporte@…» y, en Gmail, los puntos no cuentan.</div>
       </div>
       <Textarea label="Además (uno por línea; «@dominio.com» = ese dominio y sus subdominios)" rows={4} value={texto}
         onChange={(e) => setTexto(e.target.value)} placeholder="p. ej. el correo personal de quien atiende el soporte" />

@@ -23,7 +23,12 @@
 //                   enlazan (soporte puede ser el responsable; los otros dos los edita el cliente).
 //   · Las conexiones ANTERIORES al Club (creadas antes de la migración 059) nunca se tocan desde aquí («protegida»).
 //   · El correo pasa por la MISMA normalización que el correo del Club (services/club.js · analizarCorreo): con un
-//     carácter invisible, de control o un espacio raro → 400 «email no válido: …» (no podría casar con ningún club_email).
+//     carácter invisible, de control, un espacio raro, una letra de otro alfabeto (ѕ cirílica…), puntos mal puestos o un
+//     signo que un correo no admite → 400 «email no válido: …» (no podría casar con ningún club_email). Si además llega
+//     un location_id válido, NO se rechaza: se aplica por la subcuenta (ese camino no usa el correo), el correo no se
+//     guarda y la respuesta lleva «aviso». email, location_id y activo tienen que ser texto (o true/false): una lista no.
+//   · Los 400 (con el secreto bueno) quedan en club_eventos con resultado «rechazado» y en el registro de eventos
+//     («club_estado_rechazado»), con lo recibido escrito de forma visible («ana@x.com<U+200B>»).
 //   Respuestas: 200 aplicado/sin_cambios · 202 pendiente/ambiguo/protegida · 400 cuerpo no válido · 401 secreto ·
 //   429 freno · 503 sin configurar.
 //
@@ -32,7 +37,7 @@
 //   con la decisión por producto (también si ya estaba evaluada: idempotente) y avisa a GHL en segundo plano. 400 solo
 //   si no llega ni contact_id ni email válidos; lo demás que falte o no se entienda → «revision».
 
-import { aplicarEstadoClub, validarCuerpoClub, secretoValido } from '../services/club.js';
+import { aplicarEstadoClub, validarCuerpoClub, secretoValido, registrarRechazoClub } from '../services/club.js';
 import { procesarDevolucion, validarCuerpoDevolucion } from '../services/devoluciones.js';
 import { ipReal, claveFreno } from '../lib/ipReal.js';
 
@@ -93,7 +98,11 @@ export default async function clubRoutes(app, opts = {}) {
   app.post('/api/club/estado', { bodyLimit: 16 * 1024 }, async (req, reply) => {
     if (!(await autorizar(req, reply))) return reply;
     const v = validarCuerpoClub(req.body);
-    if (!v.ok) return reply.code(400).send({ error: v.error });
+    if (!v.ok) {
+      // repaso C3: el 400 ya no se ve solo en GHL (club_eventos «rechazado» + registro de eventos). Nunca lanza.
+      await registrarRechazoClub({ body: req.body, error: v.error, ip: ipReal(req) }, pg);
+      return reply.code(400).send({ error: v.error });
+    }
     try {
       const res = await aplicarEstadoClub({ ...v.datos, ip: ipReal(req) }, pg);
       return reply.code(res.code).send(res.body);

@@ -160,7 +160,9 @@ export function validarCuerpoDevolucion(body) {
   const b = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
   if (!b) return { ok: false, error: 'cuerpo no válido' };
   const contacto = String(b.contact_id ?? '').trim();
-  const correoCrudo = String(b.email ?? '');
+  // el correo, texto o nada (repaso C3): String(['ana@x.com']) daba 'ana@x.com' y una lista pasaba por un correo
+  const correoNoTexto = b.email !== undefined && b.email !== null && typeof b.email !== 'string';
+  const correoCrudo = typeof b.email === 'string' ? b.email : '';
   const correo = correoCrudo.trim();
   const loc = String(b.location_id ?? '').trim();
   // longitudes antes de cualquier expresión regular (un texto enorme no puede costar CPU)
@@ -175,6 +177,7 @@ export function validarCuerpoDevolucion(body) {
   const fechaBruta = typeof b.fecha_cobro === 'number' ? String(b.fecha_cobro) : limpiarTexto(b.fecha_cobro, 100);
   const avisos = [];
   if (contacto && !sinResolver(contacto) && !contact_id) avisos.push('contact_id no válido: se identifica por el correo');
+  if (correoNoTexto) avisos.push('email no válido: tiene que ser texto');
   if (correo && !sinResolver(correo) && !email) avisos.push(analisis.tipo === 'formato' ? 'email no válido' : `email no válido: ${analisis.motivo}`);
   if (loc && !sinResolver(loc) && !location_id) avisos.push('location_id no válido: se ignora');
   return {

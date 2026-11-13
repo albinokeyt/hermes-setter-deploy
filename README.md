@@ -143,6 +143,20 @@ prueba de que no se duplica).
   (setting `club_correos.no_club`: correos o `@dominio.com`, también sus subdominios; `GET/PUT /api/settings/club-correos`,
   que avisa en `en_uso` si alguna conexión ya tiene uno confirmado) → 400. La ficha solo ofrece «Usar» con las pistas
   que el servidor dejaría guardar (`club_pistas` en `GET /api/accounts/:id`, solo admin).
+  Repaso de la C3: `analizarCorreo` también rechaza las letras de OTROS alfabetos que se confunden con las latinas
+  (`ѕ` cirílica U+0455, `ｓ` de ancho completo, la `İ` turca…), números y signos «especiales» (guion largo U+2013…), los
+  puntos mal puestos (`ana@x.com.`, `ana..b@x.com`, `.ana@…`) y los signos que un correo no admite sin comillas
+  (`( ) , : ; [ ] \`); las letras latinas con tilde (á, é, ñ, ç, ü…) valen. La lista se compara por BUZÓN
+  (`soporte+prueba@…` = `soporte@…`; en Gmail sin puntos y googlemail.com = gmail.com). «Usar» tampoco ofrece el correo
+  que ya es el correo del Club de OTRA conexión (daba 409) y avisa si lleva tildes. Un `club_email` que solo lleva un BOM
+  o un espacio duro ya no lo QUITA (400); vaciarlo es mandarlo vacío. En el interruptor, `email`, `location_id` y `activo`
+  tienen que ser texto (o true/false); los 400 quedan en `club_eventos` con resultado `rechazado` (y `club_estado_rechazado`
+  en el registro de eventos) con lo recibido visible (`ana@x.com<U+200B>`); y con un `location_id` válido un correo que no
+  vale ya no tumba la orden: se aplica por la subcuenta, el correo no se guarda y la respuesta lleva `aviso`. Límites que
+  decide la persona: un subdominio (`soporte@mail.departamentodisruptivo.com`) solo se para con `@departamentodisruptivo.com`
+  en la lista, y los admins de Hermes solo cuentan si su usuario es un correo (con `ADMIN_USER=admin`, ninguno: añadir sus
+  correos a la lista). El responsable (`owner_email`) se sigue guardando con el `normEmail` del portal (es también la
+  identidad de acceso de todas las conexiones); su pista vuelve a pasar por `analizarCorreo`.
 - **Tope de gasto mensual** (`accounts.tope_mensual_usd`, solo admin, pestaña Ajustes de la conexión): al llegar al
   tope en el mes natural (zona horaria de la conexión, precio al cliente), la puerta no llama a la IA (como sin saldo),
   tampoco se leen imágenes ni audios con IA, y queda el evento `tope_mensual_alcanzado`. Las pruebas del panel (van a 0)
