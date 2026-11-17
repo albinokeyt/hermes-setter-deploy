@@ -26,6 +26,7 @@ import { redis } from '../lib/redis.js';
 import { chargeQueue } from '../queues.js';
 import { getFacturacion } from './facturacion.js';
 import { comprobarTope } from './tope.js';
+import { diaValido } from '../lib/fechas.js';
 
 const texto = (v) => String(v ?? '').trim();
 
@@ -454,6 +455,51 @@ export async function listarTarifas() {
     return { status, meters: data?.meters || [], error: texto(data?.error) };
   } catch (err) {
     return { status: 0, meters: [], error: texto(err?.message) || 'sin respuesta' };
+  }
+}
+
+// ── 💵 Finanzas: lo que los clientes han metido (dinero real y cortesía) y lo consumido en Hermes ──────────────────
+// GET /api/v1/finanzas del marketplace (regla «cortesía primero»: el consumo gasta antes la cortesía que el dinero real).
+// Solo lectura y solo para el panel del admin: NUNCA lanza. Si no se puede consultar devuelve { disponible:false, motivo }
+// con un texto claro, para que el panel lo enseñe sin romperse.
+const TIMEOUT_FINANZAS_MS = 15_000; // recorre el libro entero de cada subcuenta: más que una lectura simple
+const okDia = diaValido; // bien escrita y que exista: el marketplace rechaza (400) cualquier otra
+
+export async function finanzasMd({ desde = null, hasta = null, zona = ZONA } = {}) {
+  if (!mdActivo()) {
+    return { disponible: false, motivo: 'La integración con el marketplace está apagada (falta MD_API_KEY en EasyPanel): no se puede ver lo que han pagado los clientes.' };
+  }
+  const qs = new URLSearchParams();
+  if (okDia(desde)) qs.set('desde', desde);
+  if (okDia(hasta)) qs.set('hasta', hasta);
+  if (texto(zona)) qs.set('zona', texto(zona));
+  try {
+    const cadena = qs.toString();
+    const { status, data } = await llamar('GET', `/api/v1/finanzas${cadena ? `?${cadena}` : ''}`, null, TIMEOUT_FINANZAS_MS);
+    if (status === 200 && Array.isArray(data?.locations)) return { disponible: true, ...data };
+    if (status === 200) return { disponible: false, motivo: 'El marketplace ha respondido algo que no se entiende: puede que aún no tenga la consulta de finanzas actualizada.' };
+    if (status === 403 && data?.code === 'FINANCES_NOT_ALLOWED') {
+      return { disponible: false, motivo: 'El marketplace todavía no da permiso a Hermes para ver las finanzas. Actívalo en el panel del marketplace: menú «Apps», fila de Hermes, interruptor «Puede leer finanzas».' };
+    }
+    if (status === 403) return { disponible: false, motivo: 'El marketplace ha rechazado la consulta de finanzas (HTTP 403): revisa los permisos de la app Hermes.' };
+    if (status === 401) return { disponible: false, motivo: 'El marketplace no acepta la clave de Hermes (HTTP 401): revisa MD_API_KEY en EasyPanel.' };
+    if (status === 404) return { disponible: false, motivo: 'El marketplace aún no tiene la consulta de finanzas: hay que actualizarlo a la última versión.' };
+    // un 400 es una consulta mal hecha (las fechas, casi siempre): repetirla «en un rato» no lo arregla
+    if (status === 400 && data?.code === 'INVALID_RANGE') {
+      return { disponible: false, motivo: 'La fecha «Desde» es posterior a «Hasta»: cambia una de las dos para ver lo que han pagado los clientes en ese periodo.' };
+    }
+    if (status === 400 && data?.code === 'INVALID_DATE') {
+      return { disponible: false, motivo: 'Alguna de las fechas del rango no existe o está mal escrita: revisa «Desde» y «Hasta».' };
+    }
+    if (status === 400) return { disponible: false, motivo: 'El marketplace no ha aceptado la consulta de finanzas (HTTP 400).' };
+    return { disponible: false, motivo: `El marketplace respondió con un error (HTTP ${status}). Prueba de nuevo en un rato.` };
+  } catch (err) {
+    return {
+      disponible: false,
+      motivo: err?.name === 'TimeoutError' || err?.name === 'AbortError'
+        ? `El marketplace no respondió en ${TIMEOUT_FINANZAS_MS / 1000} s. Prueba de nuevo en un rato.`
+        : 'No se pudo conectar con el marketplace. Prueba de nuevo en un rato.',
+    };
   }
 }
 

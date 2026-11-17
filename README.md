@@ -113,6 +113,27 @@ crédito. Desde el panel, **Marketplace → Comprobar** diagnostica sin mover na
 prueba** ejecuta el ciclo completo (repetirlo el mismo día debe responder «idempotente»: esa es la
 prueba de que no se duplica).
 
+### 💵 Dinero real · OpenRouter y clientes
+
+Tarjeta del panel **Marketplace** (justo debajo de «Rentabilidad por cliente», mismo rango de fechas) que enfrenta
+lo que el dueño ha **pagado a OpenRouter** con lo que le han **pagado los clientes**, separando el dinero real del
+saldo de **cortesía** que regala. Ruta: `GET /api/marketplace/finanzas?desde=&hasta=&refrescar=1` (solo admin).
+
+- **OpenRouter** (`src/services/openrouter.js`, caché de 5 min; «Actualizar OpenRouter» la salta):
+  - gasto de cada API key de OpenRouter guardada en **Proveedores** (`GET /api/v1/key`, con la propia clave);
+  - con la variable **opcional** `OPENROUTER_MANAGEMENT_KEY` (una *management key*: solo lectura, no sirve para
+    chatear), además lo comprado, lo gastado y el saldo de **toda la cuenta** (`/api/v1/credits`) y el gasto de cada
+    clave de la cuenta (`/api/v1/keys`), también las de otras apps como el Brain si comparten cuenta.
+  - Las claves se mandan **siempre** a `https://openrouter.ai`, nunca a la `base_url` del proveedor, y **jamás** se
+    devuelven en claro (solo la máscara `sk-or-…1c96`). La management key nunca se muestra.
+  - La comisión de compra de créditos (5,5 %, mínimo 0,80 $ por compra) no la da la API: se muestra como «≈».
+  - **Aviso de saldo**: si la cuenta baja de 5 $ (o una clave de Hermes de 2 $ de límite) sale un aviso arriba de la
+    página; con 0,5 $ o menos, en rojo. Si OpenRouter llega a 0, los setters dejan de contestar.
+- **Clientes**: `GET /api/v1/finanzas` del marketplace (permiso `can_read_finances` de la app Hermes), con la regla
+  «cortesía primero» (cada consumo gasta antes la cortesía y luego el dinero real). Si el permiso no está activo o el
+  marketplace aún no tiene la consulta, la tarjeta lo dice y enseña el resto.
+- **Resultado**: dinero real consumido en Hermes − coste de la IA de Hermes (`llm_usage`, sin el Archivo).
+
 ## Club de Sistemas (migración 059)
 
 - **Conexiones nuevas seguras**: toda conexión que nace sola (instalación OAuth, enlace de agencia `/ghl-app`, SSO

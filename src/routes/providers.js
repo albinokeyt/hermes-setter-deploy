@@ -1,6 +1,7 @@
 import { q, one } from '../db.js';
 import { testProvider } from '../services/llm.js';
 import { requireAdmin } from '../lib/session.js';
+import { mascaraClave } from '../lib/mascara.js';
 
 const VALID_KINDS = ['text', 'image', 'audio'];
 
@@ -25,8 +26,7 @@ function cleanKinds(kinds, fallback) {
 }
 
 function mask(row) {
-  const key = String(row.api_key || '');
-  return { ...row, api_key_masked: key ? `${key.slice(0, 6)}…${key.slice(-4)}` : '', api_key: undefined };
+  return { ...row, api_key_masked: mascaraClave(row.api_key), api_key: undefined };
 }
 
 // Cache en memoria del catálogo de OpenRouter (con precios), 10 min por lista.

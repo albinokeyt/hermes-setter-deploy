@@ -3,9 +3,27 @@ import { requireAdmin } from '../lib/session.js';
 import { chargeQueue } from '../queues.js';
 import {
   mdConfig, mdActivo, accesoDe, hayFondos, cobrar, consultarCobro,
-  listarTarifas, eventIdDe, diaNatural, barrerPendientes, cerrarLotesConsumo, corteCobroIa,
+  listarTarifas, eventIdDe, diaNatural, barrerPendientes, cerrarLotesConsumo, corteCobroIa, finanzasMd,
 } from '../services/marketplace.js';
 import { getFacturacion, guardarFacturacion, FUENTES } from '../services/facturacion.js';
+import { cuentaOpenRouter, gastoClavesHermes, alertaOpenRouter } from '../services/openrouter.js';
+import { diaValido } from '../lib/fechas.js';
+
+// Comisión de OpenRouter al comprar créditos (5,5 %, mínimo 0,80 $ por compra). La API no la da: es una estimación.
+const COMISION_OPENROUTER_PCT = 5.5;
+
+// Rango de días de las tarjetas Rentabilidad y Dinero real (día natural de la zona del cobro). UNA sola regla para
+// las dos, para que siempre hablen del mismo periodo: lo que falte, venga mal escrito o no exista (2026-02-30) →
+// del día 1 del mes en curso a hoy. Ninguna fecha imposible llega a un `::date` de Postgres.
+const rangoPanel = (query) => {
+  const hoy = diaNatural();
+  return {
+    desde: diaValido(query?.desde) ? query.desde : `${hoy.slice(0, 8)}01`,
+    hasta: diaValido(query?.hasta) ? query.hasta : hoy,
+  };
+};
+// «Desde» después de «Hasta» (pasa a menudo mientras se cambia de mes). No se intercambian sin avisar: se dice.
+const AVISO_RANGO_INVERTIDO = 'La fecha «Desde» es posterior a «Hasta»: no hay cifras de ese periodo. Cambia una de las dos.';
 
 // 💳 Panel del administrador para la integración con Marketplace Disruptivo: ver cómo está cada
 // subcuenta (uso incluido / por uso / sin saldo), auditar los cobros y disparar una prueba de
@@ -106,14 +124,18 @@ export default async function marketplaceRoutes(app) {
   // ese consumo (coste × multiplicador, solo trabajo con leads) · cobrado = cargos confirmados (sin los de prueba) ·
   // incluido = lotes de clientes con el uso incluido (prueba/plan: no se les cobra) · pendiente = lotes aún sin cobrar.
   app.get('/api/marketplace/rentabilidad', async (req) => {
-    const ok = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
-    const hoy = diaNatural();
-    const desde = ok(req.query?.desde) ? req.query.desde : `${hoy.slice(0, 8)}01`;
-    const hasta = ok(req.query?.hasta) ? req.query.hasta : hoy;
+    const { desde, hasta } = rangoPanel(req.query);
     // zona del cobro; si estuviera mal escrita, UTC (y se avisa) para que el panel no se caiga
     let zona = mdConfig().zona_horaria;
     let zonaValida = true;
     try { new Intl.DateTimeFormat('sv-SE', { timeZone: zona }); } catch { zona = 'UTC'; zonaValida = false; }
+    // rango al revés: ni se consulta (saldría vacío sin decir por qué) ni se intercambia; se avisa
+    if (desde > hasta) {
+      return {
+        desde, hasta, zona, zona_valida: zonaValida, facturacion: await getFacturacion(), clientes: [], totales: null,
+        rango_invalido: true, aviso_rango: AVISO_RANGO_INVERTIDO,
+      };
+    }
     const corte = (await corteCobroIa()) ?? 2147483647;
     // Todo se cuenta por la FECHA DE CADA LLAMADA (el lote se cierra después y su día es el del cierre): así el coste
     // y lo cobrado de esa misma IA caen en el mismo periodo. Precio y cobro solo del consumo posterior al cambio a cobro
@@ -172,6 +194,132 @@ export default async function marketplaceRoutes(app) {
         pendiente: suma('pendiente'), no_cobrable: suma('no_cobrable'), beneficio: suma('beneficio'), beneficio_previsto: suma('beneficio_previsto'),
         coste_sin_cliente: r2(sinCliente?.coste || 0),
       },
+    };
+  });
+
+  // ── 💵 Dinero real: lo que el dueño ha pagado a OpenRouter y lo que le han pagado los clientes ──
+  // ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD (el rango de la tarjeta de Rentabilidad, con su MISMA regla: rangoPanel) &refrescar=1
+  // (salta la caché de 5 min de OpenRouter). Sin ninguna de las dos claves no hay rango (solo lo histórico).
+  // Junta tres fuentes que fallan por separado (ninguna tumba la respuesta):
+  //  · OpenRouter: cuenta entera (con OPENROUTER_MANAGEMENT_KEY) y gasto de cada clave de Proveedores. Nunca claves en claro.
+  //  · Marketplace (GET /api/v1/finanzas): dinero real y cortesía de cada cliente, regla «cortesía primero».
+  //  · Hermes (llm_usage): lo que nos ha costado la IA (sin el Archivo, que no es de ningún cliente).
+  app.get('/api/marketplace/finanzas', async (req) => {
+    // el panel manda siempre las dos claves (aunque vayan vacías): así recibe exactamente el rango de Rentabilidad
+    const pideRango = Boolean(req.query) && ('desde' in req.query || 'hasta' in req.query);
+    const pedido = pideRango ? rangoPanel(req.query) : { desde: null, hasta: null };
+    // «Desde» después de «Hasta»: lo histórico se sigue viendo, pero sin cifras del rango (y se avisa)
+    const rangoInvalido = Boolean(pedido.desde && pedido.hasta && pedido.desde > pedido.hasta);
+    const desde = rangoInvalido ? null : pedido.desde;
+    const hasta = rangoInvalido ? null : pedido.hasta;
+    const hayRango = Boolean(desde || hasta);
+    const refrescar = ['1', 'true', 'si', 'sí'].includes(String(req.query?.refrescar || '').trim().toLowerCase());
+    // misma zona que Rentabilidad (la del cobro); mal escrita → UTC para que el panel no se caiga
+    let zona = mdConfig().zona_horaria;
+    try { new Intl.DateTimeFormat('sv-SE', { timeZone: zona }); } catch { zona = 'UTC'; }
+
+    const r6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
+    const [cuenta, clavesHermes, md, coste, cuentas] = await Promise.all([
+      cuentaOpenRouter({ refrescar }).catch(() => ({ configurada: true, total_credits: null, total_usage: null, saldo: null, claves: [], error: 'No se pudo consultar OpenRouter.' })),
+      gastoClavesHermes({ refrescar }).catch(() => []),
+      finanzasMd({ desde, hasta, zona }),
+      // Coste de la IA del rango con la MISMA referencia de día que el dinero del marketplace, que cuenta cada lote el
+      // día en que se cobró (su entrada en el libro): la IA de un lote ya cobrado (y real) cuenta ese mismo día; el resto
+      // del coste (uso incluido o de prueba, lotes pendientes o sin saldo, lo no cobrable, lo anterior al corte), el día
+      // de cada llamada. Cada llamada cuenta UNA vez y la suma de varios rangos sigue dando el histórico.
+      // updated_at del lote no se mueve una vez 'cobrado' (todos los UPDATE que lo tocan llevan la guarda de estado).
+      one(
+        `SELECT COALESCE(SUM(u.cost_usd) FILTER (WHERE u.source <> 'archivo'), 0)::float AS historico,
+                COALESCE(SUM(u.cost_usd) FILTER (WHERE u.source = 'archivo'), 0)::float AS archivo,
+                COALESCE(SUM(u.cost_usd) FILTER (WHERE u.source <> 'archivo'
+                           AND ($1::date IS NULL OR (COALESCE(c.updated_at, u.created_at) AT TIME ZONE $3)::date >= $1::date)
+                           AND ($2::date IS NULL OR (COALESCE(c.updated_at, u.created_at) AT TIME ZONE $3)::date <= $2::date)), 0)::float AS rango
+           FROM llm_usage u
+           LEFT JOIN marketplace_charges c ON c.id = u.md_charge_id
+                AND c.tipo = 'consumo_ia' AND c.estado = 'cobrado' AND NOT c.test_mode`,
+        [desde, hasta, zona]
+      ).catch(() => null), // sin la base no hay coste: se enseña «—», nunca un 0 que infle el resultado
+      q(`SELECT id, COALESCE(NULLIF(alias, ''), name) AS name, location_id FROM accounts WHERE COALESCE(location_id, '') <> ''`)
+        .catch(() => []),
+    ]);
+
+    // ── clientes: cada subcuenta del marketplace, cruzada con su conexión de Hermes por location_id ──
+    const porLoc = new Map(cuentas.map((a) => [a.location_id, a]));
+    const disponible = md.disponible === true;
+    const filas = disponible
+      ? (md.locations || []).map((l) => {
+          const a = porLoc.get(l.location_id);
+          return {
+            account_id: a?.id ?? null,
+            name: a?.name || l.name || l.location_id,
+            location_id: l.location_id,
+            saldo: l.saldo || null,
+            historico: l.historico || null,
+            rango: hayRango ? l.rango ?? null : null,
+          };
+        }).sort((x, y) => (Number(y.historico?.real_recargado) || 0) - (Number(x.historico?.real_recargado) || 0)
+          || (Number(y.historico?.cortesia_concedida) || 0) - (Number(x.historico?.cortesia_concedida) || 0)
+          || String(x.name).localeCompare(String(y.name), 'es'))
+      : [];
+    const totales = disponible ? md.totales || null : null;
+    const H = totales?.historico || null;
+    const R = hayRango ? totales?.rango || null : null;
+    const S = totales?.saldo || null;
+
+    // ── Hermes: lo que nos ha costado la IA (null = no se ha podido leer) ──
+    const hermes = coste
+      ? {
+          coste_ia_historico: r6(coste.historico),
+          coste_ia_rango: hayRango ? r6(coste.rango) : null,
+          coste_ia_archivo_historico: r6(coste.archivo),
+        }
+      : { coste_ia_historico: null, coste_ia_rango: null, coste_ia_archivo_historico: null };
+
+    // ── resumen ──
+    const sumaUsage = (campo) => {
+      const vals = clavesHermes.map((c) => c[campo]).filter((v) => Number.isFinite(v));
+      return vals.length ? r6(vals.reduce((s, v) => s + v, 0)) : null;
+    };
+    const pagado = cuenta?.configurada && Number.isFinite(cuenta.total_credits) ? cuenta.total_credits : null;
+    const siH = (fn) => (H ? r6(fn(H)) : null);
+    const n = (v) => Number(v) || 0;
+    // dinero real gastado en Hermes: lo pagado con el saldo real más lo cobrado directamente del monedero de GHL
+    // (cobros antiguos y suscripciones de Hermes), que es dinero real aunque no pase por el saldo
+    const realHermes = (b) => n(b.consumo_app_real) + n(b.cobrado_monedero_app);
+    const resumen = {
+      pagado_openrouter: pagado,
+      comision_estimada: pagado !== null ? r6(pagado * COMISION_OPENROUTER_PCT / 100) : null,
+      gastado_openrouter_cuenta: cuenta?.configurada && Number.isFinite(cuenta.total_usage) ? cuenta.total_usage : null,
+      saldo_openrouter: cuenta?.configurada && Number.isFinite(cuenta.saldo) ? cuenta.saldo : null,
+      gastado_claves_hermes: sumaUsage('usage'),
+      gastado_claves_hermes_mes: sumaUsage('usage_monthly'),
+      te_han_pagado: siH((h) => n(h.real_recargado) + n(h.cobrado_monedero_app)),
+      cortesia_regalada: siH((h) => n(h.cortesia_concedida) - n(h.cortesia_retirada)),
+      consumido_hermes_real: siH(realHermes),
+      // su desglose, para que el panel enseñe de dónde sale cada cifra
+      consumido_hermes_real_saldo: siH((h) => n(h.consumo_app_real)),
+      cobrado_monedero_hermes: siH((h) => n(h.cobrado_monedero_app)),
+      consumido_hermes_cortesia: siH((h) => n(h.consumo_app_cortesia)),
+      // el dinero REAL gastado en Hermes (saldo real + monedero de GHL) menos lo que nos ha costado toda la IA de Hermes
+      resultado_real_hermes: H && hermes.coste_ia_historico !== null ? r6(realHermes(H) - hermes.coste_ia_historico) : null,
+      saldo_clientes_real: S ? r6(S.real) : null,
+      saldo_clientes_cortesia: S ? r6(S.cortesia) : null,
+      // lo mismo, solo en el rango elegido (el dinero cuenta el día en que se cobró cada lote; el coste, ver arriba)
+      consumido_hermes_real_rango: R ? r6(realHermes(R)) : null,
+      cobrado_monedero_hermes_rango: R ? r6(R.cobrado_monedero_app) : null,
+      consumido_hermes_cortesia_rango: R ? r6(R.consumo_app_cortesia) : null,
+      resultado_real_rango: R && hermes.coste_ia_rango !== null ? r6(realHermes(R) - hermes.coste_ia_rango) : null,
+      alerta_openrouter: alertaOpenRouter(cuenta, clavesHermes),
+    };
+
+    return {
+      openrouter: { cuenta, claves_hermes: clavesHermes, comision_pct: COMISION_OPENROUTER_PCT },
+      clientes: { disponible, motivo: disponible ? null : md.motivo || 'No se pudo consultar el marketplace.', filas, totales },
+      hermes,
+      resumen,
+      desde, hasta, zona,
+      rango_invalido: rangoInvalido,
+      aviso_rango: rangoInvalido ? AVISO_RANGO_INVERTIDO : null,
     };
   });
 

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { Banner, Button, Card, SectionTitle, StatCard, Select, Input } from '../components/ui.jsx';
-import { CreditCard, RefreshCw, Wallet, ShieldCheck, FlaskConical, TrendingUp, Save } from 'lucide-react';
+import { CreditCard, RefreshCw, Wallet, ShieldCheck, FlaskConical, TrendingUp, Save, ExternalLink } from 'lucide-react';
 
 // 💳 Marketplace Disruptivo: qué clientes tienen el uso incluido, quién se quedó sin saldo y qué
 // se ha cobrado. Solo admin (el backend ya lo exige; aquí es cuestión de no enseñar el menú).
@@ -27,6 +27,30 @@ const Chip = ({ tone = '', children }) => (
   <span className={`inline-block rounded-full border px-2 py-0.5 text-[11px] font-semibold ${tone}`}>{children}</span>
 );
 
+// ── 💵 Dinero real ──
+// null/undefined = no se sabe (sin management key, marketplace sin responder…): se enseña «—», nunca un 0 que engañe
+const cifra = (v, f = usdIa) => (v === null || v === undefined ? '—' : f(v));
+const tonoResultado = (v) => (v === null || v === undefined ? 'text-slate-500' : v >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400');
+const cortesiaNeta = (b) => (b ? (Number(b.cortesia_concedida) || 0) - (Number(b.cortesia_retirada) || 0) : null);
+// lo pagado con dinero real: recargas (tarjeta + monedero de GHL − revertidas) + lo cobrado a Hermes directamente del monedero
+const pagadoReal = (b) => (b ? (Number(b.real_recargado) || 0) + (Number(b.cobrado_monedero_app) || 0) : null);
+// lo consumido en Hermes con dinero real: lo pagado con el saldo real + lo cobrado a Hermes directamente del monedero de GHL
+const consumoRealHermes = (b) => (b ? (Number(b.consumo_app_real) || 0) + (Number(b.cobrado_monedero_app) || 0) : null);
+// mismo texto que manda el servidor (aviso_rango), por si se ve en los campos antes de que responda
+const AVISO_RANGO_INVERTIDO = 'La fecha «Desde» es posterior a «Hasta»: no hay cifras de ese periodo. Cambia una de las dos.';
+const OPENROUTER_CREDITOS = 'https://openrouter.ai/settings/credits';
+
+// una línea «etiqueta ······ cifra» de los dos bloques de arriba
+const Linea = ({ etiqueta, valor, nota, tono = 'text-slate-800', fuerte = false }) => (
+  <div className="flex items-start justify-between gap-3 py-1.5">
+    <div className="min-w-0">
+      <div className={`text-sm ${fuerte ? 'font-semibold text-slate-700' : 'text-slate-600'}`}>{etiqueta}</div>
+      {nota && <div className="text-[11px] text-slate-400">{nota}</div>}
+    </div>
+    <div className={`shrink-0 text-right text-sm tabular-nums ${fuerte ? 'font-bold' : 'font-semibold'} ${tono}`}>{valor}</div>
+  </div>
+);
+
 export default function Marketplace() {
   const [datos, setDatos] = useState(null);
   const [cobros, setCobros] = useState([]);
@@ -40,6 +64,28 @@ export default function Marketplace() {
   const [facMsg, setFacMsg] = useState('');
   const [rango, setRango] = useState(null);      // se fija con el día natural del servidor (la zona del cobro)
   const [rent, setRent] = useState(null);         // rentabilidad por cliente
+  const [fin, setFin] = useState(null);           // dinero real: OpenRouter y clientes (mismo rango que rentabilidad)
+  const [refrescandoOr, setRefrescandoOr] = useState(false);
+  const finTurno = useRef(0);                     // solo vale la respuesta de la última petición
+
+  const cargarFin = useCallback(async (r, { signal, refrescar = false } = {}) => {
+    if (!r) return;
+    const turno = ++finTurno.current;
+    try {
+      const d = await api.get(`/api/marketplace/finanzas?desde=${r.desde || ''}&hasta=${r.hasta || ''}${refrescar ? '&refrescar=1' : ''}`, { signal });
+      if (turno === finTurno.current) setFin(d);
+    } catch (e) { if (e.name !== 'AbortError' && turno === finTurno.current) setFin({ error: e.message }); }
+  }, []);
+  useEffect(() => {
+    // igual que rentabilidad: si se cambian las fechas seguido, la respuesta vieja no pisa a la nueva
+    const ac = new AbortController();
+    cargarFin(rango, { signal: ac.signal });
+    return () => ac.abort();
+  }, [cargarFin, rango]);
+  const actualizarOr = async () => {
+    setRefrescandoOr(true);
+    try { await cargarFin(rango, { refrescar: true }); } finally { setRefrescandoOr(false); }
+  };
 
   const cargarFac = useCallback(async () => {
     try { const d = await api.get('/api/marketplace/facturacion'); setFac(d.facturacion); setFuentes(d.fuentes || []); } catch (e) { setFacMsg(e.message); }
@@ -138,6 +184,9 @@ export default function Marketplace() {
   const cfg = datos.config || {};
   const cuentas = datos.cuentas || [];
   const sinSaldo = cuentas.filter((c) => c.md_sin_fondos_at);
+  const alertaOr = fin?.resumen?.alerta_openrouter;
+  // «Desde» después de «Hasta» (lo dice el servidor o se ve ya en los campos): un solo aviso bajo las fechas
+  const rangoInvertido = Boolean(rent?.rango_invalido) || Boolean(rango?.desde && rango?.hasta && rango.desde > rango.hasta);
 
   return (
     <div className="space-y-5">
@@ -169,6 +218,14 @@ export default function Marketplace() {
         <Banner tone="error">
           <strong>{sinSaldo.length} {sinSaldo.length === 1 ? 'conexión se quedó' : 'conexiones se quedaron'} sin saldo</strong>
           {' '}y el setter no responde a sus leads: {sinSaldo.map((c) => c.name).join(', ')}. Avísales para que recarguen.
+        </Banner>
+      )}
+      {(alertaOr?.nivel === 'agotado' || alertaOr?.nivel === 'bajo') && (
+        <Banner tone={alertaOr.nivel === 'agotado' ? 'error' : 'warn'}>
+          {alertaOr.texto}{' '}
+          <a href={OPENROUTER_CREDITOS} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold underline">
+            Recargar en OpenRouter <ExternalLink size={12} />
+          </a>
         </Banner>
       )}
 
@@ -217,12 +274,16 @@ export default function Marketplace() {
           <div>
             <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-700"><TrendingUp size={15} /> Rentabilidad por cliente</h3>
             <p className="text-xs text-slate-400">Por fecha de cada llamada. Coste = lo que nos ha costado su IA (también pruebas y editor de prompts). Cobrado = lo ya cobrado de ese consumo. Incluido = consumo con prueba o plan (no se cobra). Pendiente = aún sin cobrar. Beneficio = cobrado − coste. «Previsto» = si se cobrara todo su consumo.</p>
+            {/* las fechas que de verdad ha usado el servidor (con un campo vacío, del día 1 del mes a hoy) */}
+            {rent?.desde && rent?.hasta && !rangoInvertido && <p className="text-[11px] text-slate-500">Del {rent.desde} al {rent.hasta}</p>}
           </div>
           <div className="flex items-end gap-2">
-            <Input label="Desde" type="date" value={rango?.desde || ''} onChange={(e) => setRango({ ...rango, desde: e.target.value })} className="!py-1.5" />
-            <Input label="Hasta" type="date" value={rango?.hasta || ''} onChange={(e) => setRango({ ...rango, hasta: e.target.value })} className="!py-1.5" />
+            {/* max/min ayudan en el selector, pero se puede teclear cualquier fecha: el servidor lo vuelve a mirar */}
+            <Input label="Desde" type="date" value={rango?.desde || ''} max={rango?.hasta || undefined} onChange={(e) => setRango({ ...rango, desde: e.target.value })} className="!py-1.5" />
+            <Input label="Hasta" type="date" value={rango?.hasta || ''} min={rango?.desde || undefined} onChange={(e) => setRango({ ...rango, hasta: e.target.value })} className="!py-1.5" />
           </div>
         </div>
+        {rangoInvertido && <div className="p-4"><Banner tone="warn">{rent?.aviso_rango || AVISO_RANGO_INVERTIDO}</Banner></div>}
         {rent?.error && <div className="p-4"><Banner tone="error">{rent.error}</Banner></div>}
         {rent && rent.zona_valida === false && <div className="p-4"><Banner tone="warn">La zona horaria del cobro (<code>MD_ZONA_HORARIA</code>) no es válida: se está usando UTC.</Banner></div>}
         <div className="overflow-x-auto">
@@ -272,7 +333,7 @@ export default function Marketplace() {
                   <td className="px-4 py-2 text-right tabular-nums text-slate-500">{usdIa(rent.totales.beneficio_previsto)}</td>
                 </tr>
               )}
-              {rent && !rent.error && (rent.clientes || []).length === 0 && (
+              {rent && !rent.error && !rangoInvertido && (rent.clientes || []).length === 0 && (
                 <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-400">Sin consumo en ese rango.</td></tr>
               )}
             </tbody>
@@ -280,6 +341,8 @@ export default function Marketplace() {
         </div>
         <p className="border-t border-slate-100 px-5 py-2 text-[11px] text-slate-400">GHL no cobra comisión por los cargos del marketplace hasta el 31-12-2026; desde 2027 está prevista en torno al 15 % y habrá que descontarla del beneficio.</p>
       </Card>
+
+      <DineroReal fin={fin} rango={rango} onActualizar={actualizarOr} refrescando={refrescandoOr} />
 
       <Card className="overflow-hidden">
         <div className="border-b border-slate-100 px-5 py-3.5">
@@ -420,5 +483,254 @@ export default function Marketplace() {
         </div>
       </Card>
     </div>
+  );
+}
+
+// 💵 Dinero real · OpenRouter y clientes: lo que el dueño ha pagado a OpenRouter frente a lo que le han pagado los
+// clientes, con el dinero real separado del saldo de cortesía que regala (regla «cortesía primero» del marketplace).
+function DineroReal({ fin, rango, onActualizar, refrescando }) {
+  const or = fin?.openrouter || {};
+  const cuenta = or.cuenta || {};
+  const clavesHermes = or.claves_hermes || [];
+  const cli = fin?.clientes || {};
+  const res = fin?.resumen || {};
+  const hermes = fin?.hermes || {};
+  const tot = cli.totales || null;
+  const hayRango = Boolean(fin?.desde || fin?.hasta);
+  const pct = String(or.comision_pct ?? 5.5).replace('.', ',');
+  const saldoOr = res.saldo_openrouter;
+  const tonoSaldoOr = saldoOr === null || saldoOr === undefined ? 'text-slate-500'
+    : saldoOr <= 0.5 ? 'text-rose-600 dark:text-rose-400' : saldoOr < 5 ? 'text-amber-700 dark:text-amber-400' : 'text-emerald-700 dark:text-emerald-400';
+  // k = campo del bloque o una función que calcula la cifra a partir de él (p. ej. consumoRealHermes)
+  const enRango = (b, k) => (hayRango && b ? <div className="text-[10px] font-normal text-slate-400">rango {usdIa(typeof k === 'function' ? k(b) : b[k])}</div> : null);
+  const delMonedero = Number(res.cobrado_monedero_hermes) > 0;
+  const delMonederoRango = Number(res.cobrado_monedero_hermes_rango) > 0;
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-slate-700">💵 Dinero real · OpenRouter y clientes</h3>
+          <p className="text-xs text-slate-400">
+            Lo que has pagado a OpenRouter frente a lo que te han pagado los clientes, separando el dinero real del saldo de cortesía que regalas.
+            Las cifras «del rango» usan las fechas de Rentabilidad{fin?.desde || fin?.hasta ? ` (${fin?.desde || 'principio'} → ${fin?.hasta || 'hoy'})` : ''}.
+          </p>
+        </div>
+        <Button variant="secondary" onClick={onActualizar} loading={refrescando} disabled={!rango || refrescando}>
+          {!refrescando && <RefreshCw size={15} />} Actualizar OpenRouter
+        </Button>
+      </div>
+
+      {!fin && <p className="px-5 py-8 text-center text-sm text-slate-400">Cargando…</p>}
+      {fin?.error && <div className="p-4"><Banner tone="error">{fin.error}</Banner></div>}
+
+      {fin && !fin.error && (
+        <div className="space-y-4 p-4 sm:p-5">
+          {cuenta.configurada === false && (
+            <Banner tone="info">
+              Para ver lo comprado y el saldo de OpenRouter, crea en OpenRouter una <strong>management key</strong> (solo sirve para consultar, no para chatear)
+              y pégala en EasyPanel como <code>OPENROUTER_MANAGEMENT_KEY</code>. Nunca se muestra en el panel.
+            </Banner>
+          )}
+          {cuenta.configurada && cuenta.error && <Banner tone="warn">No se ha podido leer todo de OpenRouter: {cuenta.error}</Banner>}
+          {cli.disponible === false && <Banner tone="warn">{cli.motivo}</Banner>}
+
+          <div className="grid gap-4 md:grid-cols-2">
+            {/* ── lo pagado a OpenRouter ── */}
+            <div className="rounded-xl border border-slate-200 p-4">
+              <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Lo que has pagado a OpenRouter</h4>
+              <div className="divide-y divide-slate-100">
+                <Linea
+                  etiqueta="Comprado"
+                  valor={cifra(res.pagado_openrouter)}
+                  nota={res.comision_estimada !== null && res.comision_estimada !== undefined
+                    ? `≈ ${usd(res.comision_estimada)} de comisión (${pct} %, mínimo 0,80 $ por compra)`
+                    : `Más ≈ ${pct} % de comisión de OpenRouter en cada compra`}
+                />
+                <Linea etiqueta="Gastado de la cuenta" valor={cifra(res.gastado_openrouter_cuenta)} />
+                <Linea etiqueta="Saldo" valor={cifra(saldoOr)} tono={tonoSaldoOr} fuerte />
+                <Linea etiqueta="Gasto de las claves de Hermes" valor={cifra(res.gastado_claves_hermes)} nota={`Este mes: ${cifra(res.gastado_claves_hermes_mes)}`} />
+              </div>
+
+              {clavesHermes.length > 0 && (
+                <div className="mt-3">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Claves de Hermes</div>
+                  <ul className="space-y-1.5">
+                    {clavesHermes.map((c) => (
+                      <li key={`${c.clave}-${(c.proveedores || []).map((p) => p.id).join(',')}`} className="flex items-start justify-between gap-3 text-xs">
+                        <div className="min-w-0">
+                          <div className="truncate text-slate-600">
+                            {(c.proveedores || []).map((p) => p.name).join(', ')} <code className="text-[10px] text-slate-400">{c.clave}</code>
+                          </div>
+                          {c.error
+                            ? <div className="text-rose-600 dark:text-rose-400">{c.error}</div>
+                            : (
+                              <div className="text-slate-400">
+                                Este mes {cifra(c.usage_monthly)}
+                                {Number.isFinite(c.limit_remaining) ? ` · le quedan ${usdIa(c.limit_remaining)} de su límite` : ' · sin límite propio'}
+                              </div>
+                            )}
+                        </div>
+                        <div className="shrink-0 text-right tabular-nums text-slate-700">{cifra(c.usage)}</div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {clavesHermes.length === 0 && (
+                <p className="mt-3 text-xs text-slate-400">No hay ningún proveedor de OpenRouter en Proveedores.</p>
+              )}
+
+              {cuenta.configurada && (cuenta.claves || []).length > 0 && (
+                <div className="mt-3">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Todas las claves de la cuenta</div>
+                  <ul className="space-y-1.5">
+                    {cuenta.claves.map((k, i) => (
+                      <li key={`${k.label}-${i}`} className="flex items-start justify-between gap-3 text-xs">
+                        <div className="min-w-0">
+                          <div className="truncate text-slate-600">
+                            {k.name || k.label || 'Sin nombre'}
+                            {k.disabled && <span className="ml-1"><Chip tone="border-slate-200 bg-slate-50 text-slate-500">desactivada</Chip></span>}
+                          </div>
+                          <div className="text-slate-400">
+                            Este mes {cifra(k.usage_monthly)}
+                            {Number.isFinite(k.limit_remaining) ? ` · le quedan ${usdIa(k.limit_remaining)} de su límite` : ''}
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right tabular-nums text-slate-700">{cifra(k.usage)}</div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {/* ── lo pagado por los clientes ── */}
+            <div className="rounded-xl border border-slate-200 p-4">
+              <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Lo que te han pagado los clientes</h4>
+              <div className="divide-y divide-slate-100">
+                <Linea etiqueta="Dinero real recargado" valor={cifra(res.te_han_pagado)} tono="text-emerald-700 dark:text-emerald-400" fuerte
+                  nota="Recargas con tarjeta o monedero de GHL (menos las anuladas) y lo cobrado a Hermes del monedero" />
+                <Linea etiqueta="Cortesía regalada" valor={cifra(res.cortesia_regalada)} tono="text-sky-700 dark:text-sky-400" nota="Saldo añadido a mano: no es dinero" />
+                <Linea etiqueta="Consumido en Hermes con dinero real" valor={cifra(res.consumido_hermes_real)}
+                  nota={`Del saldo real y lo cobrado a Hermes directamente del monedero de GHL${delMonedero ? `: de ello, ${cifra(res.cobrado_monedero_hermes)} del monedero` : ''}`} />
+                <Linea etiqueta="Consumido en Hermes con cortesía" valor={cifra(res.consumido_hermes_cortesia)} tono="text-sky-700 dark:text-sky-400" />
+                <Linea etiqueta="Saldo que les queda · real" valor={cifra(res.saldo_clientes_real)} />
+                <Linea etiqueta="Saldo que les queda · cortesía" valor={cifra(res.saldo_clientes_cortesia)} tono="text-sky-700 dark:text-sky-400" />
+              </div>
+            </div>
+          </div>
+
+          {/* ── resultado ── */}
+          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="text-sm text-slate-600">
+                Dinero real consumido en Hermes <span className="font-semibold tabular-nums">{cifra(res.consumido_hermes_real)}</span>
+                {delMonedero && (
+                  <>
+                    {' '}(del saldo <span className="font-semibold tabular-nums">{cifra(res.consumido_hermes_real_saldo)}</span>
+                    {' '}+ cobrado a Hermes del monedero de GHL <span className="font-semibold tabular-nums">{cifra(res.cobrado_monedero_hermes)}</span>)
+                  </>
+                )}
+                {' '}− coste de la IA de Hermes <span className="font-semibold tabular-nums">{cifra(hermes.coste_ia_historico)}</span> =
+              </span>
+              <span className={`text-lg font-bold tabular-nums ${tonoResultado(res.resultado_real_hermes)}`}>{cifra(res.resultado_real_hermes)}</span>
+            </div>
+            {hermes.coste_ia_historico === null && (
+              <div className="text-[11px] text-amber-700 dark:text-amber-400">No se ha podido leer lo que ha costado la IA de Hermes, así que el resultado sale como «—». Prueba a recargar en un rato.</div>
+            )}
+            {hayRango && (
+              <div className="border-t border-slate-200 pt-2 text-xs">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="text-slate-500">
+                    Del {fin.desde || 'principio'} al {fin.hasta || 'hoy'}: consumido con dinero real <span className="tabular-nums">{cifra(res.consumido_hermes_real_rango)}</span>
+                    {delMonederoRango && <>{' '}(de ello, del monedero de GHL <span className="tabular-nums">{cifra(res.cobrado_monedero_hermes_rango)}</span>)</>}
+                    {' '}· con cortesía <span className="tabular-nums">{cifra(res.consumido_hermes_cortesia_rango)}</span>
+                    {' '}· coste de la IA <span className="tabular-nums">{cifra(hermes.coste_ia_rango)}</span>
+                  </span>
+                  <span className={`font-semibold tabular-nums ${tonoResultado(res.resultado_real_rango)}`}>{cifra(res.resultado_real_rango)}</span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-slate-400">
+                  El dinero real cuenta el día en que se cobró cada lote; el coste de lo ya cobrado, ese mismo día; el resto del coste, el día de cada llamada.
+                </div>
+              </div>
+            )}
+            {fin.rango_invalido && (
+              <div className="border-t border-slate-200 pt-2 text-xs text-amber-700 dark:text-amber-400">{fin.aviso_rango || AVISO_RANGO_INVERTIDO}</div>
+            )}
+            {Number(hermes.coste_ia_archivo_historico) > 0 && (
+              <div className="text-[11px] text-slate-400">Aparte, {usdIa(hermes.coste_ia_archivo_historico)} de coste de IA del Archivo (no es de ningún cliente).</div>
+            )}
+          </div>
+
+          {/* ── por cliente ── */}
+          {cli.disponible && (
+            <div className="-mx-4 overflow-x-auto border-t border-slate-100 sm:-mx-5">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th rowSpan={2} className="px-4 py-2 text-left align-bottom">Cliente</th>
+                    <th rowSpan={2} className="px-4 py-2 text-right align-bottom">Cortesía regalada</th>
+                    <th rowSpan={2} className="px-4 py-2 text-right align-bottom">Pagado (real)</th>
+                    <th colSpan={2} className="px-4 pt-2 text-center">Consumido en Hermes</th>
+                    <th colSpan={2} className="px-4 pt-2 text-center">Saldo</th>
+                  </tr>
+                  <tr>
+                    <th className="px-4 pb-2 text-right font-medium normal-case">cortesía</th>
+                    <th className="px-4 pb-2 text-right font-medium normal-case">real</th>
+                    <th className="px-4 pb-2 text-right font-medium normal-case">cortesía</th>
+                    <th className="px-4 pb-2 text-right font-medium normal-case">real</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(cli.filas || []).map((f) => (
+                    <tr key={f.location_id} className="border-t border-slate-50">
+                      <td className="px-4 py-2">
+                        <div className="font-medium text-slate-700">{f.name}</div>
+                        <div className="text-[10px] text-slate-400">
+                          {f.account_id ? '' : 'sin conexión en Hermes · '}<code>{f.location_id}</code>
+                        </div>
+                        {f.saldo?.descuadre && (
+                          <div className="text-[10px] text-amber-700 dark:text-amber-400">
+                            Su saldo según los movimientos ({usdIa(f.saldo.total)}) no cuadra con el registrado ({usdIa(f.saldo.registrado)})
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums text-sky-700 dark:text-sky-400">{cifra(cortesiaNeta(f.historico))}</td>
+                      <td className="px-4 py-2 text-right font-semibold tabular-nums text-slate-800">{cifra(pagadoReal(f.historico))}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-sky-700 dark:text-sky-400">{cifra(f.historico?.consumo_app_cortesia)}{enRango(f.rango, 'consumo_app_cortesia')}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-slate-700">{cifra(consumoRealHermes(f.historico))}{enRango(f.rango, consumoRealHermes)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-sky-700 dark:text-sky-400">{cifra(f.saldo?.cortesia)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-slate-700">{cifra(f.saldo?.real)}</td>
+                    </tr>
+                  ))}
+                  {tot && (cli.filas || []).length > 0 && (
+                    <tr className="border-t-2 border-slate-200 bg-slate-50/60 font-semibold">
+                      <td className="px-4 py-2 text-slate-700">Total</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-sky-700 dark:text-sky-400">{cifra(cortesiaNeta(tot.historico))}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-slate-800">{cifra(pagadoReal(tot.historico))}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-sky-700 dark:text-sky-400">{cifra(tot.historico?.consumo_app_cortesia)}{enRango(tot.rango, 'consumo_app_cortesia')}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-slate-700">{cifra(consumoRealHermes(tot.historico))}{enRango(tot.rango, consumoRealHermes)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-sky-700 dark:text-sky-400">{cifra(tot.saldo?.cortesia)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-slate-700">{cifra(tot.saldo?.real)}</td>
+                    </tr>
+                  )}
+                  {(cli.filas || []).length === 0 && (
+                    <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-400">Ningún cliente tiene todavía movimientos de saldo.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <p className="text-[11px] text-slate-400">
+            Regla «cortesía primero»: cada consumo gasta antes el saldo de cortesía del cliente y, cuando se acaba, su dinero real.
+            En «Consumido en Hermes · real» entra también lo cobrado directamente del monedero de GHL (cobros antiguos y suscripciones de Hermes), que no pasa por el saldo.
+            Las cifras de OpenRouter son de toda la cuenta (incluyen otras apps, como el Brain, si comparten cuenta) y la comisión es una estimación: OpenRouter no la da.
+            El coste de la IA de Hermes incluye también las pruebas y el editor de prompts.
+          </p>
+        </div>
+      )}
+    </Card>
   );
 }
